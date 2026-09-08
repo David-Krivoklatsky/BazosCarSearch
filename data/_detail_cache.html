@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<title>Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - Nitra | Bazoš.sk</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta name="description" content="Inzerát č. 195357798: Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia, Cena: 22 500 €, Lokalita: Nitra. Popis: Predám SUV Kia Sportage 1.6."><meta property="og:image" content="https://www.bazos.sk/img/1/798/195357798.jpg?t=1788893515"><meta property="og:title" content="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - Nitra">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Bazos.sk">
+<meta property="og:description" content="Inzerát č. 195357798: Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia, Cena: 22 500 €, Lokalita: Nitra. Popis: Predám SUV Kia Sportage 1.6.">
+<link rel="canonical" href="https://auto.bazos.sk/inzerat/195357798/kia-sportage-16-crdi-mhev-100-kw-7-dct-led-kamera-navigacia.php"><meta property="fb:admins" content="1055875657">
+<meta name="ROBOTS" content="max-image-preview:large">
+<link rel="preload" as="image" href="https://www.bazos.sk/img/1/798/195357798.jpg?t=1788893515"><link rel="stylesheet" href="https://www.bazos.sk/bazos67s.css" type="text/css"><link rel="preload" as="image" href="https://www.bazos.sk/obrazky/bazos.svg">
+<link rel="stylesheet" href="https://www.bazos.sk/bazosprint.css" type="text/css" media="print">
+<link rel="icon" href="https://www.bazos.sk/favicon.svg" type="image/svg+xml">
+<link rel="icon" HREF="https://www.bazos.sk/favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="https://www.bazos.sk/apple-touch-icon.png">
+
+<script async="async" src="https://www.google.com/adsense/search/ads.js"></script>
+<script type="text/javascript" charset="utf-8">
+(function(g,o){g[o]=g[o]||function(){(g[o]['q']=g[o]['q']||[]).push(
+  arguments)},g[o]['t']=1*new Date})(window,'_googCsa');
+</script><script>
+var xhr = new XMLHttpRequest();
+var naseptavac_value = '';
+function naseptavac(value) {
+  if (value=='')  {
+  	naseptavac_value = '';
+  	document.getElementById('vysledek').innerHTML='';
+  	}
+else {
+	if (naseptavac_value == value) {
+		return false;
+	}
+	naseptavac_value = value;
+	setTimeout(function () {
+		if (naseptavac_value != value) {
+			return false;
+		}
+		xhr.onreadystatechange = function() {
+ 		 if (this.readyState == 4 && naseptavac_value == value){
+				document.getElementById('vysledek').innerHTML = this.responseText;
+			}
+ 		 };
+		xhr.open("POST", '/suggest.php');
+		xhr.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+		xhr.send('rubnas=AU&catnas=118&qnas='+encodeURIComponent(naseptavac_value));
+	}, 250);
+}
+}
+
+var naseptavacpsc_value = '';
+function naseptavacpsc(value) {
+  if (value=='')  {
+  	naseptavacpsc_value = '';
+  	document.getElementById('vysledekpsc').innerHTML='<table cellpadding=\"3\" cellspacing=\"0\" class=\"tablenaspsc\"><tr><td class=\"act\" onclick=\"getLocation();\"><b>Inzeráty v okolí</b></td></tr></table>';
+  	}
+else {
+	if (naseptavacpsc_value == value) {
+		return false;
+	}
+	naseptavacpsc_value = value;
+	setTimeout(function () {
+		if (naseptavacpsc_value != value) {
+			return false;
+		}
+		xhr.onreadystatechange = function() {
+ 		 if (this.readyState == 4 && naseptavacpsc_value == value){
+				document.getElementById('vysledekpsc').innerHTML = this.responseText;
+			}
+ 		 };
+		xhr.open("POST", '/suggestpsc.php');
+		xhr.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+		xhr.send('qnaspsc='+encodeURIComponent(naseptavacpsc_value));
+	}, 250);
+}
+}
+
+function getLocation() {
+if (navigator.geolocation) {navigator.geolocation.getCurrentPosition(showPosition);}
+else {document.getElementById('hlokalita').value = '';}
+}
+function showPosition(position) {
+		xhr.onreadystatechange = function() {
+ 		 if (this.readyState == 4){
+				document.getElementById('hlokalita').value = this.responseText;
+				document.forms['formt'].submit();
+			}
+ 		 };
+		xhr.open("POST", '/zip.php');
+		xhr.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+		xhr.send('latitude='+encodeURIComponent(position.coords.latitude)+'&longitude='+encodeURIComponent(position.coords.longitude));
+}
+
+function favouriteadd(value,params,obradresa) {
+xhr.onreadystatechange = function() {
+  if (this.readyState == 4 && this.status == 200){
+				document.getElementById('favour').innerHTML = this.responseText;
+				document.getElementById('obrfavour').src = obradresa;
+			}
+  };
+xhr.open("POST", value);
+xhr.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+xhr.send(params);
+}
+
+function odeslatrequest(value,params,overvalue) {
+xhr.onreadystatechange = function() {
+  if (this.readyState == 4){
+				document.getElementById(overvalue).innerHTML = this.responseText;
+			}
+  };
+xhr.open("POST", value);
+xhr.setRequestHeader('Content-type', 'application/x-www-form-urlencoded');
+xhr.send(params);
+}
+function odeslatakci(postaction,value1,value2,value3) {
+document.getElementById('postaction').value = postaction;
+document.getElementById("postv1").value = value1;
+document.getElementById("postv2").value = value2;
+document.getElementById("postv3").value = value3;
+document.formaction.submit();
+}
+</script>
+<script src="https://www.bazos.sk/flickity2.js"></script></head>
+
+<body>
+
+<div class="sirka">
+
+
+<div class="listalogor">
+<div class="listalogol"><a href="https://www.bazos.sk/" title="Bazos.sk - Inzercia, inzeráty"><img src="https://www.bazos.sk/obrazky/bazos.svg" width="199" height="34" alt="Bazos.sk - Inzercia, inzeráty"></a></div>
+<div class="listalogom"><b>... bazár pre každého</b></div>
+<div class="listalogop"><a href="https://www.bazos.sk/oblubene.php"><b>Obľúbené inzeráty</b></a> <a href="https://www.bazos.sk/moje-inzeraty.php"><b>Moje inzeráty</b></a> <a href="/pridat-inzerat.php"><b><span class=pridati>Pridať inzerát</span></b></a></div>
+</div>
+<form name="formt" id="formt" method=get action=/>
+<div class="listah">
+<div class="rubriky">
+<b>
+Čo: <span class=vysokoli><span id="vysledek"></span><input type="search" onkeyup="naseptavac(this.value);" id=hledat name=hledat size="17" maxlength="256" value="" autocomplete="off" title="Čo? Hľadaný výraz"></span>
+
+<select name="rubriky" onchange='this.form.submit();' title="Vyber rubriku">
+<option value="www">Všetky rubriky</option>
+<option value="auto" selected>Auto</option><option value="deti">Deti</option><option value="dom">Dom a záhrada</option><option value="elektro">Elektro</option><option value="foto">Foto</option><option value="hudba">Hudba</option><option value="knihy">Knihy</option><option value="mobil">Mobily</option><option value="motocykle">Motocykle</option><option value="nabytok">Nábytok</option><option value="oblecenie">Oblečenie</option><option value="pc">PC</option><option value="praca">Práca</option><option value="reality">Reality</option><option value="sluzby">Služby</option><option value="stroje">Stroje</option><option value="sport">Šport</option><option value="vstupenky">Vstupenky</option><option value="zvierata">Zvieratá</option><option value="ostatne">Ostatné</option></select>
+
+PSČ (miesto): <span class=vysokolipsc><span id="vysledekpsc"></span><input type="search" name="hlokalita" id="hlokalita" onkeyup="naseptavacpsc(this.value);" onclick="naseptavacpsc(this.value);" value="" size="5" maxlength="25" autocomplete="off" title="Kde? PSČ (miesto)" style="-webkit-appearance: none;"></span>
+Okolie: <input name="humkreis" title="Okolie v km" value="25" size="3" style="width: 25px;"> km
+Cena od: <input name=cenaod title="Cena od €" maxlength="12" size="4" value=""> - do: <input name=cenado title="Cena do €" maxlength="12" size="4" value=""> €  <input type="submit" name="Submit" value="Hľadať">
+<input type="hidden" name="order" id="order"><input type="hidden" name="crp" id="crp"><input type="hidden" id="kitx" name="kitx" value="ano"></b>
+</div>
+</div>
+</form>
+<div class="drobky"><a href=https://www.bazos.sk/>Hlavná stránka</a>  > <a href="https://auto.bazos.sk/">Auto</a> > <a href="https://auto.bazos.sk/kia/">Kia</a> > <b>Inzerát č. 195357798</b></div>
+<br>
+
+
+<div class="flexmain"><div class="menuleft"><div class="nadpismenu">Osobné autá</div>
+<div class="barvalmenu">
+<div class="barvaleva">
+<a href="/alfa/" >Alfa Romeo</a>
+<a href="/audi/" >Audi</a>
+<a href="/bmw/" >BMW</a>
+<a href="/citroen/" >Citroën</a>
+<a href="/dacia/" >Dacia</a>
+<a href="/fiat/" >Fiat</a>
+<a href="/ford/" >Ford</a>
+<a href="/honda/" >Honda</a>
+<a href="/hyundai/" >Hyundai</a>
+<a href="/chevrolet/" >Chevrolet</a>
+<a href="/kia/"  id=zvyraznenikat>Kia</a>
+<a href="/mazda/" >Mazda</a>
+<a href="/mercedes/" >Mercedes-Benz</a>
+<a href="/mitsubishi/" >Mitsubishi</a>
+<a href="/nissan/" >Nissan</a>
+<a href="/opel/" >Opel</a>
+<a href="/peugeot/" >Peugeot</a>
+<a href="/renault/" >Renault</a>
+<a href="/seat/" >Seat</a>
+<a href="/suzuki/" >Suzuki</a>
+<a href="/skoda/" >Škoda</a>
+<a href="/toyota/" >Toyota</a>
+<a href="/volkswagen/" >Volkswagen</a>
+<a href="/volvo/" >Volvo</a>
+<a href="/ostatni/" >Ostatné značky</a>
+<br>
+<a href="https://elektro.bazos.sk/autoradia/">Autorádiá</a>
+<a href="https://pc.bazos.sk/gps/">GPS navigácia</a>
+<a href="/havarovana/" >Havarované</a>
+<a href="/nahradnidily/" >Náhradné diely</a>
+<a href="/pneumatiky/" >Pneumatiky, kolesá</a>
+<a href="/prislusenstvo/" >Príslušenstvo</a>
+<a href="/tuning/" >Tuning</a>
+<a href="/veterany/" >Veterány</a>
+</div></div>
+
+<br>
+<div class="nadpismenu">Úžitkové automobily</div>
+<div class="barvalmenu">
+<div class="barvaleva">
+<a href="/autobusy/" >Autobusy</a>
+<a href="/dodavka/" >Dodávky</a>
+<a href="/mikrobus/" >Mikrobusy</a>
+<a href="/karavany/" >Karavany, obytné autá</a>
+<a href="/nakladne/" >Nákladné autá</a>
+<a href="/pickup/" >Pick-up</a>
+<a href="/voziky/" >Vozíky, prívesy</a>
+<a href="https://stroje.bazos.sk/">Stroje</a>
+<a href="/ostatniuzitkova/" >Ostatné</a>
+<br>
+<a href="/havarovanauzitkova/" >Havarované</a>
+<a href="/nahradnidilyuzitkova/" >Náhradné diely</a>
+</div></div>
+<br>
+<div class="nadpismenu">Moto</div>
+<div class="barvalmenu">
+<div class="barvaleva">
+<a href="https://motocykle.bazos.sk/">Motocykle, Skútre</a>
+</div></div>
+</div><div class="maincontent">
+
+
+<div class="listainzerat inzeratyflex">
+<div class="inzeratydetnadpis"><H1 class=nadpisdetail>Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia</H1><span class=velikost10> - <span title="TOP 21x Platí do 20.10. 2026" class="ztop">TOP</span> - [8.9. 2026]</span></div>
+<div class="inzeratydetdel"><span onclick="odeslatakci('edit','195357798');return false;" class="paction">Zmazať/ Upraviť/ Topovať</span></div>
+</div><br><div class="fliobal"><div class="carousel"><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/1/798/195357798.jpg?t=1788893515" src="https://www.bazos.sk/img/1/798/195357798.jpg?t=1788893515" width="1067" height="600" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/2/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 2"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/3/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 3"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/4/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 4"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/5/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 5"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/6/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 6"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/7/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 7"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/8/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 8"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/9/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 9"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/10/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 10"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/11/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 11"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/12/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 12"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/13/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 13"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/14/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 14"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/15/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 15"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/16/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 16"></div><div class="carousel-cell"><img class="carousel-cell-image" data-flickity-lazyload="https://www.bazos.sk/img/17/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 17"></div></div><div class="flinavigace" id="nahledy1"><img onmouseover="flkty.select(0, false, true );" src="https://www.bazos.sk/img/1t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 1" class="obrazekflithumb"><br><img onmouseover="flkty.select(1, false, true );" src="https://www.bazos.sk/img/2t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 2" class="obrazekflithumb"><br><img onmouseover="flkty.select(2, false, true );" src="https://www.bazos.sk/img/3t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 3" class="obrazekflithumb"><br><img onmouseover="flkty.select(3, false, true );" src="https://www.bazos.sk/img/4t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 4" class="obrazekflithumb"><br><img onmouseover="flkty.select(4, false, true );" src="https://www.bazos.sk/img/5t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 5" class="obrazekflithumb"><br><div style="margin-left:5px;"><img src="https://www.bazos.sk/obrazky/next.svg" alt="Ďalšia" height="20" onclick="nahledy()"></div></div><div class="flinavigace" id="nahledy3" style="display: none;"><img onmouseover="flkty.select(10, false, true );" src="https://www.bazos.sk/img/11t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 11" class="obrazekflithumb"><br><img onmouseover="flkty.select(11, false, true );" src="https://www.bazos.sk/img/12t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 12" class="obrazekflithumb"><br><img onmouseover="flkty.select(12, false, true );" src="https://www.bazos.sk/img/13t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 13" class="obrazekflithumb"><br><img onmouseover="flkty.select(13, false, true );" src="https://www.bazos.sk/img/14t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 14" class="obrazekflithumb"><br><img onmouseover="flkty.select(14, false, true );" src="https://www.bazos.sk/img/15t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 15" class="obrazekflithumb"><br><div style="margin-left:5px;"><img src="https://www.bazos.sk/obrazky/next.svg" alt="Ďalšia" height="20" onclick="nahledy()"></div></div><div class="flinavigace" id="nahledy2"><img onmouseover="flkty.select(5, false, true );" src="https://www.bazos.sk/img/6t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 6" class="obrazekflithumb"><br><img onmouseover="flkty.select(6, false, true );" src="https://www.bazos.sk/img/7t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 7" class="obrazekflithumb"><br><img onmouseover="flkty.select(7, false, true );" src="https://www.bazos.sk/img/8t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 8" class="obrazekflithumb"><br><img onmouseover="flkty.select(8, false, true );" src="https://www.bazos.sk/img/9t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 9" class="obrazekflithumb"><br><img onmouseover="flkty.select(9, false, true );" src="https://www.bazos.sk/img/10t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 10" class="obrazekflithumb"><br></div><div class="flinavigace" id="nahledy4" style="display: none;"><img onmouseover="flkty.select(15, false, true );" src="https://www.bazos.sk/img/16t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 16" class="obrazekflithumb"><br><img onmouseover="flkty.select(16, false, true );" src="https://www.bazos.sk/img/17t/798/195357798.jpg?t=1788893515" alt="Kia Sportage 1.6 CRDi MHEV-100 kW-7-DCT-LED-Kamera-Navigácia - 17" class="obrazekflithumb"><br></div></div><script>var flkty = new Flickity( '.carousel', {fullscreen: true,lazyLoad: 1,wrapAround: true,adaptiveHeight: true});</script>
+<div class=popisdetail>Predám SUV Kia Sportage 1.6 CRDi MHEV s výkonom 100 kW (136 PS), úsporným dieselovým motorom Mild-Hybrid a 7-stupňovou automatickou prevodovkou DCT. <br>
+Vozidlo je dovezené z Talianska, má slušnú výbavu a je vo veľmi peknom stave.<br>
+<br>
+Rok výroby: 11/2022<br>
+Modelový rok: 2023<br>
+Najazdené: 33 650 km<br>
+Výkon: 100 kW (136 PS)<br>
+Motor: 1.6 CRDi MHEV<br>
+Prevodovka: 7-stupňová automatická DCT<br>
+Pohon: 2WD<br>
+Palivo: Diesel<br>
+Emisná norma: EURO 6d<br>
+Farba: Neptune Blue Metallic<br>
+<br>
+💡 SVETLÁ A VIDITEĽNOSŤ:<br>
+LED predné svetlomety<br>
+LED denné svietenie<br>
+Automatické diaľkové svetlá HBA<br>
+Automatické zapínanie svetiel<br>
+Dažďový senzor<br>
+Tónované sklá<br>
+Vyhrievané zadné sklo<br>
+<br>
+🛡️ ASISTENČNÉ SYSTÉMY:<br>
+Tempomat<br>
+Lane Following Assist – asistent vedenia vozidla v jazdnom pruhu<br>
+Intelligent Speed Limit Assist – rozpoznávanie a upozornenie na rýchlostné obmedzenia<br>
+Asistent núdzového brzdenia s detekciou vozidiel, chodcov a cyklistov<br>
+Driver Attention Warning – kontrola pozornosti vodiča<br>
+Asistent rozjazdu do kopca<br>
+Asistent jazdy z kopca<br>
+Multi Collision Brake – automatické brzdenie po kolízii<br>
+Trailer Stability Assist – stabilizácia prívesu<br>
+ABS / ESP / ESC<br>
+Elektronická parkovacia brzda<br>
+Kontrola tlaku v pneumatikách TPMS<br>
+<br>
+📷 PARKOVANIE:<br>
+Predné a zadné parkovacie senzory<br>
+Rear View Monitor - cúvacia kamera<br>
+<br>
+🛋️ KOMFORT A INTERIÉR:<br>
+Dvojzónová automatická klimatizácia<br>
+Kožený multifunkčný volant<br>
+Automaticky stmievateľné vnútorné spätné zrkadlo<br>
+Elektricky sklopné spätné zrkadlá<br>
+Voľba jazdných režimov<br>
+Elektrické ovládanie okien<br>
+Stredová lakťová opierka s odkladacím priestorom<br>
+Delené a sklopné zadné sedadlá 40:20:40<br>
+Výduchy kúrenia pre zadné sedadlá<br>
+<br>
+📱 MULTIMÉDIÁ:<br>
+12,3" infotainment s navigáciou<br>
+Digitálny prístrojový panel<br>
+DAB rádio<br>
+Bluetooth<br>
+USB<br>
+USB nabíjanie<br>
+Hlasové ovládanie<br>
+<br>
+🔑 OSTATNÁ VÝBAVA:<br>
+Imobilizér<br>
+Start/Stop systém<br>
+Strešné lyžiny<br>
+ISOFIX<br>
+Predné, bočné a hlavové airbagy<br>
+Elektronická stabilizácia vozidla<br>
+Senzor hladiny kvapaliny ostrekovačov<br>
+Batožinová roleta<br>
+Úložný priestor pod podlahou batožinového priestoru<br>
+<br>
+🛞 KOLESÁ:<br>
+17" originál Kia ALU disky<br>
+Pneumatiky 215/65 R17<br>
+Systém kontroly tlaku TPMS<br>
+Tire Mobility Kit<br>
+<br>
+V cene vozidla je zahrnutá kontrola originality, prihlásenie na Slovensku a Cebia protokol. Vozidlo má už slovenské EČV, takže stačí už len prepis na nového majiteľa.</div><br>
+<table width="100%" cellpadding="5" cellspacing="0">
+<tr><td width="35%" valign=top class=listadvlevo>
+<table width="*" cellpadding="0" cellspacing="1">
+<tr><td height="22px" width="25%">Meno:<br><br></td><td colspan=2><b><span onclick="odeslatakci('rating','5909209','4782476','Tomas');return false;" class="paction">Tomas</span></b><br><br></td></tr>
+<tr id="overlaytel"><td height="22px" width="25%">Telefón:<br><br></td><td colspan=2><span class=teldetail onclick="odeslatrequest('/ad-phone.php','idi=195357798&idphone=4782476','overlaytel');"><span style="white-space: nowrap;">+42... zobraz číslo</span></span><br><br></td></tr>
+<tr><td height="22px" width="25%">Lokalita:</td><td width="9%"><img src="https://www.bazos.sk/obrazky/map.svg" alt="Mapa" height="17"></td><td><a href="https://www.google.com/maps/place/48.313327,18.089311/@48.313327,18.089311,12z/data=!4m2!3m1!1s0x0:0x0" title="Približná lokalita" rel="nofollow">949 01</a> <a href="https://auto.bazos.sk/inzeraty/nitra-1/94901/">Nitra</a></td></tr>
+<tr><td height="22px" width="25%"><br>Videlo:</td><td colspan=2><br>212 ľudí</td></tr>
+<tr><td height="22px" width="25%"><br>Cena:</td><td colspan=2><br><b><span translate="no">  22 500 €</span></b></td></tr>
+</table>
+</td>
+
+<td width="*" valign=top class=listadvpravo>
+
+<table cellpadding="0" cellspacing="1">
+<tr><td height="22px"><img src="https://www.bazos.sk/obrazky/user.svg" alt="Užívateľ" height="17"></td><td><form name="formaction" method="post" style="display: inline;"><input type="hidden" id="postaction" name="postaction" value=""><input type="hidden" id="postv1" name="postv1" value=""><input type="hidden" id="postv2" name="postv2" value=""><input type="hidden" id="postv3" name="postv3" value=""></form>
+<span onclick="odeslatakci('rating','5909209','4782476','Tomas');return false;" class="paction">Všetky inzeráty a hodnotenie užívateľa</span></td></tr>
+<tr><td height="22px"><img id="obrfavour" src="https://www.bazos.sk/obrazky/favourite.svg" alt="Obľúbené" height="18"></td><td><span id="favour"><a href="https://www.bazos.sk/oblubene.php" rel="nofollow">Pridať do obľúbených</a></span></td></tr>
+<tr><td height="22px"><img src="https://www.bazos.sk/obrazky/spam.svg" alt="Spam" height="17"></td><td><span onclick="odeslatakci('spam','195357798');return false;" class="paction">Označiť zlý inzerát</span></td></tr>
+<tr><td height="22px"><img src="https://www.bazos.sk/obrazky/miscat.svg" alt="Chybná kategóra" height="17"></td><td><span onclick="odeslatakci('category','195357798');return false;" class="paction">Označiť chybnú kategóriu inzerátu</span></td></tr>
+<tr><td height="22px"><img src="https://www.bazos.sk/obrazky/print.svg" alt="Vytlačiť" height="17"></td><td><a href="#" onclick="window.print()">Vytlačiť inzerát</a></td></tr>
+<tr><td height="22px"><a href="https://www.facebook.com/sharer/sharer.php?u=https://auto.bazos.sk/inzerat/195357798/kia-sportage-16-crdi-mhev-100-kw-7-dct-led-kamera-navigacia.php" target="_blank" rel="nofollow"><img src="https://www.bazos.sk/obrazky/facebook.svg" alt="Facebook" height="22"></a></td><td><a href="https://www.facebook.com/sharer/sharer.php?u=https://auto.bazos.sk/inzerat/195357798/kia-sportage-16-crdi-mhev-100-kw-7-dct-led-kamera-navigacia.php" target="_blank" rel="nofollow">Zdieľajte na Facebooku</a></td></tr>
+<tr><td height="22px"><img src="https://www.bazos.sk/obrazky/mail.svg" alt="Mail" height="17"></td><td><span onclick="odeslatakci('recommend','195357798');return false;" class="paction">Odporučiť kamarátovi</span></td></tr>
+<tr><td height="22px"><img src="https://www.bazos.sk/obrazky/similar.svg" alt="Podobné" height="17"></td><td><a href="https://auto.bazos.sk/inzeraty/kia-sportage/">Vyhľadať podobné inzeráty</a></td></tr>
+</table>
+
+</td></tr>
+</table>
+<br>
+
+<script>
+function autoResize(id){
+    var newheight;
+    if(document.getElementById){
+        newheight=document.getElementById(id).contentWindow.document.body.scrollHeight+1;
+    }
+    document.getElementById(id).height= (newheight) + "px";
+}
+function nahledy() {
+  var na1 = document.getElementById("nahledy1");
+  var na2 = document.getElementById("nahledy2");
+  var na3 = document.getElementById("nahledy3");
+  var na4 = document.getElementById("nahledy4");
+  if (na1.style.display === "none") {
+    na1.style.display = "block";
+    na2.style.display = "block";
+    na3.style.display = "none";
+    na4.style.display = "none";
+  } else {
+    na1.style.display = "none";
+    na2.style.display = "none";
+    na3.style.display = "block";
+    na4.style.display = "block";
+  }
+}
+</script>
+
+<div class="kontaktniformular"><div class="oranzovy" id="overlaymail"><b>Kontaktovať inzerenta e-mailom</b><br><br>
+Kontaktovať e-mailom môže iba overený užívateľ.<br>
+<br>
+Vaše telefónne číslo <span class="ztop">*</span><br>
+<input type="text" name="teloverit2" id="teloverit2" maxlength="30" autocomplete="off" onkeydown="if (event.keyCode == 13) odeslatrequest('/ad-mail.php','idi=195357798&teloverit='+encodeURIComponent(document.getElementById('teloverit2').value),'overlaymail');">
+<br><br>
+<button type="button" id="mailbutton" onclick="odeslatrequest('/ad-mail.php','idi=195357798&teloverit='+encodeURIComponent(document.getElementById('teloverit2').value),'overlaymail');">Odoslať</button>
+</div></div><br>
+
+<div class="podobne">
+<br><br>
+<div class="listainzerat">Podobné inzeráty</div><div id="container_one"></div>
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195358495/kia-sportage-gt-line-20crdi-46000km.php"><img src="https://www.bazos.sk/img/1t/495/195358495.jpg" class="obrazek" alt="Kia Sportage GT-line 2.0CRDi 46000km" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195358495/kia-sportage-gt-line-20crdi-46000km.php">Kia Sportage GT-line 2.0CRDi 46000km</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>Rok výroby: 2016
+Motor: 2.0 CRDi, 136 kW
+46 000 km
+Objem: 1995 cm³
+Palivo: Nafta
+Prevodovka: 6-stupňová automatická
+Pohon: 4x4
+Norma: EURO 6
+Farba: Červená metalíza
+Počet miest: 5
+
+Kožené športové sedačky
+Vyhrievané sedadlá (vpredu aj vzadu)
+Vyhrievaný volant
+Navigácia + veľký dotykový displej
+Cúvac ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  18 000 €</span></b></div>
+<div class="inzeratylok">Dunajská Streda<br>930 34</div>
+<div class="inzeratyview">4 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195358495');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195358495');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','6133812','4790531','PKK');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195358495');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195354680/kia-sportage-20-crdi-gold-4wd-at-100kw-2017.php"><img src="https://www.bazos.sk/img/1t/680/195354680.jpg" class="obrazek" alt="Kia Sportage 2.0 CRDi Gold 4WD A/T, 100kW (2017)" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195354680/kia-sportage-20-crdi-gold-4wd-at-100kw-2017.php">Kia Sportage 2.0 CRDi Gold 4WD A/T, 100kW (2017)</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>TECHNICKÉ ÚDAJE A SPOTREBA VOZIDLA
+
+Technické údaje
+r.v.: 06/17, 1995cm³, 100kW (136PS), Generácia vozidla: , Pohon: 4×4, Automat (6 st. ), Diesel, EURO 6, 5 dv., (5-miestne), 156 476km, Šedá metalíza, VIN U5YPH813DGL099104
+
+Spotreba vozidla (l/100km)
+V meste: 7, mimo mesta: 5.2, kombinovaná:  ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  13 000 €</span></b></div>
+<div class="inzeratylok">Prešov<br>080 01</div>
+<div class="inzeratyview">28 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195354680');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195354680');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','6223384','4463375','Ma%C5%A5o');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195354680');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195351738/kia-sportage-16-t-gdi-phev-4x4-plug-in-hybrid-zaruka-2-roky.php"><img src="https://www.bazos.sk/img/1t/738/195351738.jpg" class="obrazek" alt="Kia Sportage 1,6 T-GDI PHEV 4x4 Plug-in hybrid ZÁRUKA 2 ROKY" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195351738/kia-sportage-16-t-gdi-phev-4x4-plug-in-hybrid-zaruka-2-roky.php">Kia Sportage 1,6 T-GDI PHEV 4x4 Plug-in hybrid ZÁRUKA 2 ROKY</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>Kia Sportage 1,6 T-GDI PHEV 4x4 Plug-in hybrid ZÁRUKA 2 ROKY V CENE
+
+Technické údaje:
+r.v.: 1/2023, 1598cm3, 195kW (266PS), 4x4, Automatická, Plug-in hybrid, 5 dv., (5-miestne), 96000 km, Biela farba, Karoséria: SUV
+
+Výbava:
+ABS|Adaptívny tempomat|Airbagy|Airbagy - počet|ASR|Brzdový asistent|Centrál ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  23 490 €</span></b></div>
+<div class="inzeratylok">Banská Bystrica<br>974 05</div>
+<div class="inzeratyview">41 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195351738');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195351738');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','5249387','30635','Viktor');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195351738');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195349559/kia-sportage.php"><img src="https://www.bazos.sk/img/1t/559/195349559.jpg?t=1788875551" class="obrazek" alt="Kia Sportage" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195349559/kia-sportage.php">Kia Sportage</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>Kia Sportage
+🔥 BRAP CARS – VAŠE NOVÉ AUTO VYBAVÍME OD A PO Z! 🔥
+
+🚘 PREDAJ • FINANCOVANIE • POISTENIE • PRIHLÁSENIE
+
+Hľadáte kvalitné jazdené vozidlo bez zbytočných starostí?
+
+V BRAP CARS sa postaráme o celý proces – od výberu vozidla až po jeho odovzdanie.
+
+💰 FINANCOVANIE
+
+• Výhodné finan ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  19 990 €</span></b></div>
+<div class="inzeratylok">Pezinok<br>902 01</div>
+<div class="inzeratyview">56 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195349559');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195349559');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','5580398','4853828','Brap+Cars');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195349559');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195348340/kia-sportage-16-t-gdi-platinum-at.php"><img src="https://www.bazos.sk/img/1t/340/195348340.jpg" class="obrazek" alt="Kia Sportage 1.6 T-GDi Platinum A/T" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195348340/kia-sportage-16-t-gdi-platinum-at.php">Kia Sportage 1.6 T-GDi Platinum A/T</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>Značka:Kia
+Model:Sportage
+Mesiac / Rok:12 / 2024
+Spresnenie:Sportage 1.6 T-GDi Platinum A/T
+Palivo:Benzín
+Prevodovka:7-st. automatická
+Výkon:118 kW
+Najazdené km:15 000 km
+VIN:U5YPV81BGSL361928
+Stav:Používané
+Karoséria:SUV
+Pohon:Predný
+Počet dverí:5
+Miest na sedenie:5
+Farba:Šedá/ sivá / ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  30 990 €</span></b></div>
+<div class="inzeratylok">Topoľčany<br>955 01</div>
+<div class="inzeratyview">37 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195348340');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195348340');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','806031','1676','Ivan');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195348340');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195347991/kia-sportage-2011-20crdi-rebel-xenonnaviparkkameratazne.php"><img src="https://www.bazos.sk/img/1t/991/195347991.jpg" class="obrazek" alt="Kia Sportage 2011 2,0CRDi Rebel-xenon,NAVI,park.kamera,ťažné" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195347991/kia-sportage-2011-20crdi-rebel-xenonnaviparkkameratazne.php">Kia Sportage 2011 2,0CRDi Rebel-xenon,NAVI,park.kamera,ťažné</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>(R) 
+Predám štýlové SUV Kia Sportage tretej generácie s motorizáciou 2.0CRDi 100kW (136k), 6-rýchlostný manuál, model r. 2011, 173.737km (+zmluvná garancia počtu najazdených kilometrov), serv.knižka, šedá metalíza, po prvom majiteľovi, veľmi pekné a zachovalé, vizuálne stále zánovné auto, za zlomok ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  12 990 €</span></b></div>
+<div class="inzeratylok">Krupina<br>963 01</div>
+<div class="inzeratyview">39 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195347991');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195347991');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','4041939','2290649','Sportage');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195347991');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195347817/kia-sportage-2013-17crdi-len-118tiskmkupena-na-slovensku.php"><img src="https://www.bazos.sk/img/1t/817/195347817.jpg" class="obrazek" alt="Kia Sportage 2013 1,7CRDI, len 118tis.km,kúpená na Slovensku" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195347817/kia-sportage-2013-17crdi-len-118tiskmkupena-na-slovensku.php">Kia Sportage 2013 1,7CRDI, len 118tis.km,kúpená na Slovensku</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>(R) 
+Predám štýlové SUV Kia Sportage tretej generácie s motorizáciou 1.7CRDi 85kW (116k), 6-rýchlostný manuál, model r. 2013, len 118.196km (+zmluvná garancia počtu najazdených kilometrov), serv.knižka, nedá svetlá (šampaňská) metalíza, po prvom majiteľovi, veľmi pekné a zachovalé auto, výrobené a  ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  12 990 €</span></b></div>
+<div class="inzeratylok">Krupina<br>963 01</div>
+<div class="inzeratyview">35 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195347817');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195347817');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','4041939','2290649','Sportage');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195347817');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195347578/kia-sportage-16-crdi-at-gold-slovenske-vozidlo.php"><img src="https://www.bazos.sk/img/1t/578/195347578.jpg" class="obrazek" alt="Kia Sportage 1.6 CRDi A/T Gold, Slovenské vozidlo" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195347578/kia-sportage-16-crdi-at-gold-slovenske-vozidlo.php">Kia Sportage 1.6 CRDi A/T Gold, Slovenské vozidlo</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>---možný odpočet DPH---
+---možný Leasing od 0 % akontácie---
+TECHNICKÉ ÚDAJE: R.V.: 11/2020, 1598CM3, 100KW (136PS), AT/7, DIESEL, EURO 6, 5 DV., (5-MIESTNE), 154 465km, Hnedá metalíza,
+VIN: U5YPG812GLL868891
+
+SPOTREBA VOZIDLA (L/100KM):V MESTE: 5.0, MIMO MESTA: 4.8, KOMBINOVANÁ: 4.9
+
+Bezpečn ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  15 490 €</span></b></div>
+<div class="inzeratylok">Prešov<br>082 12</div>
+<div class="inzeratyview">41 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195347578');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195347578');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','0','105322','AVV+AUTO+-+Autobaz%C3%A1r+Kapu%C5%A1any+pri+Pre%C5%A1ove');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195347578');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195345903/kia-sportage-16-crdi-mhev-4wd-at-gold-v-zarukepovlaksr.php"><img src="https://www.bazos.sk/img/1t/903/195345903.jpg" class="obrazek" alt="Kia Sportage 1.6 CRDi mHEV 4WD A/T Gold, v Záruke,Pôv.lak,SR" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195345903/kia-sportage-16-crdi-mhev-4wd-at-gold-v-zarukepovlaksr.php">Kia Sportage 1.6 CRDi mHEV 4WD A/T Gold, v Záruke,Pôv.lak,SR</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>---možný odpočet DPH---
+---možný Leasing od 0 % akontácie---
+TECHNICKÉ ÚDAJE: R.V.: 09/2022, 1598CM3, 100KW (136PS), 4x4, AT/7, DIESEL, EURO 6, 5 DV., (5-MIESTNE), 56 790km, Šedá metalíza,
+VIN: U5YPV81AHNL028992
+
+Bezpečnosť:
+ABS, Adaptívny tempomat, Airbagy, Airbagy - počet, Alarm, ASR, Brzdov ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  24 499 €</span></b></div>
+<div class="inzeratylok">Prešov<br>082 12</div>
+<div class="inzeratyview">50 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195345903');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195345903');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','0','105322','AVV+AUTO+-+Autobaz%C3%A1r+Kapu%C5%A1any+pri+Pre%C5%A1ove');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195345903');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div class="inzeraty inzeratyflex">
+<div class="inzeratynadpis"><a href="/inzerat/195345700/kia-sportage-16-t-gdi-platinum-4wd.php"><img src="https://www.bazos.sk/img/1t/700/195345700.jpg?t=1788867292" class="obrazek" alt="Kia Sportage 1.6 T-GDi Platinum 4WD" width="170" height="128"></a>
+<span class=nadpis><a href="/inzerat/195345700/kia-sportage-16-t-gdi-platinum-4wd.php">Kia Sportage 1.6 T-GDi Platinum 4WD</a></span><span class=velikost10> - [8.9. 2026]</span><br>
+<div class=popis>Ponúkam na predaj krásnu a zachovalú Kia Sportage 1.6 T-GDi Platinum 4WD vo veľmi bohatej výbave.
+
+Základné údaje:
+
+Rok výroby: 02/2016
+Motor: 1.6 T-GDi benzín
+Výkon: 130 kW (177 k)
+Prevodovka: 6-stupňová manuálna
+Pohon: 4×4
+Najazdené: 81 114 km
+Objem motora: 1 591 cm³
+Emisná norma: Euro  ...</div><br><br>
+</div>
+<div class="inzeratycena"><b><span translate="no">  17 000 €</span></b></div>
+<div class="inzeratylok">Bratislava<br>851 06</div>
+<div class="inzeratyview">44 x</div>
+<div class="inzeratyakce">
+<span onclick="odeslatakci('spam','195345700');return false;" class="akce paction">Označiť zlý inzerát</span> <span onclick="odeslatakci('category','195345700');return false;" class="akce paction">Chybnú kategóriu</span> <span onclick="odeslatakci('rating','6006502','4911916','Autoglobalgroup');return false;" class="akce paction">Ohodnotiť užívateľa</span> <span onclick="odeslatakci('edit','195345700');return false;" class="akce paction">Zmazať/Upraviť/Topovať</span>
+</div>
+</div>
+
+<div id="container_two"></div>
+<script type="text/javascript" charset="utf-8">
+var pageOptions = {
+  'pubId': 'pub-3645948300403337',
+  'query' : "kia sportage 1.6 crdi mhev-100",
+  'channel': '4588256820',
+  'linkTarget' : '_blank',
+  'personalizedAds' : 'false',
+  'ivt': false,
+'styleId' : '6171314811',  'hl': 'sk'
+};
+
+var adblock1 = {
+  'container': 'container_one',
+  'width': 'auto',
+  'number' : 1
+};
+
+var adblock2 = {
+  'container': 'container_two',
+  'width': 'auto',
+  'number' : 2
+};
+
+_googCsa('ads', pageOptions, adblock1, adblock2);
+
+</script>
+<br>
+
+</div>
+
+
+</div></div><br>
+
+&copy;2026 Bazoš - <b>Inzercia, bazár Kia</b><br>
+<a href="https://www.bazos.sk/pomoc.php">Pomoc</a>, <a href="https://www.bazos.sk/otazky.php">Otázky</a>, <a href="https://www.bazos.sk/hodnotenie.php">Hodnotenie</a>, <a href="https://www.bazos.sk/kontakt.php">Kontakt</a>, <a href="https://www.bazos.sk/reklama.php">Reklama</a>, <a href="https://www.bazos.sk/podmienky.php">Podmienky</a>, <a href="https://www.bazos.sk/ochrana-udajov.php">Ochrana údajov</a>, <a href="https://www.bazos.sk/rss.php?rub=au&cat=118">RSS</a>, <form name="formvkm" id="formvkm" method="post" style="display: inline;"><input type="hidden" name="vkm" value="m"><input type="submit" class="vkm" value="Mobilná verzia"></form><br>
+
+Inzeráty Auto celkom: <b>235551</b>, za 24 hodín: <b>13543</b><br><br>
+<a href="https://www.bazos.sk/mapa-kategorie.php">Mapa kategórií</a>, <a href="https://auto.bazos.sk/mapa-search.php">Najvyhľadávanejšie výrazy</a>
+<br>
+Krajiny: <a href="https://auto.bazos.sk">Slovensko</a>, <a href="https://auto.bazos.cz">Česká republika</a>, <a href="https://auto.bazos.pl">Poľsko</a>, <a href="https://auto.bazos.at">Rakúsko</a>
+<br>
+<br>
+</div>
+
+<script src="https://www.bazos.sk/cookie-consent.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+cookieconsent.run({"notice_banner_type":"simple","consent_type":"express","palette":"light","language":"sk","page_load_consent_levels":["strictly-necessary"],"notice_banner_reject_button_hide":false,"preferences_center_close_button_hide":false,"page_refresh_confirmation_buttons":false,"cookie_domain": "bazos.sk"});
+});
+</script>
+<a href="#" id="open_preferences_center"> </a>
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-HLZSNE9Z0C"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-HLZSNE9Z0C');
+</script>
+
+</body>
+</html>

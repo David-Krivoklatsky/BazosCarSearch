@@ -6,8 +6,8 @@ base:
   page_size: 20
   search_filters:
     query: ""
-    min_price: null
-    max_price: null
+    min_price: 1000
+    max_price: 3000
     psc: null
     max_km: null
 
@@ -57,4 +57,4 @@ markers:
     - "overlimit"
     - "zablokovan"
     - "robot detection"
-    - "id=\"captchabox\""
+    - 'id="captchabox"'
