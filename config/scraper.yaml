@@ -1,0 +1,53 @@
+# Bazoš scraper configuration: URLs, CSS selectors, request politeness.
+# Selectors derived from the live HTML structure of https://auto.bazos.sk/ (verified 2026-09-08).
+
+base:
+  base_url: "https://auto.bazos.sk/"
+  page_size: 20            # listings per page (confirmed: 20)
+
+http:
+  timeout_seconds: 15
+  retries: 3               # per request
+  backoff_base_seconds: 2
+  backoff_max_seconds: 30
+  min_interval_ms: 1500    # polite minimum delay between requests
+  jitter_ms: 500
+  headers:
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    accept_language: "sk-SK,sk;q=0.9,cs;q=0.8,en;q=0.7"
+
+user_agents:                # rotated per request
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0"
+  - "Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0"
+
+selectors:
+  container: "div.inzeraty.inzeratyflex"
+  title: "h2.nadpis a"
+  image: "img.obrazek"
+  price: "div.inzeratycena span[translate=no]"
+  location: "div.inzeratylok"
+  views: "div.inzeratyview"
+  description: "div.popis"
+  date: "span.velikost10"
+  pagination: "div.strankovani a"
+
+markers:
+  ad_path_regex: "/inzerat/(\\d+)/"
+  date_regex: "\\[(\\d{1,2})\\.\\s*(\\d{1,2})\\.\\s*(\\d{4})\\]"
+  year_regexes:              # ordered, first hit wins, applied to title + description
+    - "rok\\s*v[yý]roby\\s*[:\\.\\-]?\\s*(?:\\d{1,2}/\\s*)?(\\d{4})"
+    - "r\\.?\\s*v\\.?\\s*[:\\.\\-]?\\s*(?:\\d{1,2}/\\s*)?(\\d{4})"
+    - "rv\\s*[:\\.\\-]?\\s*(?:\\d{1,2}/\\s*)?(\\d{4})"
+    - "ročník\\s*[:\\.\\-]?\\s*(\\d{4})"
+  mileage_regexes:           # ordered, applied to title + description
+    - "(\\d[\\d\\s.]{2,11})\\s*(?:km|KM)"          # plain kilometres
+    - "(\\d[\\d\\s.]{1,8})\\s*(?:tis|tis\\.)\\s*km" # "128 tis km" -> value * 1000
+  ban_markers:               # content signatures of a block page
+    - "captcha"
+    - "overlimit"
+    - "zablokovan"
+    - "robot detection"
+    - "id=\"captchabox\""
