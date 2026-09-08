@@ -10,11 +10,12 @@ Site facts (verified 2026-09-08):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 from bs4 import BeautifulSoup
 
@@ -30,18 +31,67 @@ class BazosScraper(BaseScraper):
         super().__init__(config)
         self.page_size = config.base.page_size
         self.base_url = config.base.base_url
+        self.search_filters = config.base.search_filters
+        self._filters_hash = self._compute_filters_hash()
 
-    # ------------------------------------------------------------------ public
+    @property
+    def filters_hash(self) -> str:
+        """Short hash identifying the active search filter combination."""
+        return self._filters_hash
 
-    async def scrape_category(self, category_url: str, max_pages: int = 1) -> list[Listing]:
-        """Scrape ``max_pages`` paginated pages of the category.
+    def _compute_filters_hash(self) -> str:
+        """Compute a short hash from the active search filters."""
+        parts = []
+        if self.search_filters.query:
+            parts.append(f"q={self.search_filters.query}")
+        if self.search_filters.min_price is not None:
+            parts.append(f"min={self.search_filters.min_price}")
+        if self.search_filters.max_price is not None:
+            parts.append(f"max={self.search_filters.max_price}")
+        if self.search_filters.psc:
+            parts.append(f"psc={self.search_filters.psc}")
+        if self.search_filters.max_km is not None:
+            parts.append(f"km={self.search_filters.max_km}")
+        if not parts:
+            return "default"
+        raw = "|".join(parts)
+        return hashlib.md5(raw.encode()).hexdigest()[:8]
 
-        Page 1 is ``category_url`` itself; page N>1 is built as
-        ``category_url`` root + ``(N-1)*page_size + "/"``.
-        """
+    def _query_params(self) -> dict[str, str]:
+        """Return the search filter query parameters."""
+        params = {}
+        if self.search_filters.query:
+            params["hledat"] = self.search_filters.query
+        if self.search_filters.min_price is not None:
+            params["cenaod"] = str(self.search_filters.min_price)
+        if self.search_filters.max_price is not None:
+            params["cenado"] = str(self.search_filters.max_price)
+        if self.search_filters.psc:
+            params["psc"] = self.search_filters.psc
+        if self.search_filters.max_km is not None:
+            params["km_do"] = str(self.search_filters.max_km)
+        return params
+
+    def _page_url(self, page_index: int) -> str:
+        """Return the URL for a specific page index (0-based)."""
+        base = self.base_url
+        # Add pagination offset to path
+        if page_index > 0:
+            offset = page_index * self.page_size
+            if not base.endswith("/"):
+                base += "/"
+            base += f"{offset}/"
+        # Append query parameters
+        params = self._query_params()
+        if params:
+            base += "?" + urlencode(params)
+        return base
+
+    async def scrape_category(self, max_pages: int = 1) -> list[Listing]:
+        """Scrape ``max_pages`` paginated pages using configured search filters."""
         listings: list[Listing] = []
         for page_index in range(max_pages):
-            url = self._page_url(category_url, page_index)
+            url = self._page_url(page_index)
             html = await self.fetch_text(url)
             page_listings = self.parse_page(html)
             listings.extend(page_listings)
@@ -64,12 +114,6 @@ class BazosScraper(BaseScraper):
         soup = BeautifulSoup(html, "lxml")
         el = soup.select_one(self.config.selectors.detail_description)
         return el.get_text(" ", strip=True) if el else None
-
-    def _page_url(self, category_url: str, page_index: int) -> str:
-        if page_index == 0:
-            return category_url
-        base = category_url if category_url.endswith("/") else f"{category_url}/"
-        return f"{base}{page_index * self.page_size}/"
 
     # ---------------------------------------------------------------- parsing
 

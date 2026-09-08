@@ -53,11 +53,21 @@ def test_parse_swap_and_missing_postal_code(bazos_scraper: BazosScraper, bazos_p
 
 
 def test_page_url_building(bazos_scraper: BazosScraper, scraper_config) -> None:
-    base = scraper_config.base.base_url
-    assert bazos_scraper._page_url(base, 0) == base
-    assert bazos_scraper._page_url(base, 1) == "https://auto.bazos.sk/20/"
-    assert bazos_scraper._page_url(base, 2) == "https://auto.bazos.sk/40/"
-    assert bazos_scraper._page_url("https://auto.bazos.sk/skoda/", 1) == "https://auto.bazos.sk/skoda/20/"
+    # Without filters - default base URL
+    assert bazos_scraper._page_url(0) == scraper_config.base.base_url
+    assert bazos_scraper._page_url(1) == "https://auto.bazos.sk/20/"
+    assert bazos_scraper._page_url(2) == "https://auto.bazos.sk/40/"
+
+    # With filters - base URL includes query params
+    from bazcar.config.settings import SearchFiltersConfig
+    filters = SearchFiltersConfig(query="kia", min_price=1000, max_price=20000)
+    scraper_config.base.search_filters = filters
+    from bazcar.scrapers.bazos import BazosScraper
+    filtered_scraper = BazosScraper(scraper_config)
+    url0 = filtered_scraper._page_url(0)
+    assert url0.startswith("https://auto.bazos.sk/?hledat=kia&cenaod=1000&cenado=20000")
+    url1 = filtered_scraper._page_url(1)
+    assert url1.startswith("https://auto.bazos.sk/20/?hledat=kia&cenaod=1000&cenado=20000")
 
 
 def test_scraper_lifecycle_under_asyncio(bazos_scraper: BazosScraper) -> None:

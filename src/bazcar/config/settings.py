@@ -46,9 +46,18 @@ class MarkerConfig(BaseModel):
     ban_markers: list[str] = Field(default_factory=list)
 
 
+class SearchFiltersConfig(BaseModel):
+    query: str = ""
+    min_price: int | None = None
+    max_price: int | None = None
+    psc: str | None = None
+    max_km: int | None = None
+
+
 class BaseConfig(BaseModel):
     base_url: str
     page_size: int = 20
+    search_filters: SearchFiltersConfig = Field(default_factory=SearchFiltersConfig)
 
 
 class ScraperConfig(BaseModel):

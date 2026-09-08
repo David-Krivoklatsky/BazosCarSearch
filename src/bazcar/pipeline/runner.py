@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 async def run_scrape(
     *,
     platform: str = "bazos",
-    category_url: str,
     max_pages: int = 1,
     limit: int | None = None,
     detail: bool = True,
@@ -25,7 +24,7 @@ async def run_scrape(
     export_path: Path | None = None,
     config: ScraperConfig | None = None,
 ) -> ScrapeSummary:
-    """Scrape ``category_url`` for up to ``max_pages`` pages and export to JSON.
+    """Scrape using configured search filters for up to ``max_pages`` pages and export to JSON.
 
     Returns a ``ScrapeSummary`` describing the run.
     """
@@ -35,8 +34,8 @@ async def run_scrape(
     listings: list[Listing] = []
     pages: list[str] = []
     async with get_scraper(platform, cfg) as scraper:
-        found = await scraper.scrape_category(category_url, max_pages=max_pages)
-        pages = [scraper._page_url(category_url, i) for i in range(max_pages)]
+        found = await scraper.scrape_category(max_pages=max_pages)
+        pages = [scraper._page_url(i) for i in range(max_pages)]
         listings = found
         if detail:
             for i, listing in enumerate(listings):
@@ -47,7 +46,9 @@ async def run_scrape(
     if limit is not None:
         listings = listings[:limit]
 
-    target = export_path or (settings.export_dir / _default_filename())
+    # Include filters hash in filename to separate different filter combinations
+    filters_tag = getattr(scraper, "filters_hash", "default")
+    target = export_path or (settings.export_dir / _default_filename(filters_tag))
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_json(target, listings)
 
@@ -66,9 +67,9 @@ async def run_scrape(
     return summary
 
 
-def _default_filename() -> str:
+def _default_filename(filters_tag: str = "default") -> str:
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return f"bazos_{ts}.json"
+    return f"bazos_{filters_tag}_{ts}.json"
 
 
 def _write_json(path: Path, listings: list[Listing]) -> None:

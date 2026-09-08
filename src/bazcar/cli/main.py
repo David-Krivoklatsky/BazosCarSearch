@@ -19,19 +19,8 @@ app = typer.Typer(
 )
 
 
-def _default_category() -> str:
-    from bazcar.config.settings import load_scraper_config
-
-    return load_scraper_config().base.base_url
-
-
 @app.command()
 def scrape(
-    category_url: str | None = typer.Option(
-        None,
-        "--category-url",
-        help="Category page to scrape (default: auto.bazos.sk/).",
-    ),
     pages: int = typer.Option(1, "--pages", "-p", min=1, help="Number of category pages to fetch."),
     limit: int | None = typer.Option(
         None, "--limit", "-l", min=1, help="Keep only the first N listings (dedupe by ID)."
@@ -39,7 +28,7 @@ def scrape(
     detail: bool = typer.Option(True, "--detail/--no-detail", help="Fetch each listing detail page for the full description."),
     detail_limit: int = typer.Option(0, "--detail-limit", min=0, help="Limit detail fetches (0 = all)."),
     export: Path | None = typer.Option(
-        None, "--export", help="Explicit JSON export path (default: data/exports/<timestamp>.json)."
+        None, "--export", help="Explicit JSON export path (default: data/exports/<filters_hash>_<timestamp>.json)."
     ),
 ) -> None:
     """Run a Phase-1 scrape of a Bazoš category and export listings to JSON."""
@@ -47,7 +36,6 @@ def scrape(
 
     summary = asyncio.run(
         run_scrape(
-            category_url=category_url or _default_category(),
             max_pages=pages,
             limit=limit,
             detail=detail,
