@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from bazcar.core.exceptions import ConfigError
@@ -34,6 +34,7 @@ class SelectorConfig(BaseModel):
     views: str
     description: str
     detail_description: str
+    detail_images: str
     date: str
     pagination: str
 
@@ -81,6 +82,9 @@ class Settings(BaseSettings):
     scraper_config: Path = PROJECT_ROOT / "config" / "scraper.yaml"
     log_level: str = "INFO"
     export_dir: Path = PROJECT_ROOT / "data" / "exports"
+    database_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("BAZCAR_DATABASE_URL", "DATABASE_URL")
+    )
 
 
 @lru_cache(maxsize=1)

@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from bazcar.config.settings import ScraperConfig, get_settings, load_scraper_config
-from bazcar.core.models import Listing, ScrapeSummary
+from bazcar.core.exceptions import ConfigError
+from bazcar.core.models import DbSyncSummary, Listing, ScrapeSummary
 from bazcar.scrapers.factory import get_scraper
 
 logger = logging.getLogger(__name__)
@@ -22,11 +23,14 @@ async def run_scrape(
     detail: bool = True,
     detail_limit: int = 0,
     export_path: Path | None = None,
+    persist: bool | None = None,
     config: ScraperConfig | None = None,
 ) -> ScrapeSummary:
     """Scrape using configured search filters for up to ``max_pages`` pages and export to JSON.
 
-    Returns a ``ScrapeSummary`` describing the run.
+    When ``persist`` is enabled (default: auto when ``BAZCAR_DATABASE_URL`` is
+    configured) found listings are deduped-inserted into Postgres (Neon) and the
+    price history is appended. Returns a ``ScrapeSummary`` describing the run.
     """
     settings = get_settings()
     cfg = config or load_scraper_config()
@@ -52,12 +56,15 @@ async def run_scrape(
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_json(target, listings)
 
+    db_summary = await _persist(listings, enabled=persist)
+
     summary = ScrapeSummary(
         source=platform,
         pages_scraped=pages,
         total_found=len(listings),
         exported=len(listings),
         export_path=str(target),
+        db=db_summary,
     )
     logger.info(
         "scrape done: %d listings exported to %s",
@@ -65,6 +72,24 @@ async def run_scrape(
         summary.export_path,
     )
     return summary
+
+
+async def _persist(listings: list[Listing], *, enabled: bool | None) -> DbSyncSummary | None:
+    """Write listings to Postgres unless explicitly disabled or unconfigured."""
+    if enabled is False:
+        return None
+    settings = get_settings()
+    if not settings.database_url:
+        if enabled is True:
+            raise ConfigError("persistence requested but BAZCAR_DATABASE_URL is not set")
+        return None
+
+    from bazcar.db import ListingRepository
+
+    async with ListingRepository(settings.database_url) as repo:
+        await repo.init_schema()
+        stats = await repo.sync_many(listings)
+    return DbSyncSummary(**stats.as_dict())
 
 
 def _default_filename(filters_tag: str = "default") -> str:

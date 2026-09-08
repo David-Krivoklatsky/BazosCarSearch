@@ -38,6 +38,7 @@ selectors:
   views: "div.inzeratyview"
   description: "div.popis"
   detail_description: "div.popisdetail"
+  detail_images: "img.carousel-cell-image"
   date: "span.velikost10"
   pagination: "div.strankovani a"
 

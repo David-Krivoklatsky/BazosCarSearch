@@ -1,1 +1,1 @@
-"""Pipeline and CLI for Phase 1 (scrape + JSON export)."""
+"""Pipeline and CLI: scrape + JSON export (Phase 1) and Postgres sync (Phase 2)."""

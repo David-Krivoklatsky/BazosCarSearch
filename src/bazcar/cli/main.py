@@ -30,8 +30,13 @@ def scrape(
     export: Path | None = typer.Option(
         None, "--export", help="Explicit JSON export path (default: data/exports/<filters_hash>_<timestamp>.json)."
     ),
+    db: bool | None = typer.Option(
+        None,
+        "--db/--no-db",
+        help="Persist listings to Postgres/Neon (default: auto when BAZCAR_DATABASE_URL is set).",
+    ),
 ) -> None:
-    """Run a Phase-1 scrape of a Bazoš category and export listings to JSON."""
+    """Scrape a Bazoš category and export listings to JSON (+ optional Postgres sync)."""
     from bazcar.pipeline.runner import run_scrape
 
     summary = asyncio.run(
@@ -41,12 +46,19 @@ def scrape(
             detail=detail,
             detail_limit=detail_limit,
             export_path=export,
+            persist=db,
         )
     )
     typer.echo(
         f"[OK] scraped {summary.total_found} listings "
         f"(pages: {len(summary.pages_scraped)}), exported -> {summary.export_path}"
     )
+    if summary.db is not None:
+        db = summary.db
+        typer.echo(
+            f"[DB] {db.total} rows: {db.inserted} new, {db.price_changed} price changed "
+            f"({db.price_drops} drops), {db.unchanged} unchanged"
+        )
 
 
 @app.command()

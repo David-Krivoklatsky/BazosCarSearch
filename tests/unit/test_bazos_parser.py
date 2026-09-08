@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 from bazcar.scrapers.bazos import BazosScraper
 
@@ -53,10 +54,10 @@ def test_parse_swap_and_missing_postal_code(bazos_scraper: BazosScraper, bazos_p
 
 
 def test_page_url_building(bazos_scraper: BazosScraper, scraper_config) -> None:
-    # Without filters - default base URL
-    assert bazos_scraper._page_url(0) == scraper_config.base.base_url
-    assert bazos_scraper._page_url(1) == "https://auto.bazos.sk/20/"
-    assert bazos_scraper._page_url(2) == "https://auto.bazos.sk/40/"
+    # Default config carries search filters -> base URL includes query params
+    assert bazos_scraper._page_url(0) == "https://auto.bazos.sk/?cenaod=1000&cenado=3000"
+    assert bazos_scraper._page_url(1) == "https://auto.bazos.sk/20/?cenaod=1000&cenado=3000"
+    assert bazos_scraper._page_url(2) == "https://auto.bazos.sk/40/?cenaod=1000&cenado=3000"
 
     # With filters - base URL includes query params
     from bazcar.config.settings import SearchFiltersConfig
@@ -95,3 +96,52 @@ def test_parse_detail_returns_none_without_container() -> None:
     cfg = load_scraper_config()
     scraper = BazosScraper(cfg)
     assert scraper._parse_detail("<html><body>no detail here</body></html>") is None
+
+
+def test_parse_detail_extracts_all_gallery_images(bazos_scraper: BazosScraper) -> None:
+    detail_html = (
+        open("tests/fixtures/bazos_detail.html", encoding="utf-8").read()
+    )
+    images = bazos_scraper._parse_detail_images(detail_html)
+    assert images == [
+        "https://www.bazos.sk/img/1/798/195357798.jpg?t=1",
+        "https://www.bazos.sk/img/2/798/195357798.jpg?t=1",
+        "https://www.bazos.sk/img/3/798/195357798.jpg?t=1",
+    ]
+
+
+def test_merge_images_dedupes_and_preserves_order() -> None:
+    existing = ["https://www.bazos.sk/img/1t/531/195360531.jpg"]
+    extra = [
+        "https://www.bazos.sk/img/1/531/195360531.jpg?t=1",
+        "https://www.bazos.sk/img/2/531/195360531.jpg?t=1",
+        "https://www.bazos.sk/img/1t/531/195360531.jpg",  # duplicate cover
+    ]
+    assert BazosScraper._merge_images(existing, extra) == [
+        "https://www.bazos.sk/img/1t/531/195360531.jpg",
+        "https://www.bazos.sk/img/1/531/195360531.jpg?t=1",
+        "https://www.bazos.sk/img/2/531/195360531.jpg?t=1",
+    ]
+
+
+def test_scrape_detail_merges_gallery_into_card_images(bazos_scraper: BazosScraper) -> None:
+    from bazcar.core.models import Listing
+
+    listing = Listing(
+        ad_id=195357798,
+        url="https://auto.bazos.sk/inzerat/195357798/kia-sportage.php",
+        title="Kia Sportage",
+        price_eur=None,
+        image_urls=["https://www.bazos.sk/img/1t/798/195357798.jpg"],
+        description_preview="preview",
+    )
+    detail_html = open("tests/fixtures/bazos_detail.html", encoding="utf-8").read()
+    with patch.object(BazosScraper, "fetch_text", new_callable=AsyncMock, return_value=detail_html):
+        enriched = asyncio.run(bazos_scraper.scrape_detail(listing))
+    assert enriched.image_urls == [
+        "https://www.bazos.sk/img/1t/798/195357798.jpg",
+        "https://www.bazos.sk/img/1/798/195357798.jpg?t=1",
+        "https://www.bazos.sk/img/2/798/195357798.jpg?t=1",
+        "https://www.bazos.sk/img/3/798/195357798.jpg?t=1",
+    ]
+    assert enriched.description is not None

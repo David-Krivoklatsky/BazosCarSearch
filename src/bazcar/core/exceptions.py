@@ -25,3 +25,7 @@ class BanDetected(ScraperError):
 
 class ParseError(ScraperError):
     """HTML could not be parsed into listings."""
+
+
+class DbError(BazcarError):
+    """Database connection or query failure (Phase 2 persistence)."""

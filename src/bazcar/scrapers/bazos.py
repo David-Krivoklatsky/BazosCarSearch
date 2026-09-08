@@ -99,7 +99,7 @@ class BazosScraper(BaseScraper):
         return listings
 
     async def scrape_detail(self, listing: Listing) -> Listing:
-        """Fetch the listing detail page and enrich it with the full description."""
+        """Fetch the listing detail page and enrich description + gallery images."""
         try:
             html = await self.fetch_text(listing.url)
         except ScraperError as exc:
@@ -108,12 +108,38 @@ class BazosScraper(BaseScraper):
         full = self._parse_detail(html)
         if full:
             listing.description = full
+        images = self._parse_detail_images(html)
+        if images:
+            listing.image_urls = self._merge_images(listing.image_urls, images)
         return listing
 
     def _parse_detail(self, html: str) -> str | None:
         soup = BeautifulSoup(html, "lxml")
         el = soup.select_one(self.config.selectors.detail_description)
         return el.get_text(" ", strip=True) if el else None
+
+    def _parse_detail_images(self, html: str) -> list[str]:
+        """Extract all gallery image URLs from the detail page.
+
+        Gallery cells use ``<img class="carousel-cell-image">``; the URL lives in
+        ``data-flickity-lazyload`` (only the first cell also has ``src``).
+        """
+        soup = BeautifulSoup(html, "lxml")
+        urls: list[str] = []
+        for img in soup.select(self.config.selectors.detail_images):
+            url = img.get("data-flickity-lazyload") or img.get("src")
+            if url:
+                urls.append(url)
+        return urls
+
+    @staticmethod
+    def _merge_images(existing: list[str], extra: list[str]) -> list[str]:
+        """Merge gallery URLs into existing ones, preserving order, no duplicates."""
+        merged = list(existing)
+        for url in extra:
+            if url not in merged:
+                merged.append(url)
+        return merged
 
     # ---------------------------------------------------------------- parsing
 

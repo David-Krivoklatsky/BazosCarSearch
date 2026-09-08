@@ -34,6 +34,18 @@ class Listing(BaseModel):
     source: str = "bazos"
 
 
+class DbSyncSummary(BaseModel):
+    """Database persistence result of one scrape run (Phase 2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = 0
+    inserted: int = 0
+    price_changed: int = 0
+    price_drops: int = 0
+    unchanged: int = 0
+
+
 class ScrapeSummary(BaseModel):
     """Result of one scrape run."""
 
@@ -44,3 +56,4 @@ class ScrapeSummary(BaseModel):
     total_found: int = 0
     exported: int = 0
     export_path: str | None = None
+    db: DbSyncSummary | None = None
