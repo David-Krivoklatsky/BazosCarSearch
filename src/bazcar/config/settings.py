@@ -33,6 +33,7 @@ class SelectorConfig(BaseModel):
     location: str
     views: str
     description: str
+    detail_description: str
     date: str
     pagination: str
 

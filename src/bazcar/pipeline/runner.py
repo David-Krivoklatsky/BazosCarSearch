@@ -20,6 +20,8 @@ async def run_scrape(
     category_url: str,
     max_pages: int = 1,
     limit: int | None = None,
+    detail: bool = True,
+    detail_limit: int = 0,
     export_path: Path | None = None,
     config: ScraperConfig | None = None,
 ) -> ScrapeSummary:
@@ -36,6 +38,11 @@ async def run_scrape(
         found = await scraper.scrape_category(category_url, max_pages=max_pages)
         pages = [scraper._page_url(category_url, i) for i in range(max_pages)]
         listings = found
+        if detail:
+            for i, listing in enumerate(listings):
+                if detail_limit and i >= detail_limit:
+                    break
+                await scraper.scrape_detail(listing)
 
     if limit is not None:
         listings = listings[:limit]

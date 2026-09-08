@@ -27,6 +27,7 @@ class Listing(BaseModel):
     published_date: date | None = None
     views: int | None = None
     description_preview: str
+    description: str | None = None
     image_urls: list[str] = Field(default_factory=list)
     year: int | None = None
     mileage_km: int | None = None

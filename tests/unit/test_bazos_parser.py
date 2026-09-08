@@ -65,3 +65,23 @@ def test_scraper_lifecycle_under_asyncio(bazos_scraper: BazosScraper) -> None:
         await bazos_scraper.close()
 
     asyncio.run(close())
+
+
+def test_parse_detail_extracts_full_description(bazos_scraper: BazosScraper) -> None:
+    detail_html = (
+        open("tests/fixtures/bazos_detail.html", encoding="utf-8").read()
+    )
+    full = bazos_scraper._parse_detail(detail_html)
+    assert full is not None
+    assert "Predám SUV Kia Sportage" in full
+    assert "Rok výroby: 11/2022" in full
+    assert "33 650 km" in full
+
+
+def test_parse_detail_returns_none_without_container() -> None:
+    from bazcar.config.settings import load_scraper_config
+    from bazcar.scrapers.bazos import BazosScraper
+
+    cfg = load_scraper_config()
+    scraper = BazosScraper(cfg)
+    assert scraper._parse_detail("<html><body>no detail here</body></html>") is None

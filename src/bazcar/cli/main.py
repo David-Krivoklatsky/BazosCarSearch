@@ -36,6 +36,8 @@ def scrape(
     limit: int | None = typer.Option(
         None, "--limit", "-l", min=1, help="Keep only the first N listings (dedupe by ID)."
     ),
+    detail: bool = typer.Option(True, "--detail/--no-detail", help="Fetch each listing detail page for the full description."),
+    detail_limit: int = typer.Option(0, "--detail-limit", min=0, help="Limit detail fetches (0 = all)."),
     export: Path | None = typer.Option(
         None, "--export", help="Explicit JSON export path (default: data/exports/<timestamp>.json)."
     ),
@@ -48,6 +50,8 @@ def scrape(
             category_url=category_url or _default_category(),
             max_pages=pages,
             limit=limit,
+            detail=detail,
+            detail_limit=detail_limit,
             export_path=export,
         )
     )

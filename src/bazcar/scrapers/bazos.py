@@ -18,7 +18,7 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from bazcar.core.exceptions import ParseError
+from bazcar.core.exceptions import ParseError, ScraperError
 from bazcar.core.models import Listing
 from bazcar.scrapers.base import BaseScraper
 
@@ -47,6 +47,23 @@ class BazosScraper(BaseScraper):
             listings.extend(page_listings)
             logger.info("page %d: %d listings (running total %d)", page_index + 1, len(page_listings), len(listings))
         return listings
+
+    async def scrape_detail(self, listing: Listing) -> Listing:
+        """Fetch the listing detail page and enrich it with the full description."""
+        try:
+            html = await self.fetch_text(listing.url)
+        except ScraperError as exc:
+            logger.warning("detail fetch failed for ad %s: %s", listing.ad_id, exc)
+            return listing
+        full = self._parse_detail(html)
+        if full:
+            listing.description = full
+        return listing
+
+    def _parse_detail(self, html: str) -> str | None:
+        soup = BeautifulSoup(html, "lxml")
+        el = soup.select_one(self.config.selectors.detail_description)
+        return el.get_text(" ", strip=True) if el else None
 
     def _page_url(self, category_url: str, page_index: int) -> str:
         if page_index == 0:

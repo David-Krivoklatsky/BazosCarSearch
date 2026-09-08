@@ -31,6 +31,7 @@ selectors:
   location: "div.inzeratylok"
   views: "div.inzeratyview"
   description: "div.popis"
+  detail_description: "div.popisdetail"
   date: "span.velikost10"
   pagination: "div.strankovani a"
 
