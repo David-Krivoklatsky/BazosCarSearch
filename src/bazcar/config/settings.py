@@ -69,6 +69,13 @@ class ScraperConfig(BaseModel):
     markers: MarkerConfig
 
 
+class LLMConfig(BaseModel):
+    base_url: str = "https://openrouter.ai/api/v1"
+    model: str = "openai/gpt-4o-mini"
+    temperature: float = 0.2
+    max_tokens: int = 400
+
+
 class Settings(BaseSettings):
     """Runtime settings; values come from environment / .env file."""
 
@@ -80,11 +87,17 @@ class Settings(BaseSettings):
     )
 
     scraper_config: Path = PROJECT_ROOT / "config" / "scraper.yaml"
+    llm_config: Path = PROJECT_ROOT / "config" / "llm.yaml"
     log_level: str = "INFO"
     export_dir: Path = PROJECT_ROOT / "data" / "exports"
     database_url: str | None = Field(
         default=None, validation_alias=AliasChoices("BAZCAR_DATABASE_URL", "DATABASE_URL")
     )
+    openrouter_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPENROUTER_KEY", "BAZCAR_OPENROUTER_API_KEY"),
+    )
+    openrouter_model: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -104,6 +117,18 @@ def load_scraper_config(path: Path | None = None) -> ScraperConfig:
         raise ConfigError(f"Invalid YAML in {cfg_path}: {exc}") from exc
     except ValidationError as exc:
         raise ConfigError(f"Invalid scraper config schema in {cfg_path}: {exc}") from exc
+
+
+@lru_cache(maxsize=1)
+def load_llm_config(path: Path | None = None) -> LLMConfig:
+    cfg_path = path or get_settings().llm_config
+    try:
+        raw = _load_yaml(cfg_path)
+    except FileNotFoundError as exc:
+        raise ConfigError(f"LLM config not found: {cfg_path}") from exc
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Invalid YAML in {cfg_path}: {exc}") from exc
+    return LLMConfig.model_validate(raw)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

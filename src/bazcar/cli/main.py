@@ -35,8 +35,13 @@ def scrape(
         "--db/--no-db",
         help="Persist listings to Postgres/Neon (default: auto when BAZCAR_DATABASE_URL is set).",
     ),
+    eval: bool | None = typer.Option(
+        None,
+        "--eval/--no-eval",
+        help="LLM-evaluate deals via OpenRouter (default: auto when OPENROUTER_API_KEY is set).",
+    ),
 ) -> None:
-    """Scrape a Bazoš category and export listings to JSON (+ optional Postgres sync)."""
+    """Scrape a Bazoš category and export listings to JSON (+ optional Postgres sync / LLM eval)."""
     from bazcar.pipeline.runner import run_scrape
 
     summary = asyncio.run(
@@ -47,12 +52,15 @@ def scrape(
             detail_limit=detail_limit,
             export_path=export,
             persist=db,
+            evaluate=eval,
         )
     )
     typer.echo(
         f"[OK] scraped {summary.total_found} listings "
         f"(pages: {len(summary.pages_scraped)}), exported -> {summary.export_path}"
     )
+    if summary.evaluated:
+        typer.echo(f"[LLM] evaluated {summary.evaluated} listings")
     if summary.db is not None:
         db = summary.db
         typer.echo(

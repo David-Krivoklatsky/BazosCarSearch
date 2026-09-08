@@ -32,6 +32,17 @@ class Listing(BaseModel):
     year: int | None = None
     mileage_km: int | None = None
     source: str = "bazos"
+    evaluation: DealEvaluation | None = None
+
+
+class DealEvaluation(BaseModel):
+    """LLM deal-score for one listing (Phase 3): AI ohodnotí inzerát + ``why``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    score: int = Field(ge=0, le=100)
+    why: str = ""
+    model: str | None = None
 
 
 class DbSyncSummary(BaseModel):
@@ -56,4 +67,5 @@ class ScrapeSummary(BaseModel):
     total_found: int = 0
     exported: int = 0
     export_path: str | None = None
+    evaluated: int = 0
     db: DbSyncSummary | None = None

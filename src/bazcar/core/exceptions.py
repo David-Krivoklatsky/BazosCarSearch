@@ -29,3 +29,7 @@ class ParseError(ScraperError):
 
 class DbError(BazcarError):
     """Database connection or query failure (Phase 2 persistence)."""
+
+
+class LlmError(BazcarError):
+    """LLM/OpenRouter call failure (Phase 3 evaluation)."""

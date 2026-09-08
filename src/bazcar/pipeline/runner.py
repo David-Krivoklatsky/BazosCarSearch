@@ -7,7 +7,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bazcar.config.settings import ScraperConfig, get_settings, load_scraper_config
+from bazcar.config.settings import ScraperConfig, get_settings, load_llm_config, load_scraper_config
 from bazcar.core.exceptions import ConfigError
 from bazcar.core.models import DbSyncSummary, Listing, ScrapeSummary
 from bazcar.scrapers.factory import get_scraper
@@ -24,13 +24,16 @@ async def run_scrape(
     detail_limit: int = 0,
     export_path: Path | None = None,
     persist: bool | None = None,
+    evaluate: bool | None = None,
     config: ScraperConfig | None = None,
 ) -> ScrapeSummary:
     """Scrape using configured search filters for up to ``max_pages`` pages and export to JSON.
 
     When ``persist`` is enabled (default: auto when ``BAZCAR_DATABASE_URL`` is
     configured) found listings are deduped-inserted into Postgres (Neon) and the
-    price history is appended. Returns a ``ScrapeSummary`` describing the run.
+    price history is appended. When ``evaluate`` is enabled (default: auto when
+    ``OPENROUTER_API_KEY`` is set) each listing is scored by an LLM. Returns a
+    ``ScrapeSummary`` describing the run.
     """
     settings = get_settings()
     cfg = config or load_scraper_config()
@@ -50,6 +53,10 @@ async def run_scrape(
     if limit is not None:
         listings = listings[:limit]
 
+    evaluated = 0
+    if evaluate is not False:
+        evaluated = await _evaluate(listings, enabled=evaluate)
+
     # Include filters hash in filename to separate different filter combinations
     filters_tag = getattr(scraper, "filters_hash", "default")
     target = export_path or (settings.export_dir / _default_filename(filters_tag))
@@ -64,6 +71,7 @@ async def run_scrape(
         total_found=len(listings),
         exported=len(listings),
         export_path=str(target),
+        evaluated=evaluated,
         db=db_summary,
     )
     logger.info(
@@ -72,6 +80,35 @@ async def run_scrape(
         summary.export_path,
     )
     return summary
+
+
+async def _evaluate(listings: list[Listing], *, enabled: bool | None) -> int:
+    """Score listings with an LLM unless explicitly disabled or unconfigured.
+
+    Returns how many listings received an evaluation. A single failed LLM call
+    is logged and skipped (never fatal to the pipeline).
+    """
+    if not listings:
+        return 0
+    settings = get_settings()
+    if not settings.openrouter_api_key:
+        if enabled is True:
+            raise ConfigError("evaluation requested but OPENROUTER_API_KEY is not set")
+        return 0
+
+    from bazcar.llm import LLMProvider
+
+    cfg = load_llm_config()
+    async with LLMProvider(
+        settings.openrouter_api_key,
+        base_url=cfg.base_url,
+        model=settings.openrouter_model or cfg.model,
+        temperature=cfg.temperature,
+        max_tokens=cfg.max_tokens,
+    ) as llm:
+        for listing in listings:
+            listing.evaluation = await llm.evaluate(listing)
+    return sum(1 for listing in listings if listing.evaluation is not None)
 
 
 async def _persist(listings: list[Listing], *, enabled: bool | None) -> DbSyncSummary | None:
