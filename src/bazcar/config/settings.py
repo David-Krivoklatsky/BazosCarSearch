@@ -71,9 +71,14 @@ class ScraperConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     base_url: str = "https://openrouter.ai/api/v1"
-    model: str = "openai/gpt-4o-mini"
-    temperature: float = 0.2
-    max_tokens: int = 400
+    model: str = "openrouter/free"
+    temperature: float = 0.0
+    max_tokens: int = 300
+    top_p: float | None = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
+    response_format: str | None = None
+    stream: bool = False
 
 
 class Settings(BaseSettings):

@@ -53,6 +53,23 @@ def test_parse_evaluation_rejects_plain_text() -> None:
     assert parse_evaluation("Toto nie je JSON.") is None
 
 
+def test_parse_evaluation_handles_none_content() -> None:
+    assert parse_evaluation(None) is None
+
+
+def test_parse_evaluation_finds_json_inside_reasoning_prose() -> None:
+    content = (
+        "Here's a thinking process:\n"
+        "1. **Analyze the car**: it's cheap for its year.\n"
+        "2. Final answer:\n"
+        '{"score": 73, "why": "Primeraná cena za rok a km."}\n'
+        "That completes the evaluation."
+    )
+    eval_ = parse_evaluation(content)
+    assert eval_ is not None
+    assert eval_.score == 73
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_provider_evaluates_listing() -> None:
@@ -71,7 +88,15 @@ async def test_provider_evaluates_listing() -> None:
             },
         )
     )
-    async with LLMProvider("test-key", model="test/model") as llm:
+    async with LLMProvider(
+        "test-key",
+        model="test/model",
+        temperature=0.5,
+        top_p=0.9,
+        frequency_penalty=0.0,
+        presence_penalty=0.1,
+        response_format="json_object",
+    ) as llm:
         eval_ = await llm.evaluate(_listing())
     assert eval_ is not None
     assert eval_.score == 91
@@ -81,6 +106,12 @@ async def test_provider_evaluates_listing() -> None:
     body = json.loads(request.content)
     assert body["model"] == "test/model"
     assert body["response_format"] == {"type": "json_object"}
+    assert body["temperature"] == 0.5
+    assert body["top_p"] == 0.9
+    assert body["frequency_penalty"] == 0.0
+    assert body["presence_penalty"] == 0.1
+    assert body["stream"] is False
+    assert "seed" not in body
 
 
 @respx.mock

@@ -105,6 +105,11 @@ async def _evaluate(listings: list[Listing], *, enabled: bool | None) -> int:
         model=settings.openrouter_model or cfg.model,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
+        top_p=cfg.top_p,
+        frequency_penalty=cfg.frequency_penalty,
+        presence_penalty=cfg.presence_penalty,
+        response_format=cfg.response_format,
+        stream=cfg.stream,
     ) as llm:
         for listing in listings:
             listing.evaluation = await llm.evaluate(listing)

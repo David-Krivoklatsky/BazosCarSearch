@@ -18,7 +18,8 @@ SYSTEM_PROMPT = (
     "Si analytik ojazdených áut pre slovenský trh (Bazoš.sk). Na základe ceny, "
     "roku výroby, najazdených km, názvu a popisu ohodnoť, aká dobrá kúpa je "
     "daný inzerát na stupnici 0–100 (100 = vynikajúci obchod). "
-    "Odpovedaj IBA JSON: {\"score\": <int 0-100>, \"why\": \"<1-2 viet po slovensky: dôvod>\"}."
+    "Odpovedaj LEN jedným JSON objektom (žiadny text pred ani za ním): "
+    "{\"score\": <int 0-100>, \"why\": \"<1-2 viet po slovensky: dôvod>\"}."
 )
 
 
@@ -35,20 +36,42 @@ def _listing_text(listing: Listing) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def parse_evaluation(content: str) -> DealEvaluation | None:
-    """Parse the model's JSON reply into a DealEvaluation (None on failure)."""
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if not match:
-        logger.warning("LLM reply contained no JSON object: %r", content[:200])
+def parse_evaluation(content: str | None) -> DealEvaluation | None:
+    """Parse the model's reply into a DealEvaluation (None on failure).
+
+    Robust against free-tier models that wrap the JSON in prose or reasoning:
+    scans for flat JSON objects and accepts the first valid one with a 0..100
+    ``score``. ``None``/empty replies (safety refusals) also yield None.
+    """
+    if not content or not isinstance(content, str):
+        logger.warning("LLM reply was empty (refusal): %r", content)
         return None
-    try:
-        payload: dict[str, Any] = json.loads(match.group(0))
-        eval_text = str(payload.get("why", "")).strip()
-        score = int(payload["score"])
-        return DealEvaluation(score=score, why=eval_text)
-    except (KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        logger.warning("LLM reply not a valid evaluation JSON: %s (%r)", exc, content[:200])
-        return None
+
+    def try_object(candidate: str) -> DealEvaluation | None:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+        try:
+            score = int(payload["score"])
+            if not 0 <= score <= 100:
+                return None
+            why = str(payload.get("why", "")).strip()
+            return DealEvaluation(score=score, why=why)
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    for candidate in re.finditer(r"\{[^{}]*\}", content):
+        evaluation = try_object(candidate.group(0))
+        if evaluation is not None:
+            return evaluation
+    # Fallback: greedy brace-pair in case the JSON is nested.
+    for match in re.finditer(r"\{.*\}", content, re.DOTALL):
+        evaluation = try_object(match.group(0))
+        if evaluation is not None:
+            return evaluation
+    logger.warning("LLM reply contained no parseable evaluation JSON: %r", content[:200])
+    return None
 
 
 class LLMProvider:
@@ -59,9 +82,14 @@ class LLMProvider:
         api_key: str,
         *,
         base_url: str = "https://openrouter.ai/api/v1",
-        model: str = "openai/gpt-4o-mini",
-        temperature: float = 0.2,
-        max_tokens: int = 400,
+        model: str = "openrouter/free",
+        temperature: float = 0.0,
+        max_tokens: int = 300,
+        top_p: float | None = None,
+        frequency_penalty: float | None = None,
+        presence_penalty: float | None = None,
+        response_format: str | None = None,
+        stream: bool = False,
     ) -> None:
         if not api_key:
             raise LlmError("OPENROUTER_API_KEY is empty")
@@ -69,6 +97,11 @@ class LLMProvider:
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.top_p = top_p
+        self.frequency_penalty = frequency_penalty
+        self.presence_penalty = presence_penalty
+        self.response_format = response_format
+        self.stream = stream
         self._client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             timeout=httpx.Timeout(60.0, connect=10.0),
@@ -85,24 +118,43 @@ class LLMProvider:
         await self.close()
 
     async def evaluate(self, listing: Listing) -> DealEvaluation | None:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": _listing_text(listing)},
             ],
+            "stream": self.stream,
+        }
+        optional = {
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
-            "response_format": {"type": "json_object"},
+            "top_p": self.top_p,
+            "frequency_penalty": self.frequency_penalty,
+            "presence_penalty": self.presence_penalty,
+            "response_format": {"type": self.response_format} if self.response_format else None,
         }
+        payload.update({key: value for key, value in optional.items() if value is not None})
+        content = await self._completion(payload, listing)
+        if content is None:
+            return None
+        evaluation = parse_evaluation(content)
+        if evaluation is None:
+            # Free-tier models are flaky — one retry with slightly higher temperature.
+            payload["temperature"] = min(float(self.temperature or 0.0) + 0.6, 1.0)
+            content = await self._completion(payload, listing)
+            if content is None:
+                return None
+            evaluation = parse_evaluation(content)
+        if evaluation is not None:
+            evaluation.model = self.model
+        return evaluation
+
+    async def _completion(self, payload: dict[str, Any], listing: Listing) -> str | None:
         try:
             resp = await self._client.post(f"{self.base_url}/chat/completions", json=payload)
             resp.raise_for_status()
             data = resp.json()
-            content = data["choices"][0]["message"]["content"]
+            return data["choices"][0]["message"].get("content")
         except Exception as exc:
             raise LlmError(f"OpenRouter request failed for ad {listing.ad_id}: {exc}") from exc
-        evaluation = parse_evaluation(content)
-        if evaluation is not None:
-            evaluation.model = self.model
-        return evaluation
