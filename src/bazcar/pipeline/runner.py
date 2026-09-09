@@ -69,7 +69,12 @@ async def run_scrape(
 
     notified = 0
     if notify is not False:
-        notified = await _notify(listings, inserted_ids=inserted_ids, enabled=notify)
+        notified = await _notify(
+            listings,
+            inserted_ids=inserted_ids,
+            persist_enabled=db_summary is not None,
+            enabled=notify,
+        )
 
     summary = ScrapeSummary(
         source=platform,
@@ -148,13 +153,13 @@ async def _persist(
 
 
 async def _notify(
-    listings: list[Listing], *, inserted_ids: list[int], enabled: bool | None
+    listings: list[Listing], *, inserted_ids: list[int], persist_enabled: bool, enabled: bool | None
 ) -> int:
     """Send Telegram alerts for the newly inserted listings.
 
-    Only deals that are genuinely new are notified. When ``inserted_ids`` is
-    empty it can mean either "no new ads" or "persistence disabled" — without a
-    database we cannot tell, so we notify everything (a manual / first run).
+    Only deals that are genuinely new are notified when persistence ran. When
+    persistence did not run (``persist_enabled`` is False) we cannot know what
+    is new, so we notify everything — that matches a manual `--no-db` run.
 
     If ``telegram_min_score`` is set, only evaluated deals scoring at least
     that value are notified. Returns the number of messages sent.
@@ -172,6 +177,7 @@ async def _notify(
     targets = _notify_targets(
         listings,
         inserted_ids=inserted_ids,
+        persist_enabled=persist_enabled,
         min_score=settings.telegram_min_score,
     )
     if not targets:
@@ -181,11 +187,11 @@ async def _notify(
 
 
 def _notify_targets(
-    listings: list[Listing], *, inserted_ids: list[int], min_score: int | None
+    listings: list[Listing], *, inserted_ids: list[int], persist_enabled: bool, min_score: int | None
 ) -> list[Listing]:
     """Pure selection of which listings deserve a notification."""
-    by_id = {listing.ad_id: listing for listing in listings}
-    if inserted_ids:
+    if persist_enabled:
+        by_id = {listing.ad_id: listing for listing in listings}
         selected = [by_id[ad_id] for ad_id in inserted_ids if ad_id in by_id]
     else:
         selected = list(listings)

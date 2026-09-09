@@ -121,13 +121,19 @@ async def test_send_listings_counts_successes() -> None:
 
 def test_notify_targets_new_ids_only() -> None:
     listings = [_listing(ad_id=1), _listing(ad_id=2)]
-    targets = _notify_targets(listings, inserted_ids=[1], min_score=None)
+    targets = _notify_targets(listings, inserted_ids=[1], persist_enabled=True, min_score=None)
     assert [t.ad_id for t in targets] == [1]
 
 
 def test_notify_targets_all_when_no_ids() -> None:
     listings = [_listing(ad_id=1), _listing(ad_id=2)]
-    targets = _notify_targets(listings, inserted_ids=[], min_score=None)
+    targets = _notify_targets(listings, inserted_ids=[], persist_enabled=True, min_score=None)
+    assert targets == []
+
+
+def test_notify_targets_all_when_persistence_disabled() -> None:
+    listings = [_listing(ad_id=1), _listing(ad_id=2)]
+    targets = _notify_targets(listings, inserted_ids=[], persist_enabled=False, min_score=None)
     assert [t.ad_id for t in targets] == [1, 2]
 
 
@@ -135,12 +141,12 @@ def test_notify_targets_filters_by_min_score() -> None:
     listings = [_listing(ad_id=1), _listing(ad_id=2), _listing(ad_id=3)]
     listings[0].evaluation = DealEvaluation(score=60, why="x")
     listings[1].evaluation = DealEvaluation(score=80, why="y")
-    targets = _notify_targets(listings, inserted_ids=[], min_score=70)
+    targets = _notify_targets(listings, inserted_ids=[], persist_enabled=False, min_score=70)
     assert [t.ad_id for t in targets] == [2]
 
 
 def test_notify_targets_unrated_and_low_score_excluded() -> None:
     listings = [_listing(ad_id=1), _listing(ad_id=2)]
     listings[1].evaluation = DealEvaluation(score=50, why="x")
-    targets = _notify_targets(listings, inserted_ids=[], min_score=70)
+    targets = _notify_targets(listings, inserted_ids=[], persist_enabled=False, min_score=70)
     assert targets == []
