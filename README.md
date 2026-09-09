@@ -11,7 +11,7 @@ Autonómny vyhľadávač výhodných ojazdených áut na [Bazoš.sk](https://aut
 | 2 | Perzistencia (Neon Postgres) + dedupe | 2. spustenie bez duplicit; sledovanie zmien ceny | hotové |
 | 3 | Vyhodnotenie obchodov cez OpenRouter (LLMProvider) | AI ohodnotí inzeráty + `why` | hotové (live overenie s kľúčom) |
 | 4 | Telegram notifikácie, prepínanie modelu cez bot | Príchod notifikácie k novému inzerátu; zmena kritérií/modelu cez bot | hotové (live overené) |
-| 5 | Samostatné spustenie na GitHub Actions (cron ~15 min) | Automatický beh na GHA + logy | — |
+| 5 | Samostatné spustenie na GitHub Actions (cron ~15 min) | Automatický beh na GHA + logy | hotové (`scrape.yml`, secrets) |
 | 6 | Autonómny kontakt predajcov (čakanie, zľava, kúpa) | Bot úspešne ponúkne kúpu predajcovi | — |
 
 ## Technický stack
@@ -66,3 +66,8 @@ Otestuj číslo jedným behom: `uv run bazcar bot --once`.
 - `config/scraper.yaml` — URL, CSS selektory, rate-limity, UA pool, regexe.
 - `config/llm.yaml` — model, teplota, max tokenov pre LLM eval (Fáza 3); model nastavíš aj cez `BAZCAR_OPENROUTER_MODEL`.
 - `.env` (z `.env.example`) — runtime premenné (vrát. `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`), žiadne tajomstvá v repo (je public).
+
+## Automatizácia (Fáza 5)
+`.github/workflows/scrape.yml` beží každých ~15 min: scrape → dedupe → LLM eval → Telegram.
+Vyžaduje repo secrets: `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`. Manuálne spustenie: `gh workflow run scrape`.
