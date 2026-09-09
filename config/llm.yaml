@@ -18,14 +18,14 @@ base_url: "https://openrouter.ai/api/v1"
 # Model used for evaluations. See "Supported Models" on openrouter.ai.
 # Nemotron-3 is a reasoning model — the JSON answer arrives after its
 # chain-of-thought, so max_tokens stays generous below.
-model: "nvidia/nemotron-3-super-120b-a12b:free"
+model: nvidia/nemotron-3-super-120b-a12b:free
 
 # --- LLM parameters (sampling config) ---
-temperature: 0.0        # 0..2 — 0 = deterministické skórovanie
-max_tokens: 2048        # reasoning model potrebuje rezervu na chain-of-thought + JSON
-top_p: 0.95             # 0..1, jadrové vzorkovanie
-frequency_penalty: 0.0  # -2..2
-presence_penalty: 0.0   # -2..2
+temperature: 0.0 # 0..2 — 0 = deterministické skórovanie
+max_tokens: 2048 # reasoning model potrebuje rezervu na chain-of-thought + JSON
+top_p: 0.95 # 0..1, jadrové vzorkovanie
+frequency_penalty: 0.0 # -2..2
+presence_penalty: 0.0 # -2..2
 
 # --- Output behaviour ---
 # Ask for well-formed JSON only, so the evaluation always parses.
