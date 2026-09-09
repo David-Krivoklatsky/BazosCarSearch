@@ -14,9 +14,25 @@ def _em(text: str) -> str:
     )
 
 
+def _em_url(url: str) -> str:
+    """Escape a URL for use inside an HTML attribute (href)."""
+    return url.replace("&", "&amp;").replace('"', "&quot;")
+
+
+def clean_title(title: str) -> str:
+    """Strip slashes from a listing title (Telegram treats a leading '/' as a
+    command; slashes also read poorly in messages)."""
+    return title.replace("/", "").strip()
+
+
+def _link(url: str, label: str = "🔗 Otvoriť inzerát") -> str:
+    """Render the listing URL as a tidy hyperlink instead of a bare URL."""
+    return f"<a href=\"{_em_url(url)}\">{label}</a>"
+
+
 def format_listing(listing: Listing) -> str:
     """Render one listing as a compact HTML message for Telegram."""
-    lines = [f"<b>{_em(listing.title)}</b>"]
+    lines = [f"<b>{_em(clean_title(listing.title))}</b>"]
 
     price = listing.price_eur
     price_text = (
@@ -38,9 +54,11 @@ def format_listing(listing: Listing) -> str:
 
     if listing.evaluation is not None:
         lines.append(f"⭐ {listing.evaluation.score}/100 — {_em(listing.evaluation.why)}")
+        if listing.evaluation.risk:
+            lines.append(f"⚠️ <i>Riziko:</i> {_em(listing.evaluation.risk)}")
 
     lines.append(f"🆔 {listing.ad_id}")
-    lines.append(listing.url)
+    lines.append(_link(listing.url))
     text = "\n".join(lines)
     return text[:_MAX_TEXT_LEN]
 

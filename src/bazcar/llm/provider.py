@@ -18,11 +18,13 @@ SYSTEM_PROMPT = (
     "Si analytik ojazdených áut pre slovenský trh (Bazoš.sk). Na základe ceny, "
     "roku výroby, najazdených km, názvu a popisu ohodnoť, aká dobrá kúpa je "
     "daný inzerát 0–100 (100 = vynikajúci obchod), podľa kritérií používateľa "
-    "(ak nie sú, hodnotiť všeobecne). Odpovedaj LEN jedným JSON objektom "
-    "(žiadny text pred ani za ním): "
-    '{"score": <int 0-100>, "why": "<1-2 viet po slovensky: dôvod>", '
-    '"is_car": <true ak inzerát predáva celé osobné auto/automobil, inak false — '
-    'napr. svetlá, disky, pneu, diely, sedačky>}.'
+    "(ak nie sú, hodnotiť všeobecne). V poli risk uveď NAJVÄČŠÍ možný problém "
+    "alebo prečo by kúpa mohla byť riziková (1 veta, po slovensky; ak žiadne "
+    "riziko, krátke 'najazdené' alebo 'neznáme' ). Odpovedaj LEN jedným JSON "
+    "objestom (žiadny text pred ani za ním): "
+    "{\"score\": <int 0-100>, \"why\": \"<1-2 viet po slovensky: dôvod>\", "
+    "\"risk\": \"<najväčší možný problém po slovensky>\", "
+    "\"is_car\": <true ak inzerát predáva celé auto, inak false — svetlá/diskía/pn/a sedaky>}."
 )
 
 
@@ -66,8 +68,9 @@ def parse_evaluation(content: str | None) -> DealEvaluation | None:
             if not 0 <= score <= 100:
                 return None
             why = str(payload.get("why", "")).strip()
+            risk = str(payload.get("risk", "")).strip()
             is_car = bool(payload.get("is_car", True))
-            return DealEvaluation(score=score, why=why, is_car=is_car)
+            return DealEvaluation(score=score, why=why, risk=risk, is_car=is_car)
         except (KeyError, ValueError, TypeError):
             return None
 

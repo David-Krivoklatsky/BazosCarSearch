@@ -38,7 +38,7 @@ def _listing_with_score(score: int, ad_id: int = 195357798) -> Listing:
 
 def test_format_listing_includes_key_fields() -> None:
     listing = _listing()
-    listing.evaluation = DealEvaluation(score=88, why="Veľmi dobrá cena.")
+    listing.evaluation = DealEvaluation(score=88, why="Veľmi dobrá cena.", risk="turbo býva rizikové")
     text = format_listing(listing)
     assert "Kia Sportage" in text
     assert "22 500" in text
@@ -46,7 +46,18 @@ def test_format_listing_includes_key_fields() -> None:
     assert "33 650 km" in text
     assert "Nitra" in text
     assert "88/100" in text
-    assert "https://auto.bazos.sk/inzerat/195357798/" in text
+    assert "Riziko" in text
+    assert "turbo" in text
+    # the bare URL is hidden — it only appears inside the <a href> hyperlink
+    assert ">https://auto.bazos.sk" not in text
+    assert "<a href=\"https://auto.bazos.sk/inzerat/195357798/kia-sportage.php\">" in text
+
+
+def test_format_listing_strips_slashes_from_title() -> None:
+    listing = _listing(title="Kia Sportage /BEZ KOROZIE/ 2.0")
+    text = format_listing(listing)
+    assert "BEZ KOROZIE" in text
+    assert "Kia Sportage /BEZ" not in text
 
 
 def test_format_message_escapes_html() -> None:

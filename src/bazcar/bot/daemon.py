@@ -32,20 +32,24 @@ def _em(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 HELP_TEXT = (
-    "<b>Bazcar bot</b> 🚗\n"
-    "Príkazy:\n"
-    "/help — nápoveda\n"
-    "/status — aktuálne nastavenia\n"
-    "/criteria + text — čo hľadám (napr.: diesel do 200t km, nad 80 kW)\n"
-    "/search meno: kritériá — uložiť pomenované hľadanie\n"
-    "/searches — zoznam uložených hľadaní\n"
-    "/use meno — aktivovať uložené hľadanie\n"
-    "/model nazov — zmeniť AI model (napr. openrouter/free)\n"
-    "/score 0-100 — ukazovať len inzeráty od daného hodnotenia\n"
-    "/photos on|off — posielať fotky k inzerátom\n"
-    "/save ad_id — uložiť inzerát na neskôr\n"
-    "/saved — moje uložené inzeráty\n"
-    "/unsave ad_id — odstrániť uložený"
+    "<b>🤖 Bazcar — pomocník pri hľadaní auta</b>\n\n"
+    "Napíš mi voľne, čo hľadáš (napr. <i>\"diesel do 200t km, nad 80 kW\"</i>)\n"
+    "a bodovanie inzerátov sa prispôsobí tvojim kritériám.\n\n"
+    "<b>🧭 Príkazy</b>\n"
+    "  <b>/criteria</b> — zmeniť kritériá hľadania\n"
+    "  <b>/search</b> — uložiť pomenované hľadanie (meno: kritériá)\n"
+    "  <b>/searches</b> — zoznam uložených hľadaní\n"
+    "  <b>/use</b> — aktivovať uložené hľadanie\n"
+    "  <b>/status</b> — aktuálne nastavenia\n\n"
+    "<b>🎛️ Bodovanie a zobrazenie</b>\n"
+    "  <b>/score</b> — ukazovať len inzeráty od daného hodnotenia (0–100)\n"
+    "  <b>/photos</b> — on/off fotky pri inzerátoch\n"
+    "  <b>/model</b> — zmeniť AI model (napr. openrouter/free)\n\n"
+    "<b>💾 Uložené inzeráty</b>\n"
+    "  <b>/save</b> — uložiť inzerát (ad_id) na neskôr\n"
+    "  <b>/saved</b> — zoznam uložených inzerátov\n"
+    "  <b>/unsave</b> — odstrániť uložený inzerát\n\n"
+    "Všetko ukladám do databázy, tvoje nastavenia prežijú aj reštart."
 )
 
 
