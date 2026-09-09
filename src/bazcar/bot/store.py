@@ -124,6 +124,23 @@ class UserStore:
         await self.update_prefs(chat_id, filters=filters)
         return filters
 
+    async def claim_update(self, update_id: int) -> bool:
+        """Atomically claim a Telegram update (True = first delivery).
+
+        Telegram webhook delivers at-least-once; this upsert only advances the
+        stored ``last_update_id``, so redelivered/older updates return False.
+        """
+        row = await self._require().fetchrow(
+            """
+            INSERT INTO bot_state (key, value) VALUES ('last_update_id', $1)
+            ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = now()
+            WHERE bot_state.value < EXCLUDED.value
+            RETURNING value
+            """,
+            update_id,
+        )
+        return row is not None
+
     # --------------------------------------------------------------- searches
 
     async def list_searches(self, chat_id: int) -> list[SearchProfile]:

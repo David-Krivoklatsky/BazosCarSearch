@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,31 @@ TELEGRAM_API = "https://api.telegram.org"
 def _em(text: str) -> str:
     """HTML-escape a plain user-supplied string for Telegram parse_mode=HTML."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def _dispatch_scrape() -> bool:
+    """Best-effort: trigger the scrape workflow right after a preference change.
+
+    Requires ``GITHUB_WORKFLOW_TOKEN`` (repo scope, actions:write) in the env —
+    on Vercel set it as an env var; locally it simply skips. The next scrape
+    (and thus new results) then arrives within a few minutes instead of up to
+    the next 15-minute cron slot.
+    """
+    token = os.environ.get("GITHUB_WORKFLOW_TOKEN")
+    repo = os.environ.get("GITHUB_REPO", "David-Krivoklatsky/BazosCarSearch")
+    if not token:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"https://api.github.com/repos/{repo}/actions/workflows/scrape.yml/dispatches",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+                json={"ref": "master"},
+            )
+            return resp.status_code == 204
+    except httpx.HTTPError:
+        logger.warning("scrape dispatch failed", exc_info=True)
+        return False
 
 HELP_TEXT = (
     "<b>🤖 Bazcar — pomocník pri hľadaní auta</b>\n\n"
@@ -144,6 +170,7 @@ class Bot:
         if not text:
             return 'Pošli, čo hľadáš, napr.: "diesel, do 200 000 km, nad 80kW".'
         await self.store.update_prefs(chat_id, criteria=text)
+        await _dispatch_scrape()
         return f"✅ Kritériá uložené:\n<i>{_em(text)}</i>"
 
     async def _filter(self, chat_id: int, arg: str) -> str:
@@ -179,6 +206,7 @@ class Bot:
             return "Neznámy filter. Použi query / price / dist / psc / clear."
 
         filters = await self.store.update_filters(chat_id, patch)
+        await _dispatch_scrape()
         return f"✅ Uložené.\n{self._filters_summary(filters)}"
 
     @staticmethod
@@ -237,6 +265,7 @@ class Bot:
                 reply = f"✅ Aktivované „{_em(s.name)}“: <i>{_em(s.criteria)}</i>"
                 if s.filters:
                     reply += "\n" + self._filters_summary(s.filters)
+                await _dispatch_scrape()
                 return reply
         return f"Nenašiel som „{_em(name)}“. /searches"
 

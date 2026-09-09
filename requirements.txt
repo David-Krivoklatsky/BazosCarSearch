@@ -1,0 +1,8 @@
+# Vercel Python runtime installs this file (it does not read pyproject.toml).
+# Only the bot webhook path is needed on Vercel; scraper-only deps (bs4/lxml/typer)
+# stay out to keep the function lean.
+httpx>=0.27
+asyncpg>=0.31.0
+pydantic>=2.7
+pydantic-settings>=2.3
+PyYAML>=6.0

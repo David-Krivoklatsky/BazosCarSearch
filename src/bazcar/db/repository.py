@@ -81,6 +81,12 @@ CREATE TABLE IF NOT EXISTS saved_listings (
     PRIMARY KEY (chat_id, ad_id)
 );
 
+CREATE TABLE IF NOT EXISTS bot_state (
+    key         text PRIMARY KEY,
+    value       bigint,
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
 -- Idempotent migrations for tables created before these columns existed.
 ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from pathlib import Path
 
 import typer
@@ -85,6 +87,52 @@ def bot(
     from bazcar.bot.daemon import run_bot_loop
 
     asyncio.run(run_bot_loop(once=once))
+
+
+@app.command()
+def webhook(
+    url: str | None = typer.Option(None, "--url", help="Public HTTPS webhook URL (e.g. https://bazcar.vercel.app/api/telegram)."),
+    remove: bool = typer.Option(False, "--remove", help="Delete the webhook (back to polling mode)."),
+    info: bool = typer.Option(False, "--info", help="Show current webhook info."),
+) -> None:
+    """Manage the Telegram webhook (Vercel serverless bot mode)."""
+    import httpx
+
+    from bazcar.config.settings import get_settings
+
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        raise typer.BadParameter("TELEGRAM_BOT_TOKEN is not set")
+    api = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
+
+    if info:
+        resp = httpx.get(f"{api}/getWebhookInfo", timeout=30)
+        typer.echo(json.dumps(resp.json(), indent=2, ensure_ascii=False))
+        return
+    if remove:
+        resp = httpx.post(f"{api}/deleteWebhook", json={"drop_pending_updates": True}, timeout=30)
+        typer.echo("webhook removed" if resp.json().get("ok") else f"failed: {resp.text}")
+        return
+    if not url:
+        typer.echo("Usage: bazcar webhook --url https://.../api/telegram  |  --remove  |  --info")
+        raise typer.Exit(code=1)
+
+    secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+    if not secret:
+        typer.echo("[ERROR] TELEGRAM_WEBHOOK_SECRET not set (add it to .env and to Vercel env).", err=True)
+        raise typer.Exit(code=1)
+    resp = httpx.post(
+        f"{api}/setWebhook",
+        json={"url": url, "secret_token": secret, "allowed_updates": ["message", "callback_query"]},
+        timeout=30,
+    )
+    data = resp.json()
+    if data.get("ok"):
+        typer.echo(f"[OK] webhook set -> {url}")
+        typer.echo("[NOTE] polling (bazcar bot) is now disabled — Telegram pushes updates instead.")
+    else:
+        typer.echo(f"[ERROR] {data}", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()

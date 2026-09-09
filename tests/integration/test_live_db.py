@@ -50,6 +50,19 @@ async def repo() -> ListingRepository:
 
 
 @pytest.mark.asyncio
+async def test_claim_update_dedupes(repo: ListingRepository) -> None:
+    """Webhook update-id claiming: first delivery True, replay False."""
+    from bazcar.bot.store import UserStore
+
+    settings = get_settings()
+    async with UserStore(settings.database_url) as store:
+        assert await store.claim_update(9_000_000_001) is True
+        assert await store.claim_update(9_000_000_001) is False  # duplicate
+        assert await store.claim_update(9_000_000_002) is True   # newer advances
+        assert await store.claim_update(9_000_000_000) is False  # older is stale
+
+
+@pytest.mark.asyncio
 async def test_second_sync_produces_no_duplicates_and_tracks_price_changes(
     repo: ListingRepository,
 ) -> None:
