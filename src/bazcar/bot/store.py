@@ -6,8 +6,9 @@ shared schema init in ``ListingRepository.init_schema``.
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import asyncpg
 
@@ -23,12 +24,14 @@ class UserPrefs:
     model: str | None = None
     min_score: int | None = None
     show_photo: bool = False
+    filters: dict = field(default_factory=dict)
 
 
 @dataclass
 class SearchProfile:
     name: str
     criteria: str
+    filters: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -72,11 +75,15 @@ class UserStore:
 
     async def get_prefs(self, chat_id: int) -> UserPrefs | None:
         row = await self._require().fetchrow(
-            "SELECT chat_id, criteria, model, min_score, show_photo"
+            "SELECT chat_id, criteria, model, min_score, show_photo, filters"
             " FROM user_prefs WHERE chat_id = $1",
             chat_id,
         )
-        return UserPrefs(**dict(row)) if row else None
+        if not row:
+            return None
+        prefs = dict(row)
+        prefs["filters"] = json.loads(prefs["filters"]) if prefs["filters"] else {}
+        return UserPrefs(**prefs)
 
     async def ensure_prefs(self, chat_id: int) -> UserPrefs:
         prefs = await self.get_prefs(chat_id)
@@ -89,10 +96,12 @@ class UserStore:
         return UserPrefs(chat_id=chat_id)
 
     async def update_prefs(self, chat_id: int, **fields) -> None:
-        allowed = {"criteria", "model", "min_score", "show_photo"}
+        allowed = {"criteria", "model", "min_score", "show_photo", "filters"}
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return
+        if "filters" in updates:
+            updates["filters"] = json.dumps(updates["filters"], ensure_ascii=False)
         columns = ", ".join(f"{key} = ${i + 1}" for i, key in enumerate(updates))
         values = list(updates.values()) + [chat_id]
         await self._require().execute(
@@ -100,23 +109,51 @@ class UserStore:
             *values,
         )
 
+    async def update_filters(self, chat_id: int, patch: dict) -> dict:
+        """Merge ``patch`` into the stored Bazoš filters; returns the new dict.
+
+        Empty values ("") remove the key, so ``{"query": ""}`` clears the query.
+        """
+        prefs = await self.ensure_prefs(chat_id)
+        filters = dict(prefs.filters)
+        for key, value in patch.items():
+            if value in (None, ""):
+                filters.pop(key, None)
+            else:
+                filters[key] = value
+        await self.update_prefs(chat_id, filters=filters)
+        return filters
+
     # --------------------------------------------------------------- searches
 
     async def list_searches(self, chat_id: int) -> list[SearchProfile]:
         rows = await self._require().fetch(
-            "SELECT name, criteria FROM user_searches WHERE chat_id = $1 ORDER BY created_at",
+            "SELECT name, criteria, filters FROM user_searches WHERE chat_id = $1 ORDER BY created_at",
             chat_id,
         )
-        return [SearchProfile(name=row["name"], criteria=row["criteria"]) for row in rows]
+        profiles = []
+        for row in rows:
+            profiles.append(
+                SearchProfile(
+                    name=row["name"],
+                    criteria=row["criteria"],
+                    filters=json.loads(row["filters"]) if row["filters"] else {},
+                )
+            )
+        return profiles
 
-    async def save_search(self, chat_id: int, name: str, criteria: str) -> None:
+    async def save_search(
+        self, chat_id: int, name: str, criteria: str, filters: dict | None = None
+    ) -> None:
         await self._require().execute(
-            "INSERT INTO user_searches (chat_id, name, criteria) VALUES ($1, $2, $3)"
+            "INSERT INTO user_searches (chat_id, name, criteria, filters)"
+            " VALUES ($1, $2, $3, $4::jsonb)"
             " ON CONFLICT (chat_id, name) DO UPDATE SET criteria = EXCLUDED.criteria,"
-            " updated_at = now()",
+            " filters = EXCLUDED.filters, updated_at = now()",
             chat_id,
             name,
             criteria,
+            json.dumps(filters or {}, ensure_ascii=False),
         )
 
     async def delete_search(self, chat_id: int, name: str) -> bool:

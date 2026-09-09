@@ -7,12 +7,27 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from bazcar.config.settings import ScraperConfig, get_settings, load_llm_config, load_scraper_config
+from bazcar.config.settings import (
+    ScraperConfig,
+    SearchFiltersConfig,
+    get_settings,
+    load_llm_config,
+    load_scraper_config,
+)
 from bazcar.core.exceptions import ConfigError, LlmError
 from bazcar.core.models import DbSyncSummary, Listing, ScrapeSummary
 from bazcar.scrapers.factory import get_scraper
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_filters(cfg: ScraperConfig, filters: dict) -> ScraperConfig:
+    """Override the YAML scrape filters with the user's bot-configured ones."""
+    if not filters:
+        return cfg
+    cfg = cfg.model_copy(deep=True)
+    cfg.base.search_filters = SearchFiltersConfig.model_validate(filters)
+    return cfg
 
 
 async def run_scrape(
@@ -40,6 +55,10 @@ async def run_scrape(
     settings = get_settings()
     cfg = config or load_scraper_config()
 
+    # Bot-configured Bazoš filters override the YAML defaults (per chat).
+    prefs = await _load_prefs()
+    cfg = _apply_filters(cfg, (prefs or {}).get("filters") or {})
+
     listings: list[Listing] = []
     pages: list[str] = []
     async with get_scraper(platform, cfg) as scraper:
@@ -54,8 +73,6 @@ async def run_scrape(
 
     if limit is not None:
         listings = listings[:limit]
-
-    prefs = await _load_prefs()
 
     evaluated = 0
     if evaluate is not False:
@@ -100,8 +117,8 @@ async def run_scrape(
 async def _load_prefs() -> dict | None:
     """Load Telegram-user preferences for the notify chat from Postgres.
 
-    Returns a plain dict (criteria/model/min_score/show_photo) or None when the
-    database is unavailable or not configured. Never raises.
+    Returns a plain dict (criteria/model/min_score/show_photo/filters) or None
+    when the database is unavailable or not configured. Never raises.
     """
     settings = get_settings()
     chat_id = settings.telegram_chat_id
@@ -119,6 +136,7 @@ async def _load_prefs() -> dict | None:
                 "model": prefs.model,
                 "min_score": prefs.min_score,
                 "show_photo": prefs.show_photo,
+                "filters": prefs.filters,
             }
     except Exception:
         return None

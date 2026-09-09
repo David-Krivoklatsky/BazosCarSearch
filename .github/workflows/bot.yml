@@ -1,0 +1,35 @@
+# Lightweight bot poller: processes Telegram commands/button presses every
+# ~2 minutes so the bot feels responsive without a server. Public repo =>
+# Actions minutes are unlimited.
+name: bot
+
+on:
+  schedule:
+    - cron: "*/2 * * * *"   # GitHub may delay scheduled runs a few minutes
+  workflow_dispatch:
+
+concurrency:
+  group: bot
+  cancel-in-progress: true  # a missed poll is fine, next one picks up
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Handle bot messages
+        run: uv run bazcar bot --once
+        env:
+          BAZCAR_DATABASE_URL: ${{ secrets.BAZCAR_DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

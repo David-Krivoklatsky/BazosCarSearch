@@ -90,13 +90,24 @@ class _FakeStore:
         for key, value in fields.items():
             setattr(prefs, key, value)
 
+    async def update_filters(self, chat_id: int, patch: dict) -> dict:
+        prefs = await self.ensure_prefs(chat_id)
+        filters = dict(prefs.filters)
+        for key, value in patch.items():
+            if value in (None, ""):
+                filters.pop(key, None)
+            else:
+                filters[key] = value
+        prefs.filters = filters
+        return filters
+
     async def list_searches(self, chat_id: int) -> list[SearchProfile]:
         return self.searches.get(chat_id, [])
 
-    async def save_search(self, chat_id: int, name: str, criteria: str) -> None:
+    async def save_search(self, chat_id: int, name: str, criteria: str, filters: dict | None = None) -> None:
         searches = self.searches.setdefault(chat_id, [])
         searches = [s for s in searches if s.name != name]
-        searches.append(SearchProfile(name=name, criteria=criteria))
+        searches.append(SearchProfile(name=name, criteria=criteria, filters=filters or {}))
         self.searches[chat_id] = searches
 
     async def delete_search(self, chat_id: int, name: str) -> bool:
@@ -172,3 +183,46 @@ def test_inline_save_button_stores_ad_and_answers():
     assert [s.ad_id for s in saved] == [987654]
     assert bot.notifier.answered == [("cb-1", "💾 Uložené ✅")]
     assert bot.notifier.sent == []  # toast only, no extra messages
+
+
+def test_filter_query_command():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter query skoda octavia"}})
+    prefs = asyncio.run(bot.store.get_prefs(42))
+    assert prefs.filters["query"] == "skoda octavia"
+
+
+def test_filter_price_range():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter price 1500-4000"}})
+    prefs = asyncio.run(bot.store.get_prefs(42))
+    assert prefs.filters == {"min_price": 1500, "max_price": 4000}
+
+
+def test_filter_price_one_sided_and_km():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter price -4000"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter km 200000"}})
+    prefs = asyncio.run(bot.store.get_prefs(42))
+    assert prefs.filters == {"max_price": 4000, "max_km": 200000}
+
+
+def test_filter_clear_resets():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter query skoda"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter clear"}})
+    prefs = asyncio.run(bot.store.get_prefs(42))
+    assert prefs.filters == {}
+
+
+def test_search_snapshots_and_use_restores_filters():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter query skoda"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter price 1500-4000"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/search moje: diesel do 200t km"}})
+    # change filters, then restore via /use
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter clear"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/use moje"}})
+    prefs = asyncio.run(bot.store.get_prefs(42))
+    assert prefs.criteria == "diesel do 200t km"
+    assert prefs.filters == {"query": "skoda", "min_price": 1500, "max_price": 4000}

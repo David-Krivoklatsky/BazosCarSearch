@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS saved_listings (
     saved_at    timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (chat_id, ad_id)
 );
+
+-- Idempotent migrations for tables created before these columns existed.
+ALTER TABLE user_prefs
+    ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE user_searches
+    ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
 """
 
 _UPSERT_LISTING_SQL = """

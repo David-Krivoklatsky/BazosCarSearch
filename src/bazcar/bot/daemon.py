@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,13 @@ HELP_TEXT = (
     "  <b>/score</b> — ukazovať len inzeráty od daného hodnotenia (0–100)\n"
     "  <b>/photos</b> — on/off fotky pri inzerátoch\n"
     "  <b>/model</b> — zmeniť AI model (napr. openrouter/free)\n\n"
+    "<b>🔎 Bazoš filtre</b>\n"
+    "  <b>/filter</b> — aktuálne filtre\n"
+    "  <b>/filter query</b> + text — hľadané slovo (napr. skoda octavia)\n"
+    "  <b>/filter price</b> + 1500-4000 — rozsah ceny v €\n"
+    "  <b>/filter km</b> + 200000 — max najazdené km\n"
+    "  <b>/filter psc</b> + 81101 — lokalita\n"
+    "  <b>/filter clear</b> — vymazať filtre\n\n"
     "<b>💾 Uložené inzeráty</b>\n"
     "  <b>/save</b> — uložiť inzerát (ad_id) na neskôr\n"
     "  <b>/saved</b> — zoznam uložených inzerátov\n"
@@ -119,6 +127,8 @@ class Bot:
                 return await self._score(chat_id, arg)
             case "/photos":
                 return await self._photos(chat_id, arg)
+            case "/filter":
+                return await self._filter(chat_id, arg)
             case "/save":
                 return await self._save(chat_id, arg)
             case "/saved":
@@ -135,6 +145,61 @@ class Bot:
         await self.store.update_prefs(chat_id, criteria=text)
         return f"✅ Kritériá uložené:\n<i>{_em(text)}</i>"
 
+    async def _filter(self, chat_id: int, arg: str) -> str:
+        """Manage Bazoš scrape filters (/filter query|price|km|psc|clear)."""
+        if not arg.strip():
+            return await self._filters_status(chat_id)
+        parts = arg.split(maxsplit=1)
+        key = parts[0].lower()
+        value = parts[1].strip() if len(parts) > 1 else ""
+
+        if key == "clear":
+            await self.store.update_prefs(chat_id, filters={})
+            return "✅ Filtre vynulované (scrapuje sa podľa config/scraper.yaml)."
+        if not value:
+            return "/filter query skoda | /filter price 1500-4000 | /filter km 200000 | /filter psc 81101 | /filter clear"
+
+        patch: dict = {}
+        if key == "query":
+            patch["query"] = value
+        elif key == "price":
+            match = re.fullmatch(r"(\d*)\s*-\s*(\d*)", value)
+            if not match or (not match.group(1) and not match.group(2)):
+                return "Formát: `/filter price 1500-4000` (alebo `1500-` / `-4000`)."
+            patch["min_price"] = int(match.group(1)) if match.group(1) else None
+            patch["max_price"] = int(match.group(2)) if match.group(2) else None
+        elif key == "km":
+            if not value.isdigit():
+                return "Formát: `/filter km 200000`."
+            patch["max_km"] = int(value)
+        elif key == "psc":
+            patch["psc"] = value
+        else:
+            return "Neznámy filter. Použi query / price / km / psc / clear."
+
+        filters = await self.store.update_filters(chat_id, patch)
+        return f"✅ Uložené.\n{self._filters_summary(filters)}"
+
+    @staticmethod
+    def _filters_summary(filters: dict) -> str:
+        if not filters:
+            return "Filtre: žiadne (default z config/scraper.yaml)"
+        bits = []
+        if filters.get("query"):
+            bits.append(f"hľadať: „{_em(str(filters['query']))}“")
+        lo, hi = filters.get("min_price"), filters.get("max_price")
+        if lo is not None or hi is not None:
+            bits.append(f"cena: {lo or 0}–{hi or '∞'} €")
+        if filters.get("max_km") is not None:
+            bits.append(f"do {filters['max_km']:,} km".replace(",", " "))
+        if filters.get("psc"):
+            bits.append(f"PSČ {_em(str(filters['psc']))}")
+        return "🔎 Filtre: " + " | ".join(bits)
+
+    async def _filters_status(self, chat_id: int) -> str:
+        prefs = await self.store.get_prefs(chat_id)
+        return self._filters_summary(prefs.filters if prefs else {})
+
     async def _search(self, chat_id: int, arg: str) -> str:
         if not arg:
             return "/search meno: kriteriá — napr. `/search diaľnica: diesel do 200t km`"
@@ -143,14 +208,20 @@ class Bot:
         criteria = criteria.strip()
         if not name or not criteria:
             return "Potrebujem `meno: kritériá` — napr. `/search diaľnica: diesel do 200t km`."
-        await self.store.save_search(chat_id, name, criteria)
+        prefs = await self.store.get_prefs(chat_id)
+        filters = prefs.filters if prefs else {}
+        await self.store.save_search(chat_id, name, criteria, filters=filters)
         return f"✅ Uložené hľadanie „{_em(name)}“: <i>{_em(criteria)}</i>"
 
     async def _searches(self, chat_id: int) -> str:
         searches = await self.store.list_searches(chat_id)
         if not searches:
             return "Nemáš uložené hľadania. `/search meno: diesel do 200 km`."
-        lines = ["Uložené hľadania:"] + [f"• <b>{_em(s.name)}</b>: {_em(s.criteria)}" for s in searches]
+        lines = ["Uložené hľadania:"] + [
+            f"• <b>{_em(s.name)}</b>: {_em(s.criteria)}"
+            + (f" (filtre: {self._filters_summary(s.filters)})" if s.filters else "")
+            for s in searches
+        ]
         return "\n".join(lines)
 
     async def _use(self, chat_id: int, name: str) -> str:
@@ -159,8 +230,13 @@ class Bot:
         searches = await self.store.list_searches(chat_id)
         for s in searches:
             if s.name.lower() == name.lower():
-                await self.store.update_prefs(chat_id, criteria=s.criteria)
-                return f"✅ Aktivované „{_em(s.name)}“: <i>{_em(s.criteria)}</i>"
+                await self.store.update_prefs(
+                    chat_id, criteria=s.criteria, filters=s.filters or {}
+                )
+                reply = f"✅ Aktivované „{_em(s.name)}“: <i>{_em(s.criteria)}</i>"
+                if s.filters:
+                    reply += "\n" + self._filters_summary(s.filters)
+                return reply
         return f"Nenašiel som „{_em(name)}“. /searches"
 
     async def _model(self, chat_id: int, model: str) -> str:
@@ -228,7 +304,8 @@ class Bot:
             f"Kritériá: {_em(prefs.criteria or '—')}\n"
             f"Model: {_em(prefs.model or 'default')}\n"
             f"Min. hodnotenie: {_em(str(prefs.min_score or '—'))}\n"
-            f"Fotky: {'áno' if prefs.show_photo else 'nie'}"
+            f"Fotky: {'áno' if prefs.show_photo else 'nie'}\n"
+            f"{self._filters_summary(prefs.filters)}"
         )
 
     async def _find_listing(self, ad_id: int) -> Listing | None:
