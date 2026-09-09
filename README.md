@@ -63,11 +63,12 @@ Potrebuje `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` a `BAZCAR_DATABASE_URL`.
 Otestuj číslo jedným behom: `uv run bazcar bot --once`.
 
 ## Konfigurácia
-- `config/scraper.yaml` — URL, CSS selektory, rate-limity, UA pool, regexe.
-- `config/llm.yaml` — model, teplota, max tokenov pre LLM eval (Fáza 3); model nastavíš aj cez `BAZCAR_OPENROUTER_MODEL`.
-- `.env` (z `.env.example`) — runtime premenné (vrát. `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`), žiadne tajomstvá v repo (je public).
+- `.env` (z `.env.example`) — runtime premenné (vrát. `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`), žiadne tajomstvá v repo.
 
 ## Automatizácia (Fáza 5)
-`.github/workflows/scrape.yml` beží každých ~15 min: scrape → dedupe → LLM eval → Telegram.
+`.github/workflows/scrape.yml` beží každých ~15 min: scrape → dedupe → LLM eval → Telegram
+→ spracovanie bot správ (`bazcar bot --once`).
 Vyžaduje repo secrets: `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`,
 `TELEGRAM_CHAT_ID`. Manuálne spustenie: `gh workflow run scrape`.
+Pozn.: na private repo má GitHub Actions limit minút — pre 15-min cron prepní repo na public
+(kód neobsahuje tajomstvá) alebo predĺž interval.
