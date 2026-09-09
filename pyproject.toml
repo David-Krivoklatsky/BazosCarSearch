@@ -24,7 +24,7 @@ dev = [
 ]
 
 [project.scripts]
-bazcar = "bazcar.cli.main:app"
+bazcar = "bazcar.cli.main:main"
 
 [build-system]
 requires = ["hatchling"]
