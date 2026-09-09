@@ -49,15 +49,20 @@ def is_car_listing(
     """True if the listing looks like a whole car.
 
     * LLM verdict first (``DealEvaluation.is_car``) — it saw the full text.
-    * Otherwise fall back to the keyword heuristic (title + description).
+    * Otherwise fall back to the keyword heuristic on the TITLE only — car
+      descriptions routinely mention wheels/tyres/lights, so matching the
+      description would drop almost every real car.
     """
     if listing.evaluation is not None:
         return bool(listing.evaluation.is_car)
     markers = part_markers if part_markers is not None else DEFAULT_PART_MARKERS
-    text = f"{listing.title} {listing.description or listing.description_preview}"
-    return not _listed_matches(text, markers)
+    return not _listed_matches(listing.title, markers)
 
 
-def filter_cars(listings: list[Listing]) -> list[Listing]:
+def filter_cars(
+    listings: list[Listing], part_markers: list[str] | None = None
+) -> list[Listing]:
     """Return only whole-car listings, preserving order."""
-    return [listing for listing in listings if is_car_listing(listing)]
+    return [
+        listing for listing in listings if is_car_listing(listing, part_markers=part_markers)
+    ]

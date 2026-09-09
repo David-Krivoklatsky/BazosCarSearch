@@ -41,6 +41,14 @@ def test_is_car_respects_llm_verdict() -> None:
     assert is_car_listing(listing) is True  # LLM says car → keep
 
 
+def test_is_car_ignores_part_words_in_description() -> None:
+    # A real car whose description mentions tyres/wheels must NOT be dropped.
+    listing = _listing(
+        1, "Volkswagen Golf 5 GT 125kW", description_preview="nové pneu, alu disky, LED svetlá"
+    )
+    assert is_car_listing(listing) is True
+
+
 def test_filter_cars_keeps_order_and_drops_parts() -> None:
     good = _listing(1, "VW Golf 1.9 TDI")
     part = _listing(2, "Pneumatiky zimné 4ks")

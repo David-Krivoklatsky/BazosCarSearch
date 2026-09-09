@@ -214,6 +214,7 @@ async def _notify(
     from bazcar.bot.classify import filter_cars
     from bazcar.notify import TelegramNotifier
 
+    part_markers = load_scraper_config().markers.part_markers or None
     min_score = (prefs or {}).get("min_score")
     if min_score is None:
         min_score = settings.telegram_min_score
@@ -223,7 +224,8 @@ async def _notify(
             inserted_ids=inserted_ids,
             persist_enabled=persist_enabled,
             min_score=min_score,
-        )
+        ),
+        part_markers=part_markers,
     )
     if not targets:
         return 0
