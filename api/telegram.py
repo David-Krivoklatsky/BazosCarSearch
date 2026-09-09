@@ -62,17 +62,16 @@ def _process_update(update: dict) -> None:
     asyncio.run(run())
 
 
-def _claim_update(update: dict) -> bool:
-    """Atomically mark the update as processed; False = duplicate delivery."""
+def _claim_update(update_id: int | None) -> bool:
+    """Atomically claim a Telegram update (True = first delivery)."""
 
     async def run() -> bool:
         from bazcar.bot.store import UserStore
         from bazcar.config.settings import get_settings
 
         settings = get_settings()
-        update_id = update.get("update_id")
-        if update_id is None:
-            return True
+        if not update_id:
+            return True  # unknown payload shape — let the handler decide
         store = UserStore(settings.database_url)
         await store.connect()
         try:

@@ -117,7 +117,7 @@ def webhook(
         typer.echo("Usage: bazcar webhook --url https://.../api/telegram  |  --remove  |  --info")
         raise typer.Exit(code=1)
 
-    secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+    secret = settings.telegram_webhook_secret or os.environ.get("TELEGRAM_WEBHOOK_SECRET")
     if not secret:
         typer.echo("[ERROR] TELEGRAM_WEBHOOK_SECRET not set (add it to .env and to Vercel env).", err=True)
         raise typer.Exit(code=1)

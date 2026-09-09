@@ -56,10 +56,14 @@ async def test_claim_update_dedupes(repo: ListingRepository) -> None:
 
     settings = get_settings()
     async with UserStore(settings.database_url) as store:
-        assert await store.claim_update(9_000_000_001) is True
-        assert await store.claim_update(9_000_000_001) is False  # duplicate
-        assert await store.claim_update(9_000_000_002) is True   # newer advances
-        assert await store.claim_update(9_000_000_000) is False  # older is stale
+        try:
+            # tiny ids below real Telegram update ids, cleaned up afterwards
+            assert await store.claim_update(11) is True
+            assert await store.claim_update(11) is False  # duplicate
+            assert await store.claim_update(12) is True   # newer advances
+            assert await store.claim_update(10) is False  # older is stale
+        finally:
+            await store._require().execute("DELETE FROM bot_state WHERE key = 'last_update_id'")
 
 
 @pytest.mark.asyncio

@@ -117,6 +117,10 @@ class Settings(BaseSettings):
     telegram_min_score: int | None = Field(
         default=None, ge=0, le=100, description="Only notify deals with evaluation score >= this."
     )
+    telegram_webhook_secret: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("TELEGRAM_WEBHOOK_SECRET", "BAZCAR_TELEGRAM_WEBHOOK_SECRET"),
+    )
 
 
 @lru_cache(maxsize=1)

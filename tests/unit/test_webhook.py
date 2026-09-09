@@ -54,3 +54,12 @@ def test_duplicate_update_short_circuits(monkeypatch) -> None:
     status, body = _call("POST", b'{"update_id": 5}', "s3cret")
     assert status == 200
     assert b"duplicate" in body
+
+
+def test_claim_skips_when_update_id_missing(monkeypatch) -> None:
+    monkeypatch.setattr("api.telegram.asyncio.run", lambda coro: True)
+    monkeypatch.setattr("builtins.open", open)  # no-op, keeps linters calm
+    from api.telegram import _claim_update
+
+    assert _claim_update(None) is True
+    assert _claim_update(0) is True

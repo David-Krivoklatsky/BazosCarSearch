@@ -33,6 +33,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/bazcar"]
 
+[tool.vercel]
+entrypoint = "api.telegram:app"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
