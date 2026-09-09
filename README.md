@@ -58,7 +58,8 @@ Live overenie: nastav `TELEGRAM_BOT_TOKEN` a `TELEGRAM_CHAT_ID` v `.env` a spust
 Bot (Fáza 4): `bazcar bot` — dlhopolling, ukladá kritériá, model, min. skóre,
 fotky a uložené inzeráty do Neon (`tests/unit/test_bot.py`). Príkazy: `/start`,
 `/status`, `/criteria`, `/search meno: kritériá`, `/searches`, `/use meno`,
-`/model`, `/score 0-100`, `/photos on|off`, `/save ad_id`, `/saved`, `/unsave ad_id`.
+`/model`, `/score 0-100`, `/photos on|off`, `/filter query|price|km|psc`,
+`/save ad_id`, `/saved`, `/unsave ad_id`.
 Potrebuje `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` a `BAZCAR_DATABASE_URL`.
 Otestuj číslo jedným behom: `uv run bazcar bot --once`.
 
@@ -66,9 +67,10 @@ Otestuj číslo jedným behom: `uv run bazcar bot --once`.
 - `.env` (z `.env.example`) — runtime premenné (vrát. `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`), žiadne tajomstvá v repo.
 
 ## Automatizácia (Fáza 5)
-`.github/workflows/scrape.yml` beží každých ~15 min: scrape → dedupe → LLM eval → Telegram
-→ spracovanie bot správ (`bazcar bot --once`).
-Vyžaduje repo secrets: `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_CHAT_ID`. Manuálne spustenie: `gh workflow run scrape`.
-Pozn.: na private repo má GitHub Actions limit minút — pre 15-min cron prepní repo na public
-(kód neobsahuje tajomstvá) alebo predĺž interval.
+Dva workfowy (public repo = neobmedzené Actions minúty):
+- `scrape.yml` — každých ~15 min: scrape → dedupe → LLM eval → Telegram.
+- `bot.yml` — každé ~2 min: spracovanie bot správ (`bazcar bot --once`),
+  takže bot odpovedá bez lokálneho daemonu.
+
+Secrets: `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`. Manuálne spustenie: `gh workflow run scrape|bot`.
