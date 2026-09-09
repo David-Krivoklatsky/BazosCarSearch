@@ -55,9 +55,11 @@ async def run_scrape(
     if limit is not None:
         listings = listings[:limit]
 
+    prefs = await _load_prefs()
+
     evaluated = 0
     if evaluate is not False:
-        evaluated = await _evaluate(listings, enabled=evaluate)
+        evaluated = await _evaluate(listings, enabled=evaluate, criteria=(prefs or {}).get("criteria"))
 
     # Include filters hash in filename to separate different filter combinations
     filters_tag = getattr(scraper, "filters_hash", "default")
@@ -73,6 +75,7 @@ async def run_scrape(
             listings,
             inserted_ids=inserted_ids,
             persist_enabled=db_summary is not None,
+            prefs=prefs,
             enabled=notify,
         )
 
@@ -94,7 +97,34 @@ async def run_scrape(
     return summary
 
 
-async def _evaluate(listings: list[Listing], *, enabled: bool | None) -> int:
+async def _load_prefs() -> dict | None:
+    """Load Telegram-user preferences for the notify chat from Postgres.
+
+    Returns a plain dict (criteria/model/min_score/show_photo) or None when the
+    database is unavailable or not configured. Never raises.
+    """
+    settings = get_settings()
+    chat_id = settings.telegram_chat_id
+    if not settings.database_url or not chat_id:
+        return None
+    try:
+        from bazcar.bot.store import UserStore
+
+        async with UserStore(settings.database_url) as store:
+            prefs = await store.get_prefs(int(chat_id))
+            if prefs is None:
+                return None
+            return {
+                "criteria": prefs.criteria,
+                "model": prefs.model,
+                "min_score": prefs.min_score,
+                "show_photo": prefs.show_photo,
+            }
+    except Exception:
+        return None
+
+
+async def _evaluate(listings: list[Listing], *, enabled: bool | None, criteria: str | None = None) -> int:
     """Score listings with an LLM unless explicitly disabled or unconfigured.
 
     Returns how many listings received an evaluation. A single failed LLM call
@@ -111,10 +141,12 @@ async def _evaluate(listings: list[Listing], *, enabled: bool | None) -> int:
     from bazcar.llm import LLMProvider
 
     cfg = load_llm_config()
+    prefs = await _load_prefs()
+    model = settings.openrouter_model or (prefs or {}).get("model") or cfg.model
     async with LLMProvider(
         settings.openrouter_api_key,
         base_url=cfg.base_url,
-        model=settings.openrouter_model or cfg.model,
+        model=model,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         top_p=cfg.top_p,
@@ -124,7 +156,7 @@ async def _evaluate(listings: list[Listing], *, enabled: bool | None) -> int:
         stream=cfg.stream,
     ) as llm:
         for listing in listings:
-            listing.evaluation = await llm.evaluate(listing)
+            listing.evaluation = await llm.evaluate(listing, criteria=criteria or (prefs or {}).get("criteria"))
     return sum(1 for listing in listings if listing.evaluation is not None)
 
 
@@ -153,7 +185,12 @@ async def _persist(
 
 
 async def _notify(
-    listings: list[Listing], *, inserted_ids: list[int], persist_enabled: bool, enabled: bool | None
+    listings: list[Listing],
+    *,
+    inserted_ids: list[int],
+    persist_enabled: bool,
+    prefs: dict | None,
+    enabled: bool | None,
 ) -> int:
     """Send Telegram alerts for the newly inserted listings.
 
@@ -161,8 +198,10 @@ async def _notify(
     persistence did not run (``persist_enabled`` is False) we cannot know what
     is new, so we notify everything — that matches a manual `--no-db` run.
 
-    If ``telegram_min_score`` is set, only evaluated deals scoring at least
-    that value are notified. Returns the number of messages sent.
+    Non-car listings (parts, accessories) are dropped, and only listings with
+    evaluation score at least ``min_score`` (from user prefs, else env) are
+    notified. When the user enabled photos, ``sendPhoto`` is used. Returns the
+    number of messages sent.
     """
     if not listings:
         return 0
@@ -172,17 +211,26 @@ async def _notify(
             raise ConfigError("notification requested but TELEGRAM_BOT_TOKEN/CHAT_ID is not set")
         return 0
 
+    from bazcar.bot.classify import filter_cars
     from bazcar.notify import TelegramNotifier
 
-    targets = _notify_targets(
-        listings,
-        inserted_ids=inserted_ids,
-        persist_enabled=persist_enabled,
-        min_score=settings.telegram_min_score,
+    min_score = (prefs or {}).get("min_score")
+    if min_score is None:
+        min_score = settings.telegram_min_score
+    targets = filter_cars(
+        _notify_targets(
+            listings,
+            inserted_ids=inserted_ids,
+            persist_enabled=persist_enabled,
+            min_score=min_score,
+        )
     )
     if not targets:
         return 0
+    show_photo = bool((prefs or {}).get("show_photo"))
     async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as ntf:
+        if show_photo:
+            return await ntf.send_listings_with_photos(targets)
         return await ntf.send_listings(targets)
 
 

@@ -78,6 +78,16 @@ def scrape(
 
 
 @app.command()
+def bot(
+    once: bool = typer.Option(False, "--once", help="Handle one update batch and exit (testing)."),
+) -> None:
+    """Run the Telegram bot (long-polling) — set preferences, save ads, switch model."""
+    from bazcar.bot.daemon import run_bot_loop
+
+    asyncio.run(run_bot_loop(once=once))
+
+
+@app.command()
 def version() -> None:
     """Print version."""
     typer.echo(f"bazcar {__version__}")

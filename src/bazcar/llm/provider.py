@@ -17,10 +17,19 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = (
     "Si analytik ojazdených áut pre slovenský trh (Bazoš.sk). Na základe ceny, "
     "roku výroby, najazdených km, názvu a popisu ohodnoť, aká dobrá kúpa je "
-    "daný inzerát na stupnici 0–100 (100 = vynikajúci obchod). "
-    "Odpovedaj LEN jedným JSON objektom (žiadny text pred ani za ním): "
-    "{\"score\": <int 0-100>, \"why\": \"<1-2 viet po slovensky: dôvod>\"}."
+    "daný inzerát 0–100 (100 = vynikajúci obchod), podľa kritérií používateľa "
+    "(ak nie sú, hodnotiť všeobecne). Odpovedaj LEN jedným JSON objektom "
+    "(žiadny text pred ani za ním): "
+    '{"score": <int 0-100>, "why": "<1-2 viet po slovensky: dôvod>", '
+    '"is_car": <true ak inzerát predáva celé osobné auto/automobil, inak false — '
+    'napr. svetlá, disky, pneu, diely, sedačky>}.'
 )
+
+
+def _criteria_instruction(criteria: str | None) -> str:
+    if not criteria:
+        return "Kritériá používateľa: žiadne špecifické — hodnoti všeobecne."
+    return f"Užívateľ hľadá vozidlo: {criteria}. Hodnoť bodovo podľa zhody s nimi."
 
 
 def _listing_text(listing: Listing) -> str:
@@ -57,7 +66,8 @@ def parse_evaluation(content: str | None) -> DealEvaluation | None:
             if not 0 <= score <= 100:
                 return None
             why = str(payload.get("why", "")).strip()
-            return DealEvaluation(score=score, why=why)
+            is_car = bool(payload.get("is_car", True))
+            return DealEvaluation(score=score, why=why, is_car=is_car)
         except (KeyError, ValueError, TypeError):
             return None
 
@@ -117,11 +127,12 @@ class LLMProvider:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
-    async def evaluate(self, listing: Listing) -> DealEvaluation | None:
+    async def evaluate(self, listing: Listing, *, criteria: str | None = None) -> DealEvaluation | None:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _criteria_instruction(criteria)},
                 {"role": "user", "content": _listing_text(listing)},
             ],
             "stream": self.stream,

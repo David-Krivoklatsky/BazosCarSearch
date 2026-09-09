@@ -10,7 +10,7 @@ Autonómny vyhľadávač výhodných ojazdených áut na [Bazoš.sk](https://aut
 | 1 | Modulárny scraper Bazoš (osobné autá, celé SK) | Export 50 najnovších inzerátov do JSON | hotové |
 | 2 | Perzistencia (Neon Postgres) + dedupe | 2. spustenie bez duplicit; sledovanie zmien ceny | hotové |
 | 3 | Vyhodnotenie obchodov cez OpenRouter (LLMProvider) | AI ohodnotí inzeráty + `why` | hotové (live overenie s kľúčom) |
-| 4 | Telegram notifikácie, prepínanie modelu cez bot | Príchod notifikácie k novému inzerátu | notifikácie hotové (bot-preepínanie Zatiaľ nie) |
+| 4 | Telegram notifikácie, prepínanie modelu cez bot | Príchod notifikácie k novému inzerátu; zmena kritérií/modelu cez bot | hotové (live overené) |
 | 5 | Samostatné spustenie na GitHub Actions (cron ~15 min) | Automatický beh na GHA + logy | — |
 | 6 | Autonómny kontakt predajcov (čakanie, zľava, kúpa) | Bot úspešne ponúkne kúpu predajcovi | — |
 
@@ -54,6 +54,13 @@ Live overenie: nastav `OPENROUTER_API_KEY` v `.env` a spusti `bazcar scrape --pa
 Telegram notifikácie (Fáza 4): unit-testované s mocknutou Telegram API (`tests/unit/test_notify.py`).
 Live overenie: nastav `TELEGRAM_BOT_TOKEN` a `TELEGRAM_CHAT_ID` v `.env` a spusti
 `bazcar scrape --pages 1 --notify` — nové inzeráty prídu na Telegram.
+
+Bot (Fáza 4): `bazcar bot` — dlhopolling, ukladá kritériá, model, min. skóre,
+fotky a uložené inzeráty do Neon (`tests/unit/test_bot.py`). Príkazy: `/start`,
+`/status`, `/criteria`, `/search meno: kritériá`, `/searches`, `/use meno`,
+`/model`, `/score 0-100`, `/photos on|off`, `/save ad_id`, `/saved`, `/unsave ad_id`.
+Potrebuje `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` a `BAZCAR_DATABASE_URL`.
+Otestuj číslo jedným behom: `uv run bazcar bot --once`.
 
 ## Konfigurácia
 - `config/scraper.yaml` — URL, CSS selektory, rate-limity, UA pool, regexe.

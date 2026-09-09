@@ -42,3 +42,22 @@ def format_listing(listing: Listing) -> str:
     lines.append(listing.url)
     text = "\n".join(lines)
     return text[:_MAX_TEXT_LEN]
+
+
+def format_photo_caption(listing: Listing) -> str:
+    """Compact caption used with ``sendPhoto`` (fits the 1024-char limit)."""
+    price = listing.price_eur
+    price_text = (
+        f"{price:,.0f} €".replace(",", " ")
+        if price is not None
+        else (listing.price_raw or "Dohodou")
+    )
+    score = ""
+    if listing.evaluation is not None:
+        score = f" ⭐{listing.evaluation.score}"
+    caption = (
+        f"<b>{_em(listing.title)}</b>\n"
+        f"💰 {_em(str(price_text))}{score}\n"
+        f"{listing.url}"
+    )
+    return caption[:_MAX_TEXT_LEN]

@@ -52,6 +52,34 @@ CREATE TABLE IF NOT EXISTS price_history (
 
 CREATE INDEX IF NOT EXISTS idx_price_history_ad_id_seen
     ON price_history (ad_id, seen_at);
+
+CREATE TABLE IF NOT EXISTS user_prefs (
+    chat_id     bigint PRIMARY KEY,
+    criteria    text,
+    model       text,
+    min_score   int,
+    show_photo  boolean NOT NULL DEFAULT false,
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_searches (
+    id          bigserial PRIMARY KEY,
+    chat_id     bigint NOT NULL,
+    name        text NOT NULL,
+    criteria    text DEFAULT '',
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (chat_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS saved_listings (
+    chat_id     bigint NOT NULL,
+    ad_id       bigint NOT NULL REFERENCES listings(ad_id) ON DELETE CASCADE,
+    ad_title    text,
+    ad_url      text,
+    saved_at    timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (chat_id, ad_id)
+);
 """
 
 _UPSERT_LISTING_SQL = """

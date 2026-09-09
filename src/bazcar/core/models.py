@@ -42,6 +42,7 @@ class DealEvaluation(BaseModel):
 
     score: int = Field(ge=0, le=100)
     why: str = ""
+    is_car: bool = True
     model: str | None = None
 
 

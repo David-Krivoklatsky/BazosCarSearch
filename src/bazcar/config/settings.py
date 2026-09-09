@@ -45,6 +45,7 @@ class MarkerConfig(BaseModel):
     year_regexes: list[str] = Field(default_factory=list)
     mileage_regexes: list[str] = Field(default_factory=list)
     ban_markers: list[str] = Field(default_factory=list)
+    part_markers: list[str] = Field(default_factory=list)
 
 
 class SearchFiltersConfig(BaseModel):
