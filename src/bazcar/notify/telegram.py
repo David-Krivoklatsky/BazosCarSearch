@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from bazcar.core.models import Listing
-from bazcar.notify.format import format_listing, format_photo_caption
+from bazcar.notify.format import format_listing, format_photo_caption, listing_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +42,28 @@ class TelegramNotifier:
             logger.warning("telegram %s failed: %s", method, exc)
             return False
 
-    async def send_message(self, text: str, *, chat_id: int | None = None, silent: bool = False) -> bool:
+    async def send_message(
+        self,
+        text: str,
+        *,
+        chat_id: int | None = None,
+        silent: bool = False,
+        reply_markup: dict | None = None,
+    ) -> bool:
         """Send one HTML message; returns True when Telegram accepted it.
 
-        ``chat_id`` defaults to the configured chat. Failures are logged and
-        swallowed (notification must never kill the pipeline).
+        ``chat_id`` defaults to the configured chat. ``reply_markup`` is an
+        InlineKeyboardMarkup dict. Failures are logged and swallowed.
         """
-        payload = {
+        payload: dict[str, Any] = {
             "chat_id": chat_id or self._chat_id,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
             "disable_notification": silent,
         }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         return await self._post("sendMessage", payload)
 
     async def send_photo(
@@ -64,25 +73,42 @@ class TelegramNotifier:
         *,
         chat_id: int | None = None,
         silent: bool = False,
+        reply_markup: dict | None = None,
     ) -> bool:
         """Send one photo with an HTML caption (Telegram 'sendPhoto').
 
         ``photo_url`` may be a HTTPS URL; Telegram fetches it server-side.
         """
-        payload = {
+        payload: dict[str, Any] = {
             "chat_id": chat_id or self._chat_id,
             "photo": photo_url,
             "caption": caption[:1024],
             "parse_mode": "HTML",
             "disable_notification": silent,
         }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         return await self._post("sendPhoto", payload)
+
+    async def answer_callback(self, callback_query_id: str, text: str | None = None) -> bool:
+        """Acknowledge an inline-button press (Telegram 'answerCallbackQuery').
+
+        Stops the client's loading spinner; ``text`` is shown as a toast.
+        """
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        return await self._post("answerCallbackQuery", payload)
 
     async def send_listings(self, listings: list[Listing], *, silent: bool = False) -> int:
         """Send notifications for each listing; returns the number of successes."""
         sent = 0
         for listing in listings:
-            if await self.send_message(format_listing(listing), silent=silent):
+            if await self.send_message(
+                format_listing(listing),
+                silent=silent,
+                reply_markup=listing_keyboard(listing),
+            ):
                 sent += 1
         return sent
 
@@ -92,12 +118,18 @@ class TelegramNotifier:
         """Send each listing as a photo message when an image exists; fall back to text."""
         sent = 0
         for listing in listings:
-            if listing.image_urls and await self.send_photo(
-                listing.image_urls[0],
-                caption=format_photo_caption(listing),
+            if listing.image_urls:
+                if await self.send_photo(
+                    listing.image_urls[0],
+                    caption=format_photo_caption(listing),
+                    silent=silent,
+                    reply_markup=listing_keyboard(listing),
+                ):
+                    sent += 1
+            elif await self.send_message(
+                format_listing(listing),
                 silent=silent,
+                reply_markup=listing_keyboard(listing),
             ):
-                sent += 1
-            elif await self.send_message(format_listing(listing), silent=silent):
                 sent += 1
         return sent

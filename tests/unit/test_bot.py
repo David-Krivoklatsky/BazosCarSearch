@@ -54,9 +54,14 @@ def test_filter_cars_keeps_order_and_drops_parts() -> None:
 class _FakeNotifier:
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
+        self.answered: list[tuple[str, str]] = []
 
     async def send_message(self, text: str, *, chat_id: int | None = None, silent: bool = False) -> bool:
         self.sent.append((chat_id or 0, text))
+        return True
+
+    async def answer_callback(self, callback_query_id: str, text: str | None = None) -> bool:
+        self.answered.append((callback_query_id, text or ""))
         return True
 
 
@@ -141,3 +146,21 @@ def test_save_and_saved_commands():
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 123456"}})
     saved = asyncio.run(bot.store.list_saved(42))
     assert [s.ad_id for s in saved] == [123456]
+
+
+def test_inline_save_button_stores_ad_and_answers():
+    bot = _bot()
+    _run(
+        bot.handle,
+        {
+            "callback_query": {
+                "id": "cb-1",
+                "message": {"chat": {"id": 42}, "message_id": 7},
+                "data": "save:987654",
+            }
+        },
+    )
+    saved = asyncio.run(bot.store.list_saved(42))
+    assert [s.ad_id for s in saved] == [987654]
+    assert bot.notifier.answered == [("cb-1", "💾 Uložené ✅")]
+    assert bot.notifier.sent == []  # toast only, no extra messages

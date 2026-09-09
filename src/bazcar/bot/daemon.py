@@ -61,7 +61,24 @@ class Bot:
         await self.notifier.send_message(chat_id=chat_id, text=text)
 
     async def handle(self, update: dict[str, Any]) -> None:
+        callback = update.get("callback_query") or {}
         message = update.get("message") or {}
+
+        # Inline-button presses ("💾 Uložiť" on a deal notification).
+        if callback.get("data"):
+            chat_id = (callback.get("message") or {}).get("chat", {}).get("id")
+            cb_query_id = callback.get("id")
+            if not chat_id or not cb_query_id:
+                return
+            await self.store.ensure_prefs(chat_id)
+            data = callback["data"]
+            if data.startswith("save:"):
+                await self._save(chat_id, data.split(":", 1)[1])
+                await self.notifier.answer_callback(cb_query_id, "💾 Uložené ✅")
+            else:
+                await self.notifier.answer_callback(cb_query_id, "Neznáma akcia")
+            return
+
         text = (message.get("text") or "").strip()
         chat_id = (message.get("chat") or {}).get("id")
         if not text or not chat_id:
@@ -225,22 +242,37 @@ class Bot:
         return None
 
 
-async def poll(token: str, store: UserStore, notifier, export_dir: Path, timeout: int = 5) -> int:
-    """Fetch one batch of updates and process them; returns handled count."""
+async def poll(
+    token: str,
+    store: UserStore,
+    notifier,
+    export_dir: Path,
+    *,
+    offset: int | None = None,
+    timeout: int = 5,
+) -> tuple[int, int | None]:
+    """Fetch one batch of updates and process them.
+
+    Returns ``(handled, next_offset)``. ``next_offset`` must be passed back on
+    the next call so Telegram confirms the processed updates (getUpdates
+    without a rising offset re-delivers the same updates forever).
+    """
     bot = Bot(store=store, notifier=notifier, export_dir=export_dir)
+    payload: dict[str, Any] = {"timeout": timeout, "allowed_updates": ["message", "callback_query"]}
+    if offset is not None:
+        payload["offset"] = offset
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{TELEGRAM_API}/bot{token}/getUpdates",
-            json={"timeout": timeout, "allowed_updates": ["message"]},
-        )
+        resp = await client.post(f"{TELEGRAM_API}/bot{token}/getUpdates", json=payload)
         resp.raise_for_status()
         updates = resp.json().get("result", [])
+    next_offset = offset
     for update in updates:
         try:
             await bot.handle(update)
         except Exception:
             logger.exception("update %s failed", update.get("update_id"))
-    return len(updates)
+        next_offset = update["update_id"] + 1
+    return len(updates), next_offset
 
 
 async def run_bot_loop(once: bool = False) -> None:
@@ -257,15 +289,37 @@ async def run_bot_loop(once: bool = False) -> None:
 
         async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as notifier:
             if once:
-                handled = await poll(
-                    settings.telegram_bot_token, store, notifier, settings.export_dir, timeout=1
+                handled, nxt = await poll(
+                    settings.telegram_bot_token,
+                    store,
+                    notifier,
+                    settings.export_dir,
+                    timeout=1,
                 )
+                # Confirm the processed updates with a follow-up call so they
+                # are not re-delivered on the next run.
+                if nxt is not None:
+                    await poll(
+                        settings.telegram_bot_token,
+                        store,
+                        notifier,
+                        settings.export_dir,
+                        offset=nxt,
+                        timeout=0,
+                    )
                 logger.info("polled once, handled %d updates", handled)
                 return
             logger.info("bot polling every ~1s...")
+            offset: int | None = None
             while True:
                 try:
-                    await poll(settings.telegram_bot_token, store, notifier, settings.export_dir)
+                    _, offset = await poll(
+                        settings.telegram_bot_token,
+                        store,
+                        notifier,
+                        settings.export_dir,
+                        offset=offset,
+                    )
                 except httpx.HTTPError as exc:
                     logger.warning("poll error: %s", exc)
                 await asyncio.sleep(1.0)

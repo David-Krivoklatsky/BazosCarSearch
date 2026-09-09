@@ -119,6 +119,53 @@ async def test_send_listings_counts_successes() -> None:
     assert sent == 2
 
 
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_listings_attaches_inline_keyboard() -> None:
+    route = respx.post("https://api.telegram.org/botTOKEN/sendMessage").mock(
+        return_value=Response(200, json={"ok": True, "result": {}})
+    )
+    listing = _listing(ad_id=195357798)
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        await ntf.send_listings([listing])
+    body = json.loads(route.calls[0].request.content)
+    markup = body["reply_markup"]
+    buttons = markup["inline_keyboard"][0]
+    assert buttons[0]["callback_data"] == "save:195357798"
+    assert buttons[1]["url"] == listing.url
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_listings_with_photos_uses_send_photo_and_keyboard() -> None:
+    photo_route = respx.post("https://api.telegram.org/botTOKEN/sendPhoto").mock(
+        return_value=Response(200, json={"ok": True, "result": {"photo": []}})
+    )
+    listing = _listing(ad_id=5, image_urls=["https://img/x.jpg"])
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        sent = await ntf.send_listings_with_photos([listing])
+    assert sent == 1
+    assert photo_route.called
+    body = json.loads(photo_route.calls[0].request.content)
+    assert body["photo"] == "https://img/x.jpg"
+    assert "5" in body["caption"]
+    assert body["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "save:5"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_answer_callback_acknowledges() -> None:
+    route = respx.post("https://api.telegram.org/botTOKEN/answerCallbackQuery").mock(
+        return_value=Response(200, json={"ok": True})
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        ok = await ntf.answer_callback("123", "💾 Uložené ✅")
+    assert ok is True
+    body = json.loads(route.calls[0].request.content)
+    assert body["callback_query_id"] == "123"
+    assert body["text"] == "💾 Uložené ✅"
+
+
 def test_notify_targets_new_ids_only() -> None:
     listings = [_listing(ad_id=1), _listing(ad_id=2)]
     targets = _notify_targets(listings, inserted_ids=[1], persist_enabled=True, min_score=None)
