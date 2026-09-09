@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -149,7 +150,17 @@ class LLMProvider:
             "response_format": {"type": self.response_format} if self.response_format else None,
         }
         payload.update({key: value for key, value in optional.items() if value is not None})
-        content = await self._completion(payload, listing)
+        content: str | None = None
+        try:
+            content = await self._completion(payload, listing)
+        except LlmError as exc:
+            logger.warning("LLM call failed (%s), retrying once", exc)
+            await asyncio.sleep(1.5)
+            try:
+                content = await self._completion(payload, listing)
+            except LlmError as exc2:
+                logger.warning("LLM retry also failed: %s", exc2)
+                return None
         if content is None:
             return None
         evaluation = parse_evaluation(content)

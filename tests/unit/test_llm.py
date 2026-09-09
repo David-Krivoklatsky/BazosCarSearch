@@ -116,13 +116,15 @@ async def test_provider_evaluates_listing() -> None:
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_provider_raises_llm_error_on_http_error() -> None:
-    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
-        return_value=Response(401, json={"error": {"message": "User not found."}})
+async def test_provider_returns_none_on_http_error() -> None:
+    """Free-tier flakiness must not raise — one retry, then None."""
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=Response(502, json={"error": {"message": "upstream error"}})
     )
     async with LLMProvider("bad-key") as provider:
-        with pytest.raises(LlmError, match="OpenRouter request failed"):
-            await provider.evaluate(_listing())
+        result = await provider.evaluate(_listing())
+    assert result is None
+    assert route.call_count == 2  # initial attempt + one retry
 
 
 def test_provider_requires_key() -> None:

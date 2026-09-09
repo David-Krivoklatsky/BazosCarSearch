@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from bazcar.config.settings import ScraperConfig, get_settings, load_llm_config, load_scraper_config
-from bazcar.core.exceptions import ConfigError
+from bazcar.core.exceptions import ConfigError, LlmError
 from bazcar.core.models import DbSyncSummary, Listing, ScrapeSummary
 from bazcar.scrapers.factory import get_scraper
 
@@ -156,7 +156,13 @@ async def _evaluate(listings: list[Listing], *, enabled: bool | None, criteria: 
         stream=cfg.stream,
     ) as llm:
         for listing in listings:
-            listing.evaluation = await llm.evaluate(listing, criteria=criteria or (prefs or {}).get("criteria"))
+            try:
+                listing.evaluation = await llm.evaluate(
+                    listing, criteria=criteria or (prefs or {}).get("criteria")
+                )
+            except LlmError as exc:
+                logger.warning("eval failed for ad %s: %s", listing.ad_id, exc)
+                listing.evaluation = None
     return sum(1 for listing in listings if listing.evaluation is not None)
 
 
