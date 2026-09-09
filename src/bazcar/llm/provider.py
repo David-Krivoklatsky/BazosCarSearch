@@ -15,6 +15,8 @@ from bazcar.core.models import DealEvaluation, Listing
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
 SYSTEM_PROMPT = (
     "Si analytik ojazdených áut pre slovenský trh (Bazoš.sk). Na základe ceny, "
     "roku výroby, najazdených km, názvu a popisu ohodnoť, aká dobrá kúpa je "
@@ -46,6 +48,22 @@ def _listing_text(listing: Listing) -> str:
         f"Description: {listing.description or listing.description_preview}",
     ]
     return "\n".join(p for p in parts if p)
+
+
+async def list_models() -> tuple[list[str], list[str]]:
+    """All OpenRouter models split into (free, paid) by prompt pricing."""
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        resp = await client.get(f"{DEFAULT_BASE_URL.rstrip('/')}/models")
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+    free: list[str] = []
+    paid: list[str] = []
+    for model in data:
+        model_id = model.get("id", "")
+        pricing = model.get("pricing") or {}
+        prompt_cost = pricing.get("prompt", "1")
+        (free if prompt_cost == "0" else paid).append(model_id)
+    return sorted(free), sorted(paid)
 
 
 def parse_evaluation(content: str | None) -> DealEvaluation | None:

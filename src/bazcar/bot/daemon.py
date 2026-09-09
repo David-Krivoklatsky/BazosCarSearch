@@ -19,14 +19,43 @@ from typing import Any
 import httpx
 
 from bazcar.bot.store import UserStore
-from bazcar.config.settings import get_settings
+from bazcar.config.settings import get_settings, load_llm_config
 from bazcar.core.exceptions import ConfigError
-from bazcar.core.models import Listing
+from bazcar.core.models import DealEvaluation, Listing
 from bazcar.db.repository import ListingRepository
+from bazcar.notify.telegram import TelegramNotifier
+from bazcar.pipeline.runner import profile_key
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org"
+
+
+def _row_to_listing(row: dict) -> Listing:
+    """Rebuild a Listing (+DealEvaluation) from a /show DB row."""
+    return Listing(
+        ad_id=row["ad_id"],
+        url=row["url"],
+        title=row["title"],
+        price_eur=row["price_eur"],
+        city=row["city"],
+        image_urls=row["image_urls"],
+        year=row["year"],
+        mileage_km=row["mileage_km"],
+        description_preview=row["description_preview"] or "",
+        description=row["description"],
+        evaluation=DealEvaluation(
+            score=row["score"],
+            why=row["why"] or "",
+            risk=row["risk"] or "",
+            model=row["eval_model"],
+        ),
+    )
+
+
+def _em_url(url: str) -> str:
+    """Escape a URL for use inside an HTML attribute (href)."""
+    return url.replace("&", "&amp;").replace('"', "&quot;")
 
 
 def _em(text: str) -> str:
@@ -80,6 +109,10 @@ HELP_TEXT = (
     "  <b>/filter psc</b> + 81101 — lokalita\n"
     "  <b>/filter clear</b> — vymazať filtre\n\n"
     "<i>Pozn.: najazdené km nie je Bazoš filter — zohľadná ho AI cez tvoje kritériá.</i>\n\n"
+    "<b>📊 Zobrazenie</b>\n"
+    "  <b>/show</b> — všetky vyhovujúce inzeráty z posledných dní\n"
+    "  <b>/eval</b> — prehodnotiť autá z posledných dní podľa aktívneho searchu\n"
+    "  <b>/models</b> — dostupné AI modely (free / paid)\n\n"
     "<b>💾 Uložené inzeráty</b>\n"
     "  <b>/save</b> — uložiť inzerát (ad_id) na neskôr\n"
     "  <b>/saved</b> — zoznam uložených inzerátov\n"
@@ -156,6 +189,12 @@ class Bot:
                 return await self._photos(chat_id, arg)
             case "/filter":
                 return await self._filter(chat_id, arg)
+            case "/eval":
+                return await self._eval(chat_id, arg)
+            case "/show":
+                return await self._show(chat_id, arg)
+            case "/models":
+                return await self._models(chat_id)
             case "/save":
                 return await self._save(chat_id, arg)
             case "/saved":
@@ -170,7 +209,10 @@ class Bot:
         if not text:
             return 'Pošli, čo hľadáš, napr.: "diesel, do 200 000 km, nad 80kW".'
         await self.store.update_prefs(chat_id, criteria=text)
-        await _dispatch_scrape()
+        try:
+            await self._queue_rehodnotenie(chat_id)
+        except Exception:
+            logger.warning("rehodnotenie queue failed", exc_info=True)
         return f"✅ Kritériá uložené:\n<i>{_em(text)}</i>"
 
     async def _filter(self, chat_id: int, arg: str) -> str:
@@ -265,7 +307,10 @@ class Bot:
                 reply = f"✅ Aktivované „{_em(s.name)}“: <i>{_em(s.criteria)}</i>"
                 if s.filters:
                     reply += "\n" + self._filters_summary(s.filters)
-                await _dispatch_scrape()
+                try:
+                    await self._queue_rehodnotenie(chat_id)
+                except Exception:
+                    logger.warning("rehodnotenie queue failed", exc_info=True)
                 return reply
         return f"Nenašiel som „{_em(name)}“. /searches"
 
@@ -286,7 +331,8 @@ class Bot:
         except ValueError:
             return "Hodnota 0–100, napr. `/score 75`."
         await self.store.update_prefs(chat_id, min_score=value)
-        return f"✅ Odteraz ukazujem inzeráty od <b>{value}/100</b>."
+        await _dispatch_scrape()
+        return f"✅ Odteraz ukazujem inzeráty od <b>{value}/100</b>. Pre prehľad pošli /show."
 
     async def _photos(self, chat_id: int, arg: str) -> str:
         arg = arg.strip().lower()
@@ -295,6 +341,102 @@ class Bot:
         on = arg == "on"
         await self.store.update_prefs(chat_id, show_photo=on)
         return "✅ Fotky pri inzerátoch: " + ("zapnuté" if on else "vypnuté")
+
+    async def _queue_rehodnotenie(self, chat_id: int, max_listings: int = 100) -> bool:
+        """Queue an eval backfill for the active profile and trigger a scrape.
+
+        Skip-safe: scoring runs only for ads whose (criteria, model) evaluation
+        does not exist yet — cached profiles cost nothing.
+        """
+        settings = get_settings()
+        if not settings.database_url:
+            return False
+        prefs = await self.store.get_prefs(chat_id)
+        if prefs is None:
+            return False
+        model = prefs.model or load_llm_config().model
+        p_key = profile_key(prefs.criteria, model)
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            pending = await repo.pending_eval_tasks()
+            if any(t["profile_key"] == p_key for t in pending):
+                return False  # already queued for this exact profile
+            await repo.create_eval_task(p_key, prefs.criteria, model, max_listings)
+        finally:
+            await repo.close()
+        await _dispatch_scrape()
+        return True
+
+    async def _eval(self, chat_id: int, arg: str) -> str:
+        try:
+            limit = max(1, min(int(arg or 100), 200))
+        except ValueError:
+            limit = 100
+        created = await self._queue_rehodnotenie(chat_id, max_listings=limit)
+        if created:
+            return (
+                "🔁 Zaraďujem prehodnotenie áut z posledných dní podľa aktívneho "
+                "searchu. Vyhodnotené (rovnaký search + model) sa preskočia — "
+                "hotové bude o pár minút, potom skús /show."
+            )
+        return "⏳ Toto vyhľadanie už prehodnocujem — pošli /show o pár minút."
+
+    async def _show(self, chat_id: int, arg: str) -> str:
+        """List recently seen listings matching the active search profile.
+
+        Sends the top matches as photo notifications (same look as deal
+        alerts). Uses the active profile's stored evaluations and the current
+        ``/score`` threshold.
+        """
+        try:
+            limit = max(1, min(int(arg or 5), 10))
+        except ValueError:
+            limit = 5
+        prefs = await self.store.get_prefs(chat_id)
+        if prefs is None:
+            return "Žiadne nastavenia. /help"
+        model = prefs.model or (load_llm_config().model)
+        p_key = profile_key(prefs.criteria, model)
+        min_score = prefs.min_score or 0
+
+        from bazcar.db import ListingRepository
+
+        repo = ListingRepository(get_settings().database_url)
+        await repo.connect()
+        try:
+            rows = await repo.fetch_recent_matches(p_key, min_score, days=3, limit=limit)
+        finally:
+            await repo.close()
+        if not rows:
+            return (
+                f"Nič vyhovujúce (skóre >= {min_score}) za posledné 3 dni.\n"
+                "Zmeň /criteria alebo /score a počkaj na ďalší scrape."
+            )
+        listings = [_row_to_listing(row) for row in rows]
+        async with TelegramNotifier(
+            get_settings().telegram_bot_token, get_settings().telegram_chat_id
+        ) as notifier:
+            await notifier.send_listings_with_photos(listings)
+        return f"📤 Poslal som {len(listings)} najlepších (skóre >= {min_score}):"
+
+    async def _models(self, chat_id: int) -> str:
+        from bazcar.llm.provider import list_models
+
+        free, paid = await list_models()
+
+        def _lines(models: list[str], cap: int) -> list[str]:
+            shown = [f"  • <code>{_em(m)}</code>" for m in models[:cap]]
+            if len(models) > cap:
+                shown.append(f"  • … +{len(models) - cap} ďalších (openrouter.ai/models)")
+            return shown
+
+        return (
+            "<b>🤖 Dostupné modely</b>\n\n"
+            "<b>🆓 Free</b>\n" + "\n".join(_lines(free, 30) or ["  • —"]) + "\n\n"
+            "<b>💰 Paid</b>\n" + "\n".join(_lines(paid, 20))
+            + "\n\nNastaviť: <code>/model názov-modelu</code>"
+        )
 
     async def _save(self, chat_id: int, arg: str) -> str:
         try:
@@ -312,7 +454,9 @@ class Bot:
         if not saved:
             return "Nemáš nič uložené."
         lines = ["Uložené inzeráty:"] + [
-            f"• <b>{_em(item.ad_title or f'ad {item.ad_id}')}</b> — {_em(item.ad_url or str(item.ad_id))}"
+            f"• <a href=\"{_em_url(item.ad_url)}\">{_em(item.ad_title or f'ad {item.ad_id}')}</a>"
+            if item.ad_url
+            else f"• {_em(item.ad_title or f'ad {item.ad_id}')}"
             for item in saved
         ]
         return "\n".join(lines)

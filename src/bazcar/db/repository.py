@@ -16,7 +16,7 @@ from decimal import Decimal
 import asyncpg
 
 from bazcar.core.exceptions import DbError
-from bazcar.core.models import Listing
+from bazcar.core.models import DealEvaluation, Listing
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,34 @@ CREATE TABLE IF NOT EXISTS bot_state (
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
+-- LLM deal scores, one per (listing, search profile) — the same ad is stored
+-- once but can carry different scores under different search criteria/models.
+CREATE TABLE IF NOT EXISTS evaluations (
+    ad_id        bigint NOT NULL REFERENCES listings(ad_id) ON DELETE CASCADE,
+    profile_key  text NOT NULL,
+    score        int NOT NULL,
+    why          text,
+    risk         text,
+    is_car       boolean NOT NULL DEFAULT true,
+    model        text,
+    evaluated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (ad_id, profile_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evaluations_profile_score
+    ON evaluations (profile_key, score DESC);
+
+-- Backfill tasks: re-evaluate already-stored ads under a (new) search profile.
+CREATE TABLE IF NOT EXISTS eval_tasks (
+    id           bigserial PRIMARY KEY,
+    profile_key  text NOT NULL,
+    criteria     text,
+    model        text,
+    max_listings int NOT NULL DEFAULT 100,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    done_at      timestamptz
+);
+
 -- Idempotent migrations for tables created before these columns existed.
 ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
@@ -127,6 +155,39 @@ INSERT INTO price_history (ad_id, price_eur) VALUES ($1, $2)
 
 _FETCH_EXISTING_SQL = """
 SELECT ad_id, price_eur FROM listings WHERE ad_id = ANY($1::bigint[])
+"""
+
+_UPSERT_EVALUATION_SQL = """
+INSERT INTO evaluations (ad_id, profile_key, score, why, risk, is_car, model)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (ad_id, profile_key) DO UPDATE SET
+    score = EXCLUDED.score, why = EXCLUDED.why, risk = EXCLUDED.risk,
+    is_car = EXCLUDED.is_car, model = EXCLUDED.model, evaluated_at = now()
+"""
+
+_FETCH_EVALUATIONS_SQL = """
+SELECT ad_id, score, why, risk, is_car, model
+FROM evaluations WHERE profile_key = $1 AND ad_id = ANY($2::bigint[])
+"""
+
+_FETCH_RECENT_MATCHES_SQL = """
+SELECT l.ad_id, l.url, l.title, l.price_eur, l.city, l.image_urls,
+       l.year, l.mileage_km, l.description_preview, l.description,
+       e.score, e.why, e.risk, e.model AS eval_model
+FROM listings l
+JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
+WHERE e.score >= $2 AND l.last_seen_at >= now() - make_interval(days => $3)
+ORDER BY e.score DESC, l.last_seen_at DESC
+LIMIT $4
+"""
+
+_FETCH_RECENT_LISTINGS_SQL = """
+SELECT ad_id, url, title, price_eur, city, image_urls,
+       year, mileage_km, description_preview, description
+FROM listings
+WHERE last_seen_at >= now() - make_interval(days => $1)
+ORDER BY last_seen_at DESC
+LIMIT $2
 """
 
 
@@ -293,6 +354,134 @@ class ListingRepository:
             return {}
         rows = await conn.fetch(_FETCH_EXISTING_SQL, ad_ids)
         return {row["ad_id"]: row["price_eur"] for row in rows}
+
+    # ------------------------------------------------------------- evaluations
+
+    async def upsert_evaluations(
+        self, profile_key: str, items: list[tuple[int, DealEvaluation]]
+    ) -> None:
+        """Store LLM scores keyed by (ad_id, profile_key)."""
+        if not items:
+            return
+        conn = self._require_conn()
+        try:
+            rows = [
+                (
+                    ad_id,
+                    profile_key,
+                    ev.score,
+                    ev.why,
+                    ev.risk,
+                    ev.is_car,
+                    ev.model,
+                )
+                for ad_id, ev in items
+            ]
+            await conn.executemany(_UPSERT_EVALUATION_SQL, rows)
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"evaluation upsert failed: {exc}") from exc
+
+    async def fetch_evaluations(
+        self, profile_key: str, ad_ids: list[int]
+    ) -> dict[int, DealEvaluation]:
+        """Cached scores for the given profile; missing ads are simply absent."""
+        if not ad_ids:
+            return {}
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(_FETCH_EVALUATIONS_SQL, profile_key, ad_ids)
+            return {
+                row["ad_id"]: DealEvaluation(
+                    score=row["score"],
+                    why=row["why"] or "",
+                    risk=row["risk"] or "",
+                    is_car=row["is_car"],
+                    model=row["model"],
+                )
+                for row in rows
+            }
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"evaluation fetch failed: {exc}") from exc
+
+    async def fetch_recent_matches(
+        self, profile_key: str, min_score: int, days: int, limit: int
+    ) -> list[dict]:
+        """Listings evaluated under ``profile_key`` scoring >= ``min_score``.
+
+        Newest seen first, ``limit`` rows. Used by the bot ``/show`` command.
+        """
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(
+                _FETCH_RECENT_MATCHES_SQL, profile_key, min_score, days, limit
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"recent matches fetch failed: {exc}") from exc
+        matches = []
+        for row in rows:
+            record = dict(row)
+            try:
+                record["image_urls"] = json.loads(record["image_urls"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record["image_urls"] = []
+            matches.append(record)
+        return matches
+
+    async def wipe_listings(self) -> None:
+        """Delete every listing (cascades price_history/saved/evaluations)."""
+        conn = self._require_conn()
+        try:
+            await conn.execute(
+                "TRUNCATE listings, price_history, saved_listings, evaluations"
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"wipe failed: {exc}") from exc
+
+    # ------------------------------------------------- evaluation backfill
+
+    async def create_eval_task(
+        self, profile_key: str, criteria: str | None, model: str, max_listings: int
+    ) -> None:
+        """Queue a backfill: score recent ads under this search profile."""
+        conn = self._require_conn()
+        await conn.execute(
+            "INSERT INTO eval_tasks (profile_key, criteria, model, max_listings)"
+            " VALUES ($1, $2, $3, $4)",
+            profile_key,
+            criteria,
+            model,
+            max_listings,
+        )
+
+    async def pending_eval_tasks(self) -> list[dict]:
+        conn = self._require_conn()
+        rows = await conn.fetch(
+            "SELECT id, profile_key, criteria, model, max_listings FROM eval_tasks"
+            " WHERE done_at IS NULL ORDER BY id"
+        )
+        return [dict(row) for row in rows]
+
+    async def complete_eval_task(self, task_id: int) -> None:
+        await self._require_conn().execute(
+            "UPDATE eval_tasks SET done_at = now() WHERE id = $1", task_id
+        )
+
+    async def fetch_recent_listings(self, days: int, limit: int) -> list[dict]:
+        """Ads seen within ``days``, any profile — input for eval backfill."""
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(_FETCH_RECENT_LISTINGS_SQL, days, limit)
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"recent listings fetch failed: {exc}") from exc
+        listings = []
+        for row in rows:
+            record = dict(row)
+            try:
+                record["image_urls"] = json.loads(record["image_urls"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record["image_urls"] = []
+            listings.append(record)
+        return listings
 
     def _require_conn(self) -> asyncpg.Connection:
         if self._conn is None:

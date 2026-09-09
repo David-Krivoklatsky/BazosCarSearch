@@ -15,7 +15,7 @@ from bazcar.config.settings import (
     load_scraper_config,
 )
 from bazcar.core.exceptions import ConfigError, LlmError
-from bazcar.core.models import DbSyncSummary, Listing, ScrapeSummary
+from bazcar.core.models import DbSyncSummary, DealEvaluation, Listing, ScrapeSummary
 from bazcar.scrapers.factory import get_scraper
 
 logger = logging.getLogger(__name__)
@@ -74,17 +74,22 @@ async def run_scrape(
     if limit is not None:
         listings = listings[:limit]
 
+    # Persist first so evaluations (FK to listings) can be cached per profile.
+    db_summary, inserted_ids = await _persist(listings, enabled=persist)
+
     evaluated = 0
     if evaluate is not False:
         evaluated = await _evaluate(listings, enabled=evaluate, criteria=(prefs or {}).get("criteria"))
+        try:
+            await _process_eval_tasks()
+        except Exception:
+            logger.warning("eval task processing failed", exc_info=True)
 
     # Include filters hash in filename to separate different filter combinations
     filters_tag = getattr(scraper, "filters_hash", "default")
     target = export_path or (settings.export_dir / _default_filename(filters_tag))
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_json(target, listings)
-
-    db_summary, inserted_ids = await _persist(listings, enabled=persist)
 
     notified = 0
     if notify is not False:
@@ -142,11 +147,122 @@ async def _load_prefs() -> dict | None:
         return None
 
 
-async def _evaluate(listings: list[Listing], *, enabled: bool | None, criteria: str | None = None) -> int:
-    """Score listings with an LLM unless explicitly disabled or unconfigured.
+def profile_key(criteria: str | None, model: str) -> str:
+    """Stable key for a search profile (criteria + model) used to cache evals."""
+    import hashlib
 
-    Returns how many listings received an evaluation. A single failed LLM call
-    is logged and skipped (never fatal to the pipeline).
+    return hashlib.md5(f"{criteria or ''}|{model}".encode()).hexdigest()[:12]
+
+
+async def _evaluate_profile(
+    listings: list[Listing],
+    *,
+    criteria: str | None,
+    model: str,
+    cfg,
+    repo=None,
+) -> int:
+    """Score ``listings`` under one search profile (criteria + model).
+
+    Ads already scored for this exact profile (same criteria, same model) are
+    skipped — everything is cached in the ``evaluations`` table.
+    """
+    if not listings:
+        return 0
+    settings = get_settings()
+    p_key = profile_key(criteria, model)
+
+    cached: dict[int, DealEvaluation] = {}
+    if repo is not None:
+        try:
+            cached = await repo.fetch_evaluations(p_key, [listing.ad_id for listing in listings])
+        except Exception:
+            logger.warning("evaluation cache unavailable, evaluating fresh", exc_info=True)
+
+    for listing in listings:
+        ev = cached.get(listing.ad_id)
+        if ev is not None:
+            listing.evaluation = ev
+
+    fresh_items: list[tuple[int, DealEvaluation]] = []
+    to_eval = [listing for listing in listings if listing.evaluation is None]
+    if to_eval:
+        from bazcar.llm import LLMProvider
+
+        async with LLMProvider(
+            settings.openrouter_api_key,
+            base_url=cfg.base_url,
+            model=model,
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+            top_p=cfg.top_p,
+            frequency_penalty=cfg.frequency_penalty,
+            presence_penalty=cfg.presence_penalty,
+            response_format=cfg.response_format,
+            stream=cfg.stream,
+        ) as llm:
+            for listing in to_eval:
+                try:
+                    listing.evaluation = await llm.evaluate(listing, criteria=criteria)
+                except LlmError as exc:
+                    logger.warning("eval failed for ad %s: %s", listing.ad_id, exc)
+                    listing.evaluation = None
+        fresh_items = [
+            (listing.ad_id, listing.evaluation)
+            for listing in to_eval
+            if listing.evaluation is not None
+        ]
+        if repo is not None and fresh_items:
+            try:
+                await repo.upsert_evaluations(p_key, fresh_items)
+            except Exception:
+                logger.warning("evaluation cache write failed", exc_info=True)
+
+    return sum(1 for listing in listings if listing.evaluation is not None)
+
+
+async def _process_eval_tasks() -> int:
+    """Run queued backfill tasks (re-score stored ads under task profiles)."""
+    settings = get_settings()
+    if not settings.database_url or not settings.openrouter_api_key:
+        return 0
+    from bazcar.db import ListingRepository
+
+    cfg = load_llm_config()
+    processed = 0
+    repo = ListingRepository(settings.database_url)
+    await repo.connect()
+    try:
+        await repo.init_schema()
+        for task in await repo.pending_eval_tasks():
+            rows = await repo.fetch_recent_listings(days=3, limit=task["max_listings"])
+            listings = [Listing(**row) for row in rows]
+            count = await _evaluate_profile(
+                listings,
+                criteria=task["criteria"],
+                model=task["model"],
+                cfg=cfg,
+                repo=repo,
+            )
+            await repo.complete_eval_task(task["id"])
+            processed += 1
+            logger.info(
+                "eval task %d done (profile %s): %d ads scored",
+                task["id"],
+                task["profile_key"],
+                count,
+            )
+    finally:
+        await repo.close()
+    return processed
+
+
+async def _evaluate(listings: list[Listing], *, enabled: bool | None, criteria: str | None = None) -> int:
+    """Score scraped listings under the active search profile.
+
+    Evaluations are cached per profile (criteria + model): the same ad is
+    scored once per profile, so switching searches re-evaluates but repeated
+    runs do not. A failed LLM call is logged and skipped (never fatal).
     """
     if not listings:
         return 0
@@ -156,32 +272,37 @@ async def _evaluate(listings: list[Listing], *, enabled: bool | None, criteria: 
             raise ConfigError("evaluation requested but OPENROUTER_API_KEY is not set")
         return 0
 
-    from bazcar.llm import LLMProvider
+    from bazcar.llm import LLMProvider  # noqa: F401 — re-exported for tests
 
     cfg = load_llm_config()
     prefs = await _load_prefs()
     model = settings.openrouter_model or (prefs or {}).get("model") or cfg.model
-    async with LLMProvider(
-        settings.openrouter_api_key,
-        base_url=cfg.base_url,
-        model=model,
-        temperature=cfg.temperature,
-        max_tokens=cfg.max_tokens,
-        top_p=cfg.top_p,
-        frequency_penalty=cfg.frequency_penalty,
-        presence_penalty=cfg.presence_penalty,
-        response_format=cfg.response_format,
-        stream=cfg.stream,
-    ) as llm:
-        for listing in listings:
-            try:
-                listing.evaluation = await llm.evaluate(
-                    listing, criteria=criteria or (prefs or {}).get("criteria")
-                )
-            except LlmError as exc:
-                logger.warning("eval failed for ad %s: %s", listing.ad_id, exc)
-                listing.evaluation = None
-    return sum(1 for listing in listings if listing.evaluation is not None)
+
+    repo = None
+    if settings.database_url:
+        try:
+            from bazcar.db import ListingRepository
+
+            repo = ListingRepository(settings.database_url)
+            await repo.connect()
+            await repo.init_schema()
+        except Exception:
+            logger.warning("evaluation cache unavailable", exc_info=True)
+            if repo is not None:
+                await repo.close()
+                repo = None
+
+    try:
+        return await _evaluate_profile(
+            listings,
+            criteria=criteria or (prefs or {}).get("criteria"),
+            model=model,
+            cfg=cfg,
+            repo=repo,
+        )
+    finally:
+        if repo is not None:
+            await repo.close()
 
 
 async def _persist(
