@@ -1,0 +1,33 @@
+# Phase 5: autonomous cron run (~ every 15 min): scrape -> dedupe -> LLM eval -> Telegram.
+name: scrape
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # UTC; GitHub may delay a few minutes
+  workflow_dispatch:          # manual trigger for testing
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false  # never overlap runs (rate limits + dedupe)
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Scrape + evaluate + notify
+        run: uv run bazcar scrape --db --eval --notify
+        env:
+          BAZCAR_DATABASE_URL: ${{ secrets.BAZCAR_DATABASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
