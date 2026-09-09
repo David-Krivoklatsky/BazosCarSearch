@@ -57,10 +57,12 @@ async def test_second_sync_produces_no_duplicates_and_tracks_price_changes(
     b = _listing(900002, Decimal("20000"))
 
     first = await repo.sync_many([a, b])
-    assert (first.inserted, first.unchanged, first.price_changed) == (2, 0, 0)
+    assert (first.stats.inserted, first.stats.unchanged, first.stats.price_changed) == (2, 0, 0)
+    assert sorted(first.inserted_ids) == sorted(TEST_AD_IDS)
 
     same = await repo.sync_many([a, b])
-    assert (same.inserted, same.price_changed, same.unchanged) == (0, 0, 2)
+    assert (same.stats.inserted, same.stats.price_changed, same.stats.unchanged) == (0, 0, 2)
+    assert same.inserted_ids == []
 
     count = await repo._conn.fetchval(
         "SELECT count(*) FROM listings WHERE ad_id = ANY($1::bigint[])", list(TEST_AD_IDS)
@@ -69,7 +71,7 @@ async def test_second_sync_produces_no_duplicates_and_tracks_price_changes(
 
     a.price_eur = Decimal("9000")
     changed = await repo.sync_many([a, b])
-    assert (changed.price_changed, changed.price_drops) == (1, 1)
+    assert (changed.stats.price_changed, changed.stats.price_drops) == (1, 1)
 
     rows = await repo._conn.fetch(
         "SELECT price_eur FROM price_history WHERE ad_id = $1 ORDER BY id", 900001

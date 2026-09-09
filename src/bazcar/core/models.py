@@ -68,4 +68,5 @@ class ScrapeSummary(BaseModel):
     exported: int = 0
     export_path: str | None = None
     evaluated: int = 0
+    notified: int = 0
     db: DbSyncSummary | None = None

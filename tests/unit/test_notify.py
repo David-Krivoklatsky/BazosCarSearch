@@ -1,0 +1,146 @@
+"""Unit tests for the Telegram notification layer (Phase 4) — mocked API."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+import respx
+from httpx import Response
+
+from bazcar.core.models import DealEvaluation, Listing
+from bazcar.notify.format import format_listing
+from bazcar.notify.telegram import TelegramNotifier
+from bazcar.pipeline.runner import _notify_targets
+
+
+def _listing(**overrides) -> Listing:
+    base = dict(
+        ad_id=195357798,
+        url="https://auto.bazos.sk/inzerat/195357798/kia-sportage.php",
+        title="Kia Sportage 1.6 T-GDI Platinum 2022",
+        price_eur=22500,
+        city="Nitra",
+        description_preview="Kia Sportage 2022, 33 650 km",
+        description="Plná výbava.",
+        year=2022,
+        mileage_km=33650,
+    )
+    base.update(overrides)
+    return Listing(**base)
+
+
+def _listing_with_score(score: int, ad_id: int = 195357798) -> Listing:
+    listing = _listing(ad_id=ad_id)
+    listing.evaluation = DealEvaluation(score=score, why="Dobrá kúpa.")
+    return listing
+
+
+def test_format_listing_includes_key_fields() -> None:
+    listing = _listing()
+    listing.evaluation = DealEvaluation(score=88, why="Veľmi dobrá cena.")
+    text = format_listing(listing)
+    assert "Kia Sportage" in text
+    assert "22 500" in text
+    assert "2022" in text
+    assert "33 650 km" in text
+    assert "Nitra" in text
+    assert "88/100" in text
+    assert "https://auto.bazos.sk/inzerat/195357798/" in text
+
+
+def test_format_message_escapes_html() -> None:
+    listing = _listing(title="Audi A4 <b>><br> & Co")
+    text = format_listing(listing)
+    assert "<b>" in text  # our own bold tag
+    assert "&lt;b&gt;" in text
+    assert "&amp;" in text
+
+
+def test_format_message_fallback_price() -> None:
+    listing = _listing(price_eur=None, price_raw=None)
+    assert "Dohodou" in format_listing(listing)
+
+
+def test_format_message_without_description() -> None:
+    listing = _listing(description=None)
+    text = format_listing(listing)
+    assert "Kia Sportage" in text
+    assert not text.endswith("</b>")  # title tag closed, URL last line
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_message_success() -> None:
+    route = respx.post("https://api.telegram.org/botTOKEN/sendMessage").mock(
+        return_value=Response(
+            200,
+            json={
+                "ok": True,
+                "result": {"message_id": 1, "chat": {"id": 42}},
+            },
+        )
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        ok = await ntf.send_message("hello")
+    assert ok is True
+    assert route.called
+    body = json.loads(route.calls[0].request.content)
+    assert body["chat_id"] == "42"
+    assert body["text"] == "hello"
+    assert body["parse_mode"] == "HTML"
+    assert body["disable_web_page_preview"] is True
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_failure_is_swallowed() -> None:
+    respx.post("https://api.telegram.org/botTOKEN/sendMessage").mock(
+        return_value=Response(401, json={"ok": False, "description": "Unauthorized"})
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        ok = await ntf.send_message("hello")
+    assert ok is False
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_listings_counts_successes() -> None:
+    respx.post("https://api.telegram.org/botTOKEN/sendMessage").mock(
+        side_effect=[
+            Response(200, json={"ok": True, "result": {}}),
+            Response(500, json={"ok": False}),
+            Response(200, json={"ok": True, "result": {}}),
+        ]
+    )
+    listings = [_listing(ad_id=1), _listing(ad_id=2), _listing(ad_id=3)]
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        sent = await ntf.send_listings(listings)
+    assert sent == 2
+
+
+def test_notify_targets_new_ids_only() -> None:
+    listings = [_listing(ad_id=1), _listing(ad_id=2)]
+    targets = _notify_targets(listings, inserted_ids=[1], min_score=None)
+    assert [t.ad_id for t in targets] == [1]
+
+
+def test_notify_targets_all_when_no_ids() -> None:
+    listings = [_listing(ad_id=1), _listing(ad_id=2)]
+    targets = _notify_targets(listings, inserted_ids=[], min_score=None)
+    assert [t.ad_id for t in targets] == [1, 2]
+
+
+def test_notify_targets_filters_by_min_score() -> None:
+    listings = [_listing(ad_id=1), _listing(ad_id=2), _listing(ad_id=3)]
+    listings[0].evaluation = DealEvaluation(score=60, why="x")
+    listings[1].evaluation = DealEvaluation(score=80, why="y")
+    targets = _notify_targets(listings, inserted_ids=[], min_score=70)
+    assert [t.ad_id for t in targets] == [2]
+
+
+def test_notify_targets_unrated_and_low_score_excluded() -> None:
+    listings = [_listing(ad_id=1), _listing(ad_id=2)]
+    listings[1].evaluation = DealEvaluation(score=50, why="x")
+    targets = _notify_targets(listings, inserted_ids=[], min_score=70)
+    assert targets == []

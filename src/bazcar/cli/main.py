@@ -40,8 +40,13 @@ def scrape(
         "--eval/--no-eval",
         help="LLM-evaluate deals via OpenRouter (default: auto when OPENROUTER_API_KEY is set).",
     ),
+    notify: bool | None = typer.Option(
+        None,
+        "--notify/--no-notify",
+        help="Send Telegram alerts for new deals (default: auto when TELEGRAM_BOT_TOKEN is set).",
+    ),
 ) -> None:
-    """Scrape a Bazoš category and export listings to JSON (+ optional Postgres sync / LLM eval)."""
+    """Scrape a Bazoš category and export listings to JSON (+ optional Postgres / LLM / Telegram)."""
     from bazcar.pipeline.runner import run_scrape
 
     summary = asyncio.run(
@@ -53,6 +58,7 @@ def scrape(
             export_path=export,
             persist=db,
             evaluate=eval,
+            notify=notify,
         )
     )
     typer.echo(
@@ -61,6 +67,8 @@ def scrape(
     )
     if summary.evaluated:
         typer.echo(f"[LLM] evaluated {summary.evaluated} listings")
+    if summary.notified:
+        typer.echo(f"[TG] notified {summary.notified} listings")
     if summary.db is not None:
         db = summary.db
         typer.echo(

@@ -25,6 +25,7 @@ async def run_scrape(
     export_path: Path | None = None,
     persist: bool | None = None,
     evaluate: bool | None = None,
+    notify: bool | None = None,
     config: ScraperConfig | None = None,
 ) -> ScrapeSummary:
     """Scrape using configured search filters for up to ``max_pages`` pages and export to JSON.
@@ -32,8 +33,9 @@ async def run_scrape(
     When ``persist`` is enabled (default: auto when ``BAZCAR_DATABASE_URL`` is
     configured) found listings are deduped-inserted into Postgres (Neon) and the
     price history is appended. When ``evaluate`` is enabled (default: auto when
-    ``OPENROUTER_API_KEY`` is set) each listing is scored by an LLM. Returns a
-    ``ScrapeSummary`` describing the run.
+    ``OPENROUTER_API_KEY`` is set) each listing is scored by an LLM. When
+    ``notify`` is enabled (default: auto when ``TELEGRAM_BOT_TOKEN`` is set)
+    newly inserted deals are pushed to Telegram. Returns a ``ScrapeSummary``.
     """
     settings = get_settings()
     cfg = config or load_scraper_config()
@@ -63,7 +65,11 @@ async def run_scrape(
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_json(target, listings)
 
-    db_summary = await _persist(listings, enabled=persist)
+    db_summary, inserted_ids = await _persist(listings, enabled=persist)
+
+    notified = 0
+    if notify is not False:
+        notified = await _notify(listings, inserted_ids=inserted_ids, enabled=notify)
 
     summary = ScrapeSummary(
         source=platform,
@@ -72,6 +78,7 @@ async def run_scrape(
         exported=len(listings),
         export_path=str(target),
         evaluated=evaluated,
+        notified=notified,
         db=db_summary,
     )
     logger.info(
@@ -116,22 +123,79 @@ async def _evaluate(listings: list[Listing], *, enabled: bool | None) -> int:
     return sum(1 for listing in listings if listing.evaluation is not None)
 
 
-async def _persist(listings: list[Listing], *, enabled: bool | None) -> DbSyncSummary | None:
-    """Write listings to Postgres unless explicitly disabled or unconfigured."""
+async def _persist(
+    listings: list[Listing], *, enabled: bool | None
+) -> tuple[DbSyncSummary | None, list[int]]:
+    """Write listings to Postgres unless explicitly disabled or unconfigured.
+
+    Returns ``(summary, inserted_ids)`` where ``inserted_ids`` are the ad ids
+    that were newly created in the database (empty when persistence is off).
+    """
     if enabled is False:
-        return None
+        return None, []
     settings = get_settings()
     if not settings.database_url:
         if enabled is True:
             raise ConfigError("persistence requested but BAZCAR_DATABASE_URL is not set")
-        return None
+        return None, []
 
     from bazcar.db import ListingRepository
 
     async with ListingRepository(settings.database_url) as repo:
         await repo.init_schema()
-        stats = await repo.sync_many(listings)
-    return DbSyncSummary(**stats.as_dict())
+        result = await repo.sync_many(listings)
+    return DbSyncSummary(**result.stats.as_dict()), result.inserted_ids
+
+
+async def _notify(
+    listings: list[Listing], *, inserted_ids: list[int], enabled: bool | None
+) -> int:
+    """Send Telegram alerts for the newly inserted listings.
+
+    Only deals that are genuinely new are notified. When ``inserted_ids`` is
+    empty it can mean either "no new ads" or "persistence disabled" — without a
+    database we cannot tell, so we notify everything (a manual / first run).
+
+    If ``telegram_min_score`` is set, only evaluated deals scoring at least
+    that value are notified. Returns the number of messages sent.
+    """
+    if not listings:
+        return 0
+    settings = get_settings()
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        if enabled is True:
+            raise ConfigError("notification requested but TELEGRAM_BOT_TOKEN/CHAT_ID is not set")
+        return 0
+
+    from bazcar.notify import TelegramNotifier
+
+    targets = _notify_targets(
+        listings,
+        inserted_ids=inserted_ids,
+        min_score=settings.telegram_min_score,
+    )
+    if not targets:
+        return 0
+    async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as ntf:
+        return await ntf.send_listings(targets)
+
+
+def _notify_targets(
+    listings: list[Listing], *, inserted_ids: list[int], min_score: int | None
+) -> list[Listing]:
+    """Pure selection of which listings deserve a notification."""
+    by_id = {listing.ad_id: listing for listing in listings}
+    if inserted_ids:
+        selected = [by_id[ad_id] for ad_id in inserted_ids if ad_id in by_id]
+    else:
+        selected = list(listings)
+    if min_score is not None:
+        selected = [
+            listing
+            for listing in selected
+            if listing.evaluation is not None and listing.evaluation.score >= min_score
+        ]
+    return selected
 
 
 def _default_filename(filters_tag: str = "default") -> str:

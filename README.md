@@ -10,7 +10,7 @@ Autonómny vyhľadávač výhodných ojazdených áut na [Bazoš.sk](https://aut
 | 1 | Modulárny scraper Bazoš (osobné autá, celé SK) | Export 50 najnovších inzerátov do JSON | hotové |
 | 2 | Perzistencia (Neon Postgres) + dedupe | 2. spustenie bez duplicit; sledovanie zmien ceny | hotové |
 | 3 | Vyhodnotenie obchodov cez OpenRouter (LLMProvider) | AI ohodnotí inzeráty + `why` | hotové (live overenie s kľúčom) |
-| 4 | Telegram notifikácie, prepínanie modelu cez bot | Príchod notifikácie k novému inzerátu | — |
+| 4 | Telegram notifikácie, prepínanie modelu cez bot | Príchod notifikácie k novému inzerátu | notifikácie hotové (bot-preepínanie Zatiaľ nie) |
 | 5 | Samostatné spustenie na GitHub Actions (cron ~15 min) | Automatický beh na GHA + logy | — |
 | 6 | Autonómny kontakt predajcov (čakanie, zľava, kúpa) | Bot úspešne ponúkne kúpu predajcovi | — |
 
@@ -28,6 +28,9 @@ uv run bazcar version
 uv run bazcar scrape --pages 1 --db
 # LLM ohodnotenie inzerátov cez OpenRouter (automaticky, keď je nastavená OPENROUTER_API_KEY)
 uv run bazcar scrape --pages 1 --db --eval
+# + Telegram notifikácie iba nových inzerátov (keď je nastavený TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID;
+#   s BAZCAR_TELEGRAM_MIN_SCORE iba vysoko skórované obchody)
+uv run bazcar scrape --pages 1 --db --eval --notify
 # bez databázy len export do JSON
 uv run bazcar scrape --pages 3 --limit 50 --no-db --no-eval
 ```
@@ -47,6 +50,10 @@ proti reálnemu Neon pomocou `BAZCAR_DATABASE_URL` z `.env`.
 
 LLM eval (`--eval`) je unit-testovaný s mocknutým OpenRouter (`tests/unit/test_llm.py`).
 Live overenie: nastav `OPENROUTER_API_KEY` v `.env` a spusti `bazcar scrape --pages 1 --eval`.
+
+Telegram notifikácie (Fáza 4): unit-testované s mocknutou Telegram API (`tests/unit/test_notify.py`).
+Live overenie: nastav `TELEGRAM_BOT_TOKEN` a `TELEGRAM_CHAT_ID` v `.env` a spusti
+`bazcar scrape --pages 1 --notify` — nové inzeráty prídu na Telegram.
 
 ## Konfigurácia
 - `config/scraper.yaml` — URL, CSS selektory, rate-limity, UA pool, regexe.

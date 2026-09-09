@@ -103,6 +103,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPENROUTER_KEY", "BAZCAR_OPENROUTER_API_KEY"),
     )
     openrouter_model: str | None = None
+    telegram_bot_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("TELEGRAM_BOT_TOKEN", "BAZCAR_TELEGRAM_BOT_TOKEN"),
+    )
+    telegram_chat_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("TELEGRAM_CHAT_ID", "BAZCAR_TELEGRAM_CHAT_ID"),
+    )
+    telegram_min_score: int | None = Field(
+        default=None, ge=0, le=100, description="Only notify deals with evaluation score >= this."
+    )
 
 
 @lru_cache(maxsize=1)

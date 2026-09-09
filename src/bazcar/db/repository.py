@@ -143,6 +143,15 @@ class SyncPlan:
     upserts: list[tuple] = field(default_factory=list)
     history: list[tuple[int, Decimal | None]] = field(default_factory=list)
     stats: SyncStats = field(default_factory=SyncStats)
+    inserted_ids: list[int] = field(default_factory=list)
+
+
+@dataclass
+class SyncResult:
+    """Dedupe-insert result: aggregate stats plus which ads were inserted."""
+
+    stats: SyncStats
+    inserted_ids: list[int]
 
 
 def plan_sync(listings: list[Listing], existing: dict[int, Decimal | None]) -> SyncPlan:
@@ -159,6 +168,7 @@ def plan_sync(listings: list[Listing], existing: dict[int, Decimal | None]) -> S
         plan.upserts.append(_listing_record(listing))
         if prev_price is None:
             plan.stats.inserted += 1
+            plan.inserted_ids.append(listing.ad_id)
             plan.history.append((listing.ad_id, listing.price_eur))
         elif prev_price != listing.price_eur:
             plan.stats.price_changed += 1
@@ -205,16 +215,17 @@ class ListingRepository:
         except asyncpg.PostgresError as exc:
             raise DbError(f"schema init failed: {exc}") from exc
 
-    async def sync_many(self, listings: list[Listing]) -> SyncStats:
+    async def sync_many(self, listings: list[Listing]) -> SyncResult:
         """Dedupe-insert ``listings`` and append price history rows.
 
         Classifies each ad against what is already stored (keyed by ``ad_id``):
           * absent   -> inserted + first price-history row,
           * price changed -> refreshed + new price-history row,
           * otherwise -> refreshed only.
+        Returns aggregate stats plus the ids of the ads that were newly inserted.
         """
         if not listings:
-            return SyncStats(total=0)
+            return SyncResult(stats=SyncStats(total=0), inserted_ids=[])
         conn = self._require_conn()
         try:
             existing = await self._fetch_existing(conn, [listing.ad_id for listing in listings])
@@ -231,7 +242,7 @@ class ListingRepository:
                 stats.price_changed,
                 stats.unchanged,
             )
-            return stats
+            return SyncResult(stats=stats, inserted_ids=plan.inserted_ids)
         except asyncpg.PostgresError as exc:
             raise DbError(f"sync failed: {exc}") from exc
 
