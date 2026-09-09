@@ -53,7 +53,9 @@ class SearchFiltersConfig(BaseModel):
     min_price: int | None = None
     max_price: int | None = None
     psc: str | None = None
-    max_km: int | None = None
+    distance_km: int | None = Field(
+        default=None, description="Bazoš 'km' filter = radius around the PSC, in km."
+    )
 
 
 class BaseConfig(BaseModel):

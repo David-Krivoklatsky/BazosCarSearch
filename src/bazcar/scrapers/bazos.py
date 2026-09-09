@@ -50,8 +50,8 @@ class BazosScraper(BaseScraper):
             parts.append(f"max={self.search_filters.max_price}")
         if self.search_filters.psc:
             parts.append(f"psc={self.search_filters.psc}")
-        if self.search_filters.max_km is not None:
-            parts.append(f"km={self.search_filters.max_km}")
+        if self.search_filters.distance_km is not None:
+            parts.append(f"dist={self.search_filters.distance_km}")
         if not parts:
             return "default"
         raw = "|".join(parts)
@@ -68,8 +68,8 @@ class BazosScraper(BaseScraper):
             params["cenado"] = str(self.search_filters.max_price)
         if self.search_filters.psc:
             params["psc"] = self.search_filters.psc
-        if self.search_filters.max_km is not None:
-            params["km_do"] = str(self.search_filters.max_km)
+        if self.search_filters.distance_km is not None:
+            params["km"] = str(self.search_filters.distance_km)
         return params
 
     def _page_url(self, page_index: int) -> str:

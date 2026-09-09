@@ -9,7 +9,7 @@ base:
     min_price: 1000
     max_price: 3000
     psc: null
-    max_km: null
+    distance_km: null   # okruh okolo PSC v km (Bazoš '?km='), nie najazdené km
 
 http:
   timeout_seconds: 15

@@ -199,12 +199,12 @@ def test_filter_price_range():
     assert prefs.filters == {"min_price": 1500, "max_price": 4000}
 
 
-def test_filter_price_one_sided_and_km():
+def test_filter_price_one_sided_and_distance():
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter price -4000"}})
-    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter km 200000"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/filter dist 100"}})
     prefs = asyncio.run(bot.store.get_prefs(42))
-    assert prefs.filters == {"max_price": 4000, "max_km": 200000}
+    assert prefs.filters == {"max_price": 4000, "distance_km": 100}
 
 
 def test_filter_clear_resets():

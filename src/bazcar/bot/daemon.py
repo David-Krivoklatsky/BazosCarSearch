@@ -50,9 +50,10 @@ HELP_TEXT = (
     "  <b>/filter</b> — aktuálne filtre\n"
     "  <b>/filter query</b> + text — hľadané slovo (napr. skoda octavia)\n"
     "  <b>/filter price</b> + 1500-4000 — rozsah ceny v €\n"
-    "  <b>/filter km</b> + 200000 — max najazdené km\n"
+    "  <b>/filter dist</b> + 100 — okruh okolo PSČ v km (najprv nastav /filter psc)\n"
     "  <b>/filter psc</b> + 81101 — lokalita\n"
     "  <b>/filter clear</b> — vymazať filtre\n\n"
+    "<i>Pozn.: najazdené km nie je Bazoš filter — zohľadná ho AI cez tvoje kritériá.</i>\n\n"
     "<b>💾 Uložené inzeráty</b>\n"
     "  <b>/save</b> — uložiť inzerát (ad_id) na neskôr\n"
     "  <b>/saved</b> — zoznam uložených inzerátov\n"
@@ -157,7 +158,7 @@ class Bot:
             await self.store.update_prefs(chat_id, filters={})
             return "✅ Filtre vynulované (scrapuje sa podľa config/scraper.yaml)."
         if not value:
-            return "/filter query skoda | /filter price 1500-4000 | /filter km 200000 | /filter psc 81101 | /filter clear"
+            return "/filter query skoda | /filter price 1500-4000 | /filter dist 100 | /filter psc 81101 | /filter clear"
 
         patch: dict = {}
         if key == "query":
@@ -168,14 +169,14 @@ class Bot:
                 return "Formát: `/filter price 1500-4000` (alebo `1500-` / `-4000`)."
             patch["min_price"] = int(match.group(1)) if match.group(1) else None
             patch["max_price"] = int(match.group(2)) if match.group(2) else None
-        elif key == "km":
+        elif key == "dist":
             if not value.isdigit():
-                return "Formát: `/filter km 200000`."
-            patch["max_km"] = int(value)
+                return "Formát: `/filter dist 100` — okruh okolo PSČ v km."
+            patch["distance_km"] = int(value)
         elif key == "psc":
             patch["psc"] = value
         else:
-            return "Neznámy filter. Použi query / price / km / psc / clear."
+            return "Neznámy filter. Použi query / price / dist / psc / clear."
 
         filters = await self.store.update_filters(chat_id, patch)
         return f"✅ Uložené.\n{self._filters_summary(filters)}"
@@ -190,8 +191,8 @@ class Bot:
         lo, hi = filters.get("min_price"), filters.get("max_price")
         if lo is not None or hi is not None:
             bits.append(f"cena: {lo or 0}–{hi or '∞'} €")
-        if filters.get("max_km") is not None:
-            bits.append(f"do {filters['max_km']:,} km".replace(",", " "))
+        if filters.get("distance_km") is not None:
+            bits.append(f"okruh {filters['distance_km']} km od PSČ")
         if filters.get("psc"):
             bits.append(f"PSČ {_em(str(filters['psc']))}")
         return "🔎 Filtre: " + " | ".join(bits)
