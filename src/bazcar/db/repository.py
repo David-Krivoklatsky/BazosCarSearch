@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS user_searches (
     chat_id     bigint NOT NULL,
     name        text NOT NULL,
     criteria    text DEFAULT '',
+    min_score   int,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now(),
     UNIQUE (chat_id, name)
@@ -120,6 +121,8 @@ ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE user_searches
     ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE user_searches
+    ADD COLUMN IF NOT EXISTS min_score int;
 """
 
 _UPSERT_LISTING_SQL = """
@@ -426,6 +429,41 @@ class ListingRepository:
                 record["image_urls"] = []
             matches.append(record)
         return matches
+
+    async def fetch_evaluations_max_score(self, profile_key: str) -> int | None:
+        """Best score achieved under this profile (None = no evaluations yet)."""
+        conn = self._require_conn()
+        try:
+            value = await conn.fetchval(
+                "SELECT max(score) FROM evaluations WHERE profile_key = $1", profile_key
+            )
+            return int(value) if value is not None else None
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"max score fetch failed: {exc}") from exc
+
+    async def count_evaluations(self, profile_key: str, days: int = 3) -> int:
+        """How many ads were scored under this profile (recent window)."""
+        conn = self._require_conn()
+        try:
+            value = await conn.fetchval(
+                "SELECT count(*) FROM evaluations e JOIN listings l ON l.ad_id = e.ad_id"
+                " WHERE e.profile_key = $1 AND l.last_seen_at >= now() - make_interval(days => $2)",
+                profile_key,
+                days,
+            )
+            return int(value or 0)
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"evaluation count failed: {exc}") from exc
+
+    async def pending_eval_task_for(self, profile_key: str) -> dict | None:
+        """Pending backfill task for this profile, if any (bot /status info)."""
+        conn = self._require_conn()
+        row = await conn.fetchrow(
+            "SELECT id, created_at FROM eval_tasks WHERE profile_key = $1 AND done_at IS NULL"
+            " ORDER BY id LIMIT 1",
+            profile_key,
+        )
+        return dict(row) if row else None
 
     async def wipe_listings(self) -> None:
         """Delete every listing (cascades price_history/saved/evaluations)."""

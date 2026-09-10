@@ -222,7 +222,11 @@ async def _evaluate_profile(
 
 
 async def _process_eval_tasks() -> int:
-    """Run queued backfill tasks (re-score stored ads under task profiles)."""
+    """Run queued backfill tasks (re-score stored ads under task profiles).
+
+    After each task completes, a progress message is pushed to the Telegram
+    chat so the user can see what happened (transparency of pipeline steps).
+    """
     settings = get_settings()
     if not settings.database_url or not settings.openrouter_api_key:
         return 0
@@ -252,9 +256,34 @@ async def _process_eval_tasks() -> int:
                 task["profile_key"],
                 count,
             )
+            await _report_eval_task_done(settings, task, count)
     finally:
         await repo.close()
     return processed
+
+
+async def _report_eval_task_done(settings, task: dict, count: int) -> None:
+    """Push a short status message when a re-evaluation backfill completes."""
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        return
+    try:
+        from bazcar.notify import TelegramNotifier
+
+        criteria_short = (task.get("criteria") or "bez kritérií").strip()
+        label = criteria_short if len(criteria_short) <= 60 else criteria_short[:57] + "…"
+        async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as ntf:
+            await ntf.send_message(
+                f"🧮 <b>Prehodnotenie hotové</b>\n"
+                f"Search: <i>{_tg_escape(label)}</i>\n"
+                f"Skórovaných: <b>{count}</b> áut\n"
+                f"Prehľad: <code>/show</code> | filtruje sa cez <code>/score</code>"
+            )
+    except Exception:
+        logger.warning("eval task report failed", exc_info=True)
+
+
+def _tg_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 async def _evaluate(listings: list[Listing], *, enabled: bool | None, criteria: str | None = None) -> int:

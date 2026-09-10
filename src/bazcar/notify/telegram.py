@@ -100,12 +100,15 @@ class TelegramNotifier:
             payload["text"] = text
         return await self._post("answerCallbackQuery", payload)
 
-    async def send_listings(self, listings: list[Listing], *, silent: bool = False) -> int:
+    async def send_listings(
+        self, listings: list[Listing], *, chat_id: int | None = None, silent: bool = False
+    ) -> int:
         """Send notifications for each listing; returns the number of successes."""
         sent = 0
         for listing in listings:
             if await self.send_message(
                 format_listing(listing),
+                chat_id=chat_id,
                 silent=silent,
                 reply_markup=listing_keyboard(listing),
             ):
@@ -113,7 +116,7 @@ class TelegramNotifier:
         return sent
 
     async def send_listings_with_photos(
-        self, listings: list[Listing], *, silent: bool = False
+        self, listings: list[Listing], *, chat_id: int | None = None, silent: bool = False
     ) -> int:
         """Send each listing as a photo message when an image exists; fall back to text."""
         sent = 0
@@ -122,12 +125,14 @@ class TelegramNotifier:
                 if await self.send_photo(
                     listing.image_urls[0],
                     caption=format_photo_caption(listing),
+                    chat_id=chat_id,
                     silent=silent,
                     reply_markup=listing_keyboard(listing),
                 ):
                     sent += 1
             elif await self.send_message(
                 format_listing(listing),
+                chat_id=chat_id,
                 silent=silent,
                 reply_markup=listing_keyboard(listing),
             ):

@@ -5,10 +5,21 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from bazcar.bot.classify import filter_cars, is_car_listing
 from bazcar.bot.daemon import Bot
 from bazcar.bot.store import SavedListing, SearchProfile, UserPrefs
 from bazcar.core.models import DealEvaluation, Listing
+
+
+@pytest.fixture(autouse=True)
+def _no_real_db(monkeypatch) -> None:
+    """Unit tests must never touch the real database (eval task queue)."""
+    async def _noop(self, chat_id: int, max_listings: int = 100) -> bool:
+        return True
+
+    monkeypatch.setattr(Bot, "_queue_rehodnotenie", _noop)
 
 
 def _listing(ad_id: int, title: str, **over) -> Listing:
@@ -104,10 +115,19 @@ class _FakeStore:
     async def list_searches(self, chat_id: int) -> list[SearchProfile]:
         return self.searches.get(chat_id, [])
 
-    async def save_search(self, chat_id: int, name: str, criteria: str, filters: dict | None = None) -> None:
+    async def save_search(
+        self,
+        chat_id: int,
+        name: str,
+        criteria: str,
+        filters: dict | None = None,
+        min_score: int | None = None,
+    ) -> None:
         searches = self.searches.setdefault(chat_id, [])
         searches = [s for s in searches if s.name != name]
-        searches.append(SearchProfile(name=name, criteria=criteria, filters=filters or {}))
+        searches.append(
+            SearchProfile(name=name, criteria=criteria, filters=filters or {}, min_score=min_score)
+        )
         self.searches[chat_id] = searches
 
     async def delete_search(self, chat_id: int, name: str) -> bool:

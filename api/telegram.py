@@ -45,6 +45,20 @@ def _process_update(update: dict) -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN / BAZCAR_DATABASE_URL missing in env")
 
     async def run() -> None:
+        # Keep the schema fresh (eval_tasks/evaluations may be created after a
+        # deploy, before the next cron scrape) — idempotent, cheap.
+        try:
+            from bazcar.db import ListingRepository
+
+            repo = ListingRepository(settings.database_url)
+            await repo.connect()
+            try:
+                await repo.init_schema()
+            finally:
+                await repo.close()
+        except Exception:
+            logger.exception("schema init in webhook failed (continuing)")
+
         store = UserStore(settings.database_url)
         await store.connect()
         try:

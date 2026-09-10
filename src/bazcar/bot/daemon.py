@@ -281,8 +281,12 @@ class Bot:
             return "Potrebujem `meno: kritériá` — napr. `/search diaľnica: diesel do 200t km`."
         prefs = await self.store.get_prefs(chat_id)
         filters = prefs.filters if prefs else {}
-        await self.store.save_search(chat_id, name, criteria, filters=filters)
-        return f"✅ Uložené hľadanie „{_em(name)}“: <i>{_em(criteria)}</i>"
+        min_score = prefs.min_score if prefs else None
+        await self.store.save_search(chat_id, name, criteria, filters=filters, min_score=min_score)
+        return (
+            f"✅ Uložené hľadanie „{_em(name)}“: <i>{_em(criteria)}</i>"
+            f"\n{self._filters_summary(filters)}\nSkóre: {min_score or '—'}"
+        )
 
     async def _searches(self, chat_id: int) -> str:
         searches = await self.store.list_searches(chat_id)
@@ -301,12 +305,15 @@ class Bot:
         searches = await self.store.list_searches(chat_id)
         for s in searches:
             if s.name.lower() == name.lower():
-                await self.store.update_prefs(
-                    chat_id, criteria=s.criteria, filters=s.filters or {}
-                )
+                updates: dict = {"criteria": s.criteria, "filters": s.filters or {}}
+                if s.min_score is not None:
+                    updates["min_score"] = s.min_score
+                await self.store.update_prefs(chat_id, **updates)
                 reply = f"✅ Aktivované „{_em(s.name)}“: <i>{_em(s.criteria)}</i>"
                 if s.filters:
                     reply += "\n" + self._filters_summary(s.filters)
+                if s.min_score is not None:
+                    reply += f"\n⭐ Skóre: {s.min_score}/100"
                 try:
                     await self._queue_rehodnotenie(chat_id)
                 except Exception:
@@ -389,6 +396,9 @@ class Bot:
         alerts). Uses the active profile's stored evaluations and the current
         ``/score`` threshold.
         """
+        settings = get_settings()
+        if not settings.database_url or not settings.telegram_bot_token:
+            return "⚠️ Chýba databáza alebo Telegram token — /show nedostupné."
         try:
             limit = max(1, min(int(arg or 5), 10))
         except ValueError:
@@ -400,24 +410,26 @@ class Bot:
         p_key = profile_key(prefs.criteria, model)
         min_score = prefs.min_score or 0
 
-        from bazcar.db import ListingRepository
-
-        repo = ListingRepository(get_settings().database_url)
+        repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
             rows = await repo.fetch_recent_matches(p_key, min_score, days=3, limit=limit)
+            if not rows:
+                # transparency: what is the best achieved score for this profile?
+                best = await repo.fetch_evaluations_max_score(p_key)
         finally:
             await repo.close()
         if not rows:
+            hint = ""
+            if best is not None:
+                hint = f"\nNajlepšie dosiahnuté skóre: {best}/100 — skús /score {max(best - 10, 0)}."
             return (
-                f"Nič vyhovujúce (skóre >= {min_score}) za posledné 3 dni.\n"
+                f"Nič vyhovujúce (skóre >= {min_score}) za posledné 3 dni.{hint}\n"
                 "Zmeň /criteria alebo /score a počkaj na ďalší scrape."
             )
         listings = [_row_to_listing(row) for row in rows]
-        async with TelegramNotifier(
-            get_settings().telegram_bot_token, get_settings().telegram_chat_id
-        ) as notifier:
-            await notifier.send_listings_with_photos(listings)
+        async with TelegramNotifier(settings.telegram_bot_token, str(chat_id)) as notifier:
+            await notifier.send_listings_with_photos(listings, chat_id=chat_id)
         return f"📤 Poslal som {len(listings)} najlepších (skóre >= {min_score}):"
 
     async def _models(self, chat_id: int) -> str:
@@ -473,14 +485,34 @@ class Bot:
         prefs = await self.store.get_prefs(chat_id)
         if prefs is None:
             return "Žiadne nastavenia. /help"
-        return (
-            "<b>Stav</b>\n"
-            f"Kritériá: {_em(prefs.criteria or '—')}\n"
-            f"Model: {_em(prefs.model or 'default')}\n"
-            f"Min. hodnotenie: {_em(str(prefs.min_score or '—'))}\n"
-            f"Fotky: {'áno' if prefs.show_photo else 'nie'}\n"
-            f"{self._filters_summary(prefs.filters)}"
-        )
+        model = prefs.model or load_llm_config().model
+        p_key = profile_key(prefs.criteria, model)
+        lines = [
+            "<b>Stav</b>",
+            f"Kritériá: {_em(prefs.criteria or '—')}",
+            f"Model: {_em(model)}",
+            f"Min. hodnotenie: {_em(str(prefs.min_score or '—'))}",
+            f"Fotky: {'áno' if prefs.show_photo else 'nie'}",
+            self._filters_summary(prefs.filters),
+ f"Profil: <code>{p_key}</code>",
+        ]
+        if get_settings().database_url:
+            try:
+                repo = ListingRepository(get_settings().database_url)
+                await repo.connect()
+                try:
+                    if await repo.pending_eval_task_for(p_key):
+                        lines.append("⏳ Prehodnotenie tohto searchu beží (o pár minút /show).")
+                    else:
+                        best = await repo.fetch_evaluations_max_score(p_key)
+                        n = await repo.count_evaluations(p_key, days=3)
+                        tail = f", najlepšie skóre {best}/100" if best is not None else ""
+                        lines.append(f"✅ Ohodnotených áut (3 dni): {n}" + tail)
+                finally:
+                    await repo.close()
+            except Exception:
+                lines.append("⚠️ Databáza nedostupná")
+        return "\n".join(lines)
 
     async def _find_listing(self, ad_id: int) -> Listing | None:
         """Best-effort: resolve a saved ad title/url from the latest export."""

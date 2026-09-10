@@ -32,6 +32,7 @@ class SearchProfile:
     name: str
     criteria: str
     filters: dict = field(default_factory=dict)
+    min_score: int | None = None
 
 
 @dataclass
@@ -145,7 +146,8 @@ class UserStore:
 
     async def list_searches(self, chat_id: int) -> list[SearchProfile]:
         rows = await self._require().fetch(
-            "SELECT name, criteria, filters FROM user_searches WHERE chat_id = $1 ORDER BY created_at",
+            "SELECT name, criteria, filters, min_score FROM user_searches"
+            " WHERE chat_id = $1 ORDER BY created_at",
             chat_id,
         )
         profiles = []
@@ -155,22 +157,29 @@ class UserStore:
                     name=row["name"],
                     criteria=row["criteria"],
                     filters=json.loads(row["filters"]) if row["filters"] else {},
+                    min_score=row["min_score"],
                 )
             )
         return profiles
 
     async def save_search(
-        self, chat_id: int, name: str, criteria: str, filters: dict | None = None
+        self,
+        chat_id: int,
+        name: str,
+        criteria: str,
+        filters: dict | None = None,
+        min_score: int | None = None,
     ) -> None:
         await self._require().execute(
-            "INSERT INTO user_searches (chat_id, name, criteria, filters)"
-            " VALUES ($1, $2, $3, $4::jsonb)"
+            "INSERT INTO user_searches (chat_id, name, criteria, filters, min_score)"
+            " VALUES ($1, $2, $3, $4::jsonb, $5)"
             " ON CONFLICT (chat_id, name) DO UPDATE SET criteria = EXCLUDED.criteria,"
-            " filters = EXCLUDED.filters, updated_at = now()",
+            " filters = EXCLUDED.filters, min_score = EXCLUDED.min_score, updated_at = now()",
             chat_id,
             name,
             criteria,
             json.dumps(filters or {}, ensure_ascii=False),
+            min_score,
         )
 
     async def delete_search(self, chat_id: int, name: str) -> bool:
