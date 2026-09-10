@@ -94,16 +94,32 @@ def webhook(
     url: str | None = typer.Option(None, "--url", help="Public HTTPS webhook URL (e.g. https://bazcar.vercel.app/api/telegram)."),
     remove: bool = typer.Option(False, "--remove", help="Delete the webhook (back to polling mode)."),
     info: bool = typer.Option(False, "--info", help="Show current webhook info."),
+    set_commands: bool = typer.Option(False, "--set-commands", help="Register the '/' autocomplete menu (setMyCommands)."),
 ) -> None:
-    """Manage the Telegram webhook (Vercel serverless bot mode)."""
+    """Manage the Telegram webhook (Vercel serverless bot mode) and command menu."""
     import httpx
 
+    from bazcar.bot.daemon import BOT_COMMANDS
     from bazcar.config.settings import get_settings
 
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise typer.BadParameter("TELEGRAM_BOT_TOKEN is not set")
     api = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
+
+    if set_commands:
+        resp = httpx.post(
+            f"{api}/setMyCommands",
+            json={"commands": BOT_COMMANDS, "language_code": "sk"},
+            timeout=30,
+        )
+        data = resp.json()
+        if data.get("ok"):
+            typer.echo(f"[OK] command menu registered ({len(BOT_COMMANDS)} commands)")
+        else:
+            typer.echo(f"[ERROR] {data}", err=True)
+            raise typer.Exit(code=1)
+        return
 
     if info:
         resp = httpx.get(f"{api}/getWebhookInfo", timeout=30)
@@ -130,6 +146,13 @@ def webhook(
     if data.get("ok"):
         typer.echo(f"[OK] webhook set -> {url}")
         typer.echo("[NOTE] polling (bazcar bot) is now disabled — Telegram pushes updates instead.")
+        cmds = httpx.post(
+            f"{api}/setMyCommands",
+            json={"commands": BOT_COMMANDS, "language_code": "sk"},
+            timeout=30,
+        )
+        if cmds.json().get("ok"):
+            typer.echo(f"[OK] command menu registered ({len(BOT_COMMANDS)} commands)")
     else:
         typer.echo(f"[ERROR] {data}", err=True)
         raise typer.Exit(code=1)

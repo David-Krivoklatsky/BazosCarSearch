@@ -30,6 +30,137 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org"
 
+# Registered via Telegram setMyCommands -> typing "/" shows an autocomplete
+# menu with these descriptions in every Telegram client.
+BOT_COMMANDS: list[dict[str, str]] = [
+    {"command": "criteria", "description": "Čo hľadám — AI boduje inzeráty podľa toho"},
+    {"command": "search", "description": "Uložiť hľadanie: /search meno: kritériá"},
+    {"command": "searches", "description": "Moje uložené hľadania"},
+    {"command": "use", "description": "Aktivovať uložené hľadanie"},
+    {"command": "status", "description": "Aktuálne nastavenia a stavy"},
+    {"command": "filter", "description": "Bazoš filtre: query, price, dist, psc"},
+    {"command": "score", "description": "Min. hodnotenie inzerátov (0–100)"},
+    {"command": "show", "description": "Vyhovujúce inzeráty z posledných dní"},
+    {"command": "eval", "description": "Prehodnotiť autá podľa aktívneho searchu"},
+    {"command": "photos", "description": "Fotky pri inzerátoch on/off"},
+    {"command": "models", "description": "Dostupné AI modely (free/paid)"},
+    {"command": "model", "description": "Zmeniť AI model"},
+    {"command": "save", "description": "Uložiť inzerát na neskôr (ad_id)"},
+    {"command": "saved", "description": "Moje uložené inzeráty"},
+    {"command": "unsave", "description": "Odstrániť uložený inzerát"},
+    {"command": "help", "description": "Nápoveda — /prikaz help pre detaily"},
+]
+
+COMMAND_HELP: dict[str, str] = {
+    "/criteria": (
+        "<b>/criteria</b> — čo hľadám\n\n"
+        "AI (LLM) hodnotí každý inzerát 0–100 presne podľa tvojich kritérií — "
+        "čím viac špecifikuješ, tým presnejšie skóre.\n\n"
+        "<b>Použitie:</b> <code>/criteria + text</code>\n"
+        "<b>Príklad:</b> <code>/criteria diesel, do 200 000 km, nad 80 kW</code>\n\n"
+        "➡️ Zmena automaticky spustí prehodnotenie áut z posledných 3 dní "
+        "(príde ti 🧮 hlásenie, keď bude hotové). Nové inzeráty sa scrapujú "
+        "podľa aktívnych filtrov každých ~15 min."
+    ),
+    "/search": (
+        "<b>/search</b> — uložiť pomenované hľadanie\n\n"
+        "Uloží kompletný profil: kritériá + aktuálne Bazoš filtre + min. skóre.\n"
+        "Môžeš mať viac searchov (diaľnica, mesto, rodinné auto…) a prepínať medzi nimi.\n\n"
+        "<b>Použitie:</b> <code>/search meno: kritériá</code>\n"
+        "<b>Príklad:</b> <code>/search diaľnica: diesel do 200t km</code>\n\n"
+        "💡 Najprv si nastav <code>/filter</code> a <code>/score</code>, potom ulož — "
+        "všetko sa zachová do profilu."
+    ),
+    "/searches": (
+        "<b>/searches</b> — zoznam uložených hľadaní\n\n"
+        "Ukáže všetky uložené profily (kritériá + filtre + skóre).\n"
+        "Aktivuješ ich príkazom <code>/use meno</code>."
+    ),
+    "/use": (
+        "<b>/use</b> — aktivovať uložené hľadanie\n\n"
+        "Nastaví kritériá, filtre aj min. skóre z uloženého profilu a "
+        "automaticky spustí prehodnotenie áut z posledných dní podľa neho.\n\n"
+        "<b>Použitie:</b> <code>/use meno</code>\n"
+        "<b>Príklad:</b> <code>/use dialnica</code>"
+    ),
+    "/status": (
+        "<b>/status</b> — čo práve platí\n\n"
+        "Ukáže aktívne kritériá, model, min. skóre, filtre, počet ohodnotených "
+        "áut za posledné 3 dni, najlepšie skóre a či práve beží prehodnotenie."
+    ),
+    "/filter": (
+        "<b>/filter</b> — Bazoš filtre (čo sa scrapuje)\n\n"
+        "Filtrujú výsledky už na Bazoši — ovplyvňujú, ktoré inzeráty sa načítajú.\n"
+        "  <code>/filter query skoda octavia</code> — hľadaný text\n"
+        "  <code>/filter price 1500-4000</code> — rozsah ceny v € (aj 1500- alebo -4000)\n"
+        "  <code>/filter dist 100</code> — okruh okolo PSČ v km (najprv /filter psc)\n"
+        "  <code>/filter psc 81101</code> — lokalita\n"
+        "  <code>/filter clear</code> — späť na default\n"
+        "  <code>/filter</code> — ukáže aktívne filtre\n\n"
+        "💡 Najazdené km nie je Bazoš filter — zohľadná ho AI cez kritériá."
+    ),
+    "/score": (
+        "<b>/score</b> — min. hodnotenie pre zobrazenie\n\n"
+        "Inzeráty s AI skóre pod touto hranicou ti neprídu ako notifikácie "
+        "a nezobrazia sa v /show (0–100).\n\n"
+        "<b>Použitie:</b> <code>/score 75</code>\n\n"
+        "💡 Zmena platí okamžite na už ohodnotené autá — skús hneď /show."
+    ),
+    "/show": (
+        "<b>/show</b> — vyhovujúce inzeráty z posledných dní\n\n"
+        "Pošle ti najlepšie ohodnotené inzeráty (podľa aktívneho searchu a /score) "
+        "ako správy s fotkou a tlačidlami.\n\n"
+        "<b>Použitie:</b> <code>/show</code> (5 áut) alebo <code>/show 10</code>\n\n"
+        "💡 Ak je výsledok prázdny, bot poradí najlepšie dosiahnuté skóre."
+    ),
+    "/eval": (
+        "<b>/eval</b> — prehodnotiť autá podľa aktívneho searchu\n\n"
+        "Zaradí prehodnotenie áut z posledných 3 dní podľa aktívnych kritérií a "
+        "modelu. Už ohodnotené (rovnaký search + model) sa preskočia — nič sa "
+        "nepreplatí zbytočne.\n\n"
+        "<b>Použitie:</b> <code>/eval</code> (do 100 áut) alebo <code>/eval 200</code>\n\n"
+        "➡️ Keď bude hotovo, príde ti 🧮 hlásenie — potom /show."
+    ),
+    "/photos": (
+        "<b>/photos</b> — fotky pri inzerátoch\n\n"
+        "<code>/photos on</code> — inzeráty prichádzajú ako fotka + popis + tlačidlá\n"
+        "<code>/photos off</code> — len textový popis\n\n"
+        "Pri každom inzeráte máš vždy tlačidlá 💾 Uložiť a 🔗 Otvoriť."
+    ),
+    "/models": (
+        "<b>/models</b> — dostupné AI modely\n\n"
+        "Zobrazí modely z OpenRouteru rozdelené na 🆓 Free a 💰 Paid.\n"
+        "Zmeníš ich príkazom <code>/model názov</code> — napr. "
+        "<code>/model nvidia/nemotron-3-super-120b-a12b:free</code>\n\n"
+        "💡 Zmena modelu = nový hodnotiaci profil → autá sa prehodnotia podľa neho."
+    ),
+    "/model": (
+        "<b>/model</b> — zmeniť AI model\n\n"
+        "<code>/model nvidia/nemotron-3-super-120b-a12b:free</code>\n\n"
+        "Zoznam: <code>/models</code>. Free modely sú zadarmo ale pomalšie a "
+        "občas nespoľahlivé; platené sú rýchle a presné (účtuje OpenRouter)."
+    ),
+    "/save": (
+        "<b>/save</b> — uložiť inzerát na neskôr\n\n"
+        "<code>/save 195315165</code> (ad_id z notifikácie — riadok 🆔)\n\n"
+        "💡 Rýchlejšie: tlačidlo <b>💾 Uložiť</b> priamo pri inzeráte."
+    ),
+    "/saved": (
+        "<b>/saved</b> — moje uložené inzeráty\n\n"
+        "Zobrazí uložené inzeráty ako odkazy — klik a si na Bazoši.\n"
+        "Odstrániš cez <code>/unsave ad_id</code>."
+    ),
+    "/unsave": (
+        "<b>/unsave</b> — odstrániť uložený inzerát\n\n"
+        "<code>/unsave 195315165</code> (ad_id z /saved)"
+    ),
+    "/help": (
+        "<b>/help</b>\n\n"
+        "Prehľad všetkých príkazov. Detailné vysvetlenie každého: "
+        "<code>/prikaz help</code> — napr. <code>/filter help</code>."
+    ),
+}
+
 
 def _row_to_listing(row: dict) -> Listing:
     """Rebuild a Listing (+DealEvaluation) from a /show DB row."""
@@ -88,36 +219,29 @@ async def _dispatch_scrape() -> bool:
         return False
 
 HELP_TEXT = (
-    "<b>🤖 Bazcar — pomocník pri hľadaní auta</b>\n\n"
-    "Napíš mi voľne, čo hľadáš (napr. <i>\"diesel do 200t km, nad 80 kW\"</i>)\n"
-    "a bodovanie inzerátov sa prispôsobí tvojim kritériám.\n\n"
-    "<b>🧭 Príkazy</b>\n"
-    "  <b>/criteria</b> — zmeniť kritériá hľadania\n"
-    "  <b>/search</b> — uložiť pomenované hľadanie (meno: kritériá)\n"
-    "  <b>/searches</b> — zoznam uložených hľadaní\n"
-    "  <b>/use</b> — aktivovať uložené hľadanie\n"
-    "  <b>/status</b> — aktuálne nastavenia\n\n"
-    "<b>🎛️ Bodovanie a zobrazenie</b>\n"
-    "  <b>/score</b> — ukazovať len inzeráty od daného hodnotenia (0–100)\n"
-    "  <b>/photos</b> — on/off fotky pri inzerátoch\n"
-    "  <b>/model</b> — zmeniť AI model (napr. openrouter/free)\n\n"
-    "<b>🔎 Bazoš filtre</b>\n"
-    "  <b>/filter</b> — aktuálne filtre\n"
-    "  <b>/filter query</b> + text — hľadané slovo (napr. skoda octavia)\n"
-    "  <b>/filter price</b> + 1500-4000 — rozsah ceny v €\n"
-    "  <b>/filter dist</b> + 100 — okruh okolo PSČ v km (najprv nastav /filter psc)\n"
-    "  <b>/filter psc</b> + 81101 — lokalita\n"
-    "  <b>/filter clear</b> — vymazať filtre\n\n"
-    "<i>Pozn.: najazdené km nie je Bazoš filter — zohľadná ho AI cez tvoje kritériá.</i>\n\n"
-    "<b>📊 Zobrazenie</b>\n"
-    "  <b>/show</b> — všetky vyhovujúce inzeráty z posledných dní\n"
-    "  <b>/eval</b> — prehodnotiť autá z posledných dní podľa aktívneho searchu\n"
-    "  <b>/models</b> — dostupné AI modely (free / paid)\n\n"
-    "<b>💾 Uložené inzeráty</b>\n"
-    "  <b>/save</b> — uložiť inzerát (ad_id) na neskôr\n"
-    "  <b>/saved</b> — zoznam uložených inzerátov\n"
-    "  <b>/unsave</b> — odstrániť uložený inzerát\n\n"
-    "Všetko ukladám do databázy, tvoje nastavenia prežijú aj reštart."
+    "<b>🤖 Bazcar — tvoj lovec ojazdených áut</b>\n\n"
+    "Napíš mi voľne, čo hľadáš (napr. <i>\"diesel do 200t km, nad 80 kW\"</i>) "
+    "a každý nový inzerát ti príde s AI skóre 0–100, dôvodom a rizikom.\n\n"
+    "<b>🔎 Čo hľadám</b>\n"
+    "  /criteria — moje požiadavky pre AI bodovanie\n"
+    "  /filter — Bazoš filtre (query, cena, okruh, PSČ)\n"
+    "  /score — min. hodnotenie pre notifikácie\n\n"
+    "<b>⭐ Search profily</b>\n"
+    "  /search meno: kritériá — uložiť profil\n"
+    "  /searches — zoznam profilov\n"
+    "  /use meno — aktivovať profil\n\n"
+    "<b>📋 Prehľady</b>\n"
+    "  /show [n] — najlepšie inzeráty z posledných dní\n"
+    "  /eval — prehodnotiť autá podľa aktívneho searchu\n"
+    "  /status — stav a štatistiky\n\n"
+    "<b>💾 Uložené</b>\n"
+    "  /save ad_id · /saved · /unsave ad_id\n\n"
+    "<b>⚙️ AI</b>\n"
+    "  /models — zoznam modelov (free/paid)\n"
+    "  /model nazov — zmeniť model\n"
+    "  /photos on|off — fotky pri inzerátoch\n\n"
+    "💡 Detail každého príkazu: <code>/prikaz help</code> (napr. <code>/filter help</code>)\n"
+    "💡 Napíš <code>/</code> a Telegram ti sám doplní príkazy."
 )
 
 
@@ -166,9 +290,12 @@ class Bot:
         parts = text.split(maxsplit=1)
         cmd = parts[0].split("@")[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
+        # "/filter help" (or "?") -> detailed how-it-works for that command
+        if arg.lower() in {"help", "?"} and cmd in COMMAND_HELP:
+            return COMMAND_HELP[cmd]
         match cmd:
             case "/start":
-                return "Ahoj! Som Bazcar 🚗. Pošli mi, aké auto hľadáš.\n\n" + HELP_TEXT
+                return "Ahoj! Som Bazcar 🚗. Napíš mi, aké auto hľadáš — a nechám ti prísť nové inzeráty s AI skóre.\n\n" + HELP_TEXT
             case "/help":
                 return HELP_TEXT
             case "/status":
