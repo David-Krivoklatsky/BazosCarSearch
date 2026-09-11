@@ -57,6 +57,12 @@ def format_listing(listing: Listing) -> str:
         if listing.evaluation.risk:
             lines.append(f"⚠️ <i>Riziko:</i> {_em(listing.evaluation.risk)}")
 
+    # Age transparency: when the ad was published / first seen by us.
+    stamp = listing.published_date or getattr(listing, "first_seen_at", None)
+    if stamp:
+        stamp_text = stamp.strftime("%d.%m.%Y") if hasattr(stamp, "strftime") else str(stamp)[:10]
+        lines.append(f"📅 {_em(str(stamp_text))}")
+
     lines.append(f"🆔 {listing.ad_id}")
     lines.append(_link(listing.url))
     text = "\n".join(lines)

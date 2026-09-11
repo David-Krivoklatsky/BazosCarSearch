@@ -109,9 +109,12 @@ COMMAND_HELP: dict[str, str] = {
     "/show": (
         "<b>/show</b> — vyhovujúce inzeráty z posledných dní\n\n"
         "Pošle ti najlepšie ohodnotené inzeráty (podľa aktívneho searchu a /score) "
-        "ako správy s fotkou a tlačidlami.\n\n"
-        "<b>Použitie:</b> <code>/show</code> (tvoj predvolený počet), "
-        "<code>/show 10</code> (uloží 10 ako nový default)\n\n"
+        "ako správy s fotkou a tlačidlami. Každá správa obsahuje aj 📅 dátum inzerátu.\n\n"
+        "<b>Použitie:</b>\n"
+        "  <code>/show</code> — tvoj predvolený počet, okno 3 dni\n"
+        "  <code>/show 20</code> — 20 áut (uloží ako nový default)\n"
+        "  <code>/show dni 7</code> — okno 7 dní\n"
+        "  <code>/show 20 dni 7</code> — kombinácia\n\n"
         "💡 Ak je výsledok prázdny, bot poradí najlepšie dosiahnuté skóre."
     ),
     "/eval": (
@@ -168,6 +171,28 @@ COMMAND_HELP: dict[str, str] = {
 }
 
 
+def parse_show_args(arg: str) -> tuple[int, int]:
+    """Parse ``/show [N] [dni N]`` -> (limit, days).
+
+    Examples: "" -> (prefs default, 3) handled by caller; "10" -> (10, 3);
+    "dni 7" -> (None-limit marker, 7); "20 dni 7" -> (20, 7).
+    Returns limit=None when the user did not give a count (use prefs default).
+    """
+    tokens = (arg or "").lower().split()
+    limit: int | None = None
+    days = 3
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "dni" and i + 1 < len(tokens) and tokens[i + 1].isdigit():
+            days = max(1, min(int(tokens[i + 1]), 3650))
+            i += 1
+        elif token.isdigit():
+            limit = max(1, min(int(token), 20))
+        i += 1
+    return limit, days
+
+
 def _row_to_listing(row: dict) -> Listing:
     """Rebuild a Listing (+DealEvaluation) from a /show DB row."""
     return Listing(
@@ -181,6 +206,7 @@ def _row_to_listing(row: dict) -> Listing:
         mileage_km=row["mileage_km"],
         description_preview=row["description_preview"] or "",
         description=row["description"],
+        published_date=row.get("published_date"),
         evaluation=DealEvaluation(
             score=row["score"],
             why=row["why"] or "",
@@ -581,14 +607,10 @@ class Bot:
         prefs = await self.store.get_prefs(chat_id)
         if prefs is None:
             return "Žiadne nastavenia. /help"
-        try:
-            limit = max(1, min(int(arg or prefs.show_limit), 10))
-        except ValueError:
-            limit = 5
-        if arg.isdigit() and int(arg) != prefs.show_limit:
-            await self.store.update_prefs(chat_id, show_limit=limit)  # remember default
-        if prefs is None:
-            return "Žiadne nastavenia. /help"
+        arg_limit, days = parse_show_args(arg)
+        limit = arg_limit or max(1, min(prefs.show_limit, 20))
+        if arg_limit is not None and arg_limit != prefs.show_limit:
+            await self.store.update_prefs(chat_id, show_limit=arg_limit)  # remember default
         model = prefs.model or (load_llm_config().model)
         p_key = profile_key(prefs.criteria, model)
         min_score = prefs.min_score or 0
@@ -596,7 +618,7 @@ class Bot:
         repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
-            rows = await repo.fetch_recent_matches(p_key, min_score, days=3, limit=limit)
+            rows = await repo.fetch_recent_matches(p_key, min_score, days=days, limit=limit)
             if not rows:
                 # transparency: what is the best achieved score for this profile?
                 best = await repo.fetch_evaluations_max_score(p_key)
@@ -607,13 +629,13 @@ class Bot:
             if best is not None:
                 hint = f"\nNajlepšie dosiahnuté skóre: {best}/100 — skús /score {max(best - 10, 0)}."
             return (
-                f"Nič vyhovujúce (skóre >= {min_score}) za posledné 3 dni.{hint}\n"
-                "Zmeň /criteria alebo /score a počkaj na ďalší scrape."
+                f"Nič vyhovujúce (skóre >= {min_score}) za posledných {days} dní.{hint}\n"
+                "Zmeň /criteria alebo /score, alebo rozšír okno: /show 20 dni 7."
             )
         listings = [_row_to_listing(row) for row in rows]
         async with TelegramNotifier(settings.telegram_bot_token, str(chat_id)) as notifier:
             await notifier.send_listings_with_photos(listings, chat_id=chat_id)
-        return f"📤 Poslal som {len(listings)} najlepších (skóre >= {min_score}):"
+        return f"📤 Poslal som {len(listings)} najlepších (skóre >= {min_score}, posledných {days} dní):"
 
     async def _models(self, chat_id: int) -> str:
         from bazcar.llm.provider import list_models

@@ -23,6 +23,16 @@ def test_parse_eval_args_defaults() -> None:
     assert parse_eval_args("9999") == (500, 3)  # capped
 
 
+def test_parse_show_args() -> None:
+    from bazcar.bot.daemon import parse_show_args
+
+    assert parse_show_args("") == (None, 3)          # use prefs default
+    assert parse_show_args("10") == (10, 3)
+    assert parse_show_args("dni 7") == (None, 7)
+    assert parse_show_args("20 dni 7") == (20, 7)
+    assert parse_show_args("9999") == (20, 3)        # capped at 20
+
+
 @pytest.fixture(autouse=True)
 def _no_real_db(monkeypatch) -> None:
     """Unit tests must never touch the real database (eval task queue)."""

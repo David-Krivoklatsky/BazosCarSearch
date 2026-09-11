@@ -181,6 +181,7 @@ FROM evaluations WHERE profile_key = $1 AND ad_id = ANY($2::bigint[])
 _FETCH_RECENT_MATCHES_SQL = """
 SELECT l.ad_id, l.url, l.title, l.price_eur, l.city, l.image_urls,
        l.year, l.mileage_km, l.description_preview, l.description,
+       l.published_date, l.first_seen_at,
        e.score, e.why, e.risk, e.model AS eval_model
 FROM listings l
 JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
