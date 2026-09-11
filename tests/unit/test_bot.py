@@ -8,9 +8,19 @@ from pathlib import Path
 import pytest
 
 from bazcar.bot.classify import filter_cars, is_car_listing
-from bazcar.bot.daemon import Bot
+from bazcar.bot.daemon import Bot, parse_eval_args
 from bazcar.bot.store import SavedListing, SearchProfile, UserPrefs
 from bazcar.core.models import DealEvaluation, Listing
+
+
+def test_parse_eval_args_defaults() -> None:
+    assert parse_eval_args("") == (100, 3)
+    assert parse_eval_args("30") == (30, 3)
+    assert parse_eval_args("dni 7") == (100, 7)
+    assert parse_eval_args("50 dni 7") == (50, 7)
+    assert parse_eval_args("all") == (500, 3650)
+    assert parse_eval_args("vsetky") == (500, 3650)
+    assert parse_eval_args("9999") == (500, 3)  # capped
 
 
 @pytest.fixture(autouse=True)
