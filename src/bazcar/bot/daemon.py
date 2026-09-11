@@ -107,25 +107,27 @@ COMMAND_HELP: dict[str, str] = {
         "💡 Zmena platí okamžite na už ohodnotené autá — skús hneď /show."
     ),
     "/show": (
-        "<b>/show</b> — vyhovujúce inzeráty z posledných dní\n\n"
+        "<b>/show</b> — vyhovujúce inzeráty z posledného obdobia\n\n"
         "Pošle ti najlepšie ohodnotené inzeráty (podľa aktívneho searchu a /score) "
         "ako správy s fotkou a tlačidlami. Každá správa obsahuje aj 📅 dátum inzerátu.\n\n"
         "<b>Použitie:</b>\n"
         "  <code>/show</code> — tvoj predvolený počet, okno 3 dni\n"
         "  <code>/show 20</code> — 20 áut (uloží ako nový default)\n"
-        "  <code>/show dni 7</code> — okno 7 dní\n"
-        "  <code>/show 20 dni 7</code> — kombinácia\n\n"
+        "  <code>/show days 7</code> — okno 7 dní\n"
+        "  <code>/show 20 days 100</code> — kombinácia\n\n"
+        "⚠️ Počet výsledkov limituje hlavne <b>/score</b> — šírka okna pridá len "
+        "staršie inzeráty. Bot ti vždy vypíše, koľko vyhovujúcich celkovo našiel.\n\n"
         "💡 Ak je výsledok prázdny, bot poradí najlepšie dosiahnuté skóre."
     ),
     "/eval": (
         "<b>/eval</b> — prehodnotiť autá podľa aktívneho searchu\n\n"
         "Zaradí prehodnotenie podľa aktívnych kritérií a modelu. Už ohodnotené "
         "(rovnaký search + model) sa preskočia — nič sa nepreplatí zbytočne.\n\n"
-        "<b>Použitie:</b>\n"
+        "<b>Použitie:</b> (rovnaké parametre ako /show)\n"
         "  <code>/eval</code> — posledných 100 áut z 3 dní\n"
         "  <code>/eval 30</code> — 30 najnovších\n"
-        "  <code>/eval dni 7</code> — okno 7 dní\n"
-        "  <code>/eval 50 dni 7</code> — kombinácia\n"
+        "  <code>/eval days 7</code> — okno 7 dní\n"
+        "  <code>/eval 50 days 7</code> — kombinácia\n"
         "  <code>/eval all</code> — všetko v DB (do 500)\n\n"
         "Bot ti hneď vypíše, koľko áut sa bude vyhodnocovať a odhad času. "
         "Keď bude hotovo, príde ti ✅ hlásenie."
@@ -171,12 +173,11 @@ COMMAND_HELP: dict[str, str] = {
 }
 
 
-def parse_show_args(arg: str) -> tuple[int, int]:
-    """Parse ``/show [N] [dni N]`` -> (limit, days).
+def parse_show_args(arg: str) -> tuple[int | None, int]:
+    """Parse ``/show [N] [days N]`` -> (limit, days).
 
-    Examples: "" -> (prefs default, 3) handled by caller; "10" -> (10, 3);
-    "dni 7" -> (None-limit marker, 7); "20 dni 7" -> (20, 7).
-    Returns limit=None when the user did not give a count (use prefs default).
+    "" -> (None, 3) = use prefs default; "10" -> (10, 3); "days 7" -> (None, 7);
+    "20 days 7" -> (20, 7). "dni" is accepted as a Slovak alias.
     """
     tokens = (arg or "").lower().split()
     limit: int | None = None
@@ -184,7 +185,7 @@ def parse_show_args(arg: str) -> tuple[int, int]:
     i = 0
     while i < len(tokens):
         token = tokens[i]
-        if token == "dni" and i + 1 < len(tokens) and tokens[i + 1].isdigit():
+        if token in {"days", "dni"} and i + 1 < len(tokens) and tokens[i + 1].isdigit():
             days = max(1, min(int(tokens[i + 1]), 3650))
             i += 1
         elif token.isdigit():
@@ -281,10 +282,11 @@ EST_SECONDS_PER_EVAL = 20  # rough per-ad LLM latency on free reasoning models
 
 
 def parse_eval_args(arg: str) -> tuple[int, int]:
-    """Parse ``/eval [N] [dni N] [all]`` -> (max_listings, days).
+    """Parse ``/eval [N] [days N] [all]`` -> (max_listings, days).
 
-    Examples: "" -> (100, 3) | "50" -> (50, 3) | "dni 7" -> (100, 7)
-              "50 dni 7" -> (50, 7) | "all" -> (500, 3650)
+    Examples: "" -> (100, 3) | "50" -> (50, 3) | "days 7" -> (100, 7)
+              "50 days 7" -> (50, 7) | "all" -> (500, 3650)
+    "dni" is accepted as a Slovak alias for "days".
     """
     tokens = (arg or "").lower().split()
     limit, days = 100, 3
@@ -293,7 +295,7 @@ def parse_eval_args(arg: str) -> tuple[int, int]:
         token = tokens[i]
         if token in {"all", "vsetky", "všetky"}:
             limit, days = 500, 3650
-        elif token == "dni" and i + 1 < len(tokens) and tokens[i + 1].isdigit():
+        elif token in {"days", "dni"} and i + 1 < len(tokens) and tokens[i + 1].isdigit():
             days = max(1, min(int(tokens[i + 1]), 3650))
             i += 1
         elif token.isdigit():
@@ -618,6 +620,7 @@ class Bot:
         repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
+            total = await repo.count_recent_matches(p_key, min_score, days=days)
             rows = await repo.fetch_recent_matches(p_key, min_score, days=days, limit=limit)
             if not rows:
                 # transparency: what is the best achieved score for this profile?
@@ -630,12 +633,17 @@ class Bot:
                 hint = f"\nNajlepšie dosiahnuté skóre: {best}/100 — skús /score {max(best - 10, 0)}."
             return (
                 f"Nič vyhovujúce (skóre >= {min_score}) za posledných {days} dní.{hint}\n"
-                "Zmeň /criteria alebo /score, alebo rozšír okno: /show 20 dni 7."
+                "Zmeň /criteria alebo /score, alebo rozšír okno: /show 20 days 7."
             )
         listings = [_row_to_listing(row) for row in rows]
         async with TelegramNotifier(settings.telegram_bot_token, str(chat_id)) as notifier:
             await notifier.send_listings_with_photos(listings, chat_id=chat_id)
-        return f"📤 Poslal som {len(listings)} najlepších (skóre >= {min_score}, posledných {days} dní):"
+        extra = total - len(listings)
+        tail = f" (ďalších {extra} vyhovujúcich — zvýš limit: /show 20)" if extra > 0 else ""
+        return (
+            f"📤 Poslal som {len(listings)} z {total} vyhovujúcich "
+            f"(skóre >= {min_score}, okno {days} dní){tail}:"
+        )
 
     async def _models(self, chat_id: int) -> str:
         from bazcar.llm.provider import list_models

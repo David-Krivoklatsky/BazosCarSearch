@@ -436,6 +436,24 @@ class ListingRepository:
             matches.append(record)
         return matches
 
+    async def count_recent_matches(
+        self, profile_key: str, min_score: int, days: int
+    ) -> int:
+        """How many listings match (score >= min_score) within the window."""
+        conn = self._require_conn()
+        try:
+            value = await conn.fetchval(
+                "SELECT count(*) FROM listings l"
+                " JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1"
+                " WHERE e.score >= $2 AND l.last_seen_at >= now() - make_interval(days => $3)",
+                profile_key,
+                min_score,
+                days,
+            )
+            return int(value or 0)
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"recent matches count failed: {exc}") from exc
+
     async def fetch_evaluations_max_score(self, profile_key: str) -> int | None:
         """Best score achieved under this profile (None = no evaluations yet)."""
         conn = self._require_conn()
