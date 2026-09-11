@@ -110,16 +110,22 @@ COMMAND_HELP: dict[str, str] = {
         "<b>/show</b> — vyhovujúce inzeráty z posledných dní\n\n"
         "Pošle ti najlepšie ohodnotené inzeráty (podľa aktívneho searchu a /score) "
         "ako správy s fotkou a tlačidlami.\n\n"
-        "<b>Použitie:</b> <code>/show</code> (5 áut) alebo <code>/show 10</code>\n\n"
+        "<b>Použitie:</b> <code>/show</code> (tvoj predvolený počet), "
+        "<code>/show 10</code> (uloží 10 ako nový default)\n\n"
         "💡 Ak je výsledok prázdny, bot poradí najlepšie dosiahnuté skóre."
     ),
     "/eval": (
         "<b>/eval</b> — prehodnotiť autá podľa aktívneho searchu\n\n"
-        "Zaradí prehodnotenie áut z posledných 3 dní podľa aktívnych kritérií a "
-        "modelu. Už ohodnotené (rovnaký search + model) sa preskočia — nič sa "
-        "nepreplatí zbytočne.\n\n"
-        "<b>Použitie:</b> <code>/eval</code> (do 100 áut) alebo <code>/eval 200</code>\n\n"
-        "➡️ Keď bude hotovo, príde ti 🧮 hlásenie — potom /show."
+        "Zaradí prehodnotenie podľa aktívnych kritérií a modelu. Už ohodnotené "
+        "(rovnaký search + model) sa preskočia — nič sa nepreplatí zbytočne.\n\n"
+        "<b>Použitie:</b>\n"
+        "  <code>/eval</code> — posledných 100 áut z 3 dní\n"
+        "  <code>/eval 30</code> — 30 najnovších\n"
+        "  <code>/eval dni 7</code> — okno 7 dní\n"
+        "  <code>/eval 50 dni 7</code> — kombinácia\n"
+        "  <code>/eval all</code> — všetko v DB (do 500)\n\n"
+        "Bot ti hneď vypíše, koľko áut sa bude vyhodnocovať a odhad času. "
+        "Keď bude hotovo, príde ti ✅ hlásenie."
     ),
     "/photos": (
         "<b>/photos</b> — fotky pri inzerátoch\n\n"
@@ -243,6 +249,31 @@ HELP_TEXT = (
     "💡 Detail každého príkazu: <code>/prikaz help</code> (napr. <code>/filter help</code>)\n"
     "💡 Napíš <code>/</code> a Telegram ti sám doplní príkazy."
 )
+
+
+EST_SECONDS_PER_EVAL = 20  # rough per-ad LLM latency on free reasoning models
+
+
+def parse_eval_args(arg: str) -> tuple[int, int]:
+    """Parse ``/eval [N] [dni N] [all]`` -> (max_listings, days).
+
+    Examples: "" -> (100, 3) | "50" -> (50, 3) | "dni 7" -> (100, 7)
+              "50 dni 7" -> (50, 7) | "all" -> (500, 3650)
+    """
+    tokens = (arg or "").lower().split()
+    limit, days = 100, 3
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in {"all", "vsetky", "všetky"}:
+            limit, days = 500, 3650
+        elif token == "dni" and i + 1 < len(tokens) and tokens[i + 1].isdigit():
+            days = max(1, min(int(tokens[i + 1]), 3650))
+            i += 1
+        elif token.isdigit():
+            limit = max(1, min(int(token), 500))
+        i += 1
+    return limit, days
 
 
 class Bot:
@@ -476,7 +507,9 @@ class Bot:
         await self.store.update_prefs(chat_id, show_photo=on)
         return "✅ Fotky pri inzerátoch: " + ("zapnuté" if on else "vypnuté")
 
-    async def _queue_rehodnotenie(self, chat_id: int, max_listings: int = 100) -> bool:
+    async def _queue_rehodnotenie(
+        self, chat_id: int, max_listings: int = 100, days: int = 3
+    ) -> bool:
         """Queue an eval backfill for the active profile and trigger a scrape.
 
         Skip-safe: scoring runs only for ads whose (criteria, model) evaluation
@@ -496,25 +529,44 @@ class Bot:
             pending = await repo.pending_eval_tasks()
             if any(t["profile_key"] == p_key for t in pending):
                 return False  # already queued for this exact profile
-            await repo.create_eval_task(p_key, prefs.criteria, model, max_listings)
+            await repo.create_eval_task(p_key, prefs.criteria, model, max_listings, days)
         finally:
             await repo.close()
         await _dispatch_scrape()
         return True
 
     async def _eval(self, chat_id: int, arg: str) -> str:
-        try:
-            limit = max(1, min(int(arg or 100), 200))
-        except ValueError:
-            limit = 100
+        limit, days = parse_eval_args(arg)
+        # estimate: how many ads in scope still lack an evaluation?
+        to_eval, total = 0, 0
+        settings = get_settings()
+        prefs = await self.store.get_prefs(chat_id)
+        if prefs is not None and settings.database_url:
+            model = prefs.model or load_llm_config().model
+            p_key = profile_key(prefs.criteria, model)
+            repo = ListingRepository(settings.database_url)
+            await repo.connect()
+            try:
+                rows = await repo.fetch_recent_listings(days=days, limit=limit)
+                cached = await repo.fetch_evaluations(p_key, [r["ad_id"] for r in rows])
+                total, to_eval = len(rows), sum(1 for r in rows if r["ad_id"] not in cached)
+            finally:
+                await repo.close()
+
         created = await self._queue_rehodnotenie(chat_id, max_listings=limit)
-        if created:
-            return (
-                "🔁 Zaraďujem prehodnotenie áut z posledných dní podľa aktívneho "
-                "searchu. Vyhodnotené (rovnaký search + model) sa preskočia — "
-                "hotové bude o pár minút, potom skús /show."
-            )
-        return "⏳ Toto vyhľadanie už prehodnocujem — pošli /show o pár minút."
+        if not created:
+            return "⏳ Toto vyhľadanie už prehodnocujem — pošli /show o pár minút."
+
+        if to_eval == 0:
+            return "✅ Všetky autá v rozsahu už majú hodnotenie pre tento search+model — nič sa nevyhodnocuje. /show"
+        minutes = max(1, round(to_eval * EST_SECONDS_PER_EVAL / 60))
+        return (
+            f"🔁 <b>Prehodnotenie zaradené</b>\n"
+            f"Rozsah: {total} áut (posledných {days} dní), z toho "
+            f"<b>{to_eval}</b> bez hodnotenia pre tento search+model.\n"
+            f"⏱️ Odhad: <b>~{minutes} min</b> (~{EST_SECONDS_PER_EVAL}s/auto)\n"
+            f"➡️ Keď bude hotovo, príde ti ✅ hlásenie a <code>/show</code> ukáže výsledky."
+        )
 
     async def _show(self, chat_id: int, arg: str) -> str:
         """List recently seen listings matching the active search profile.
@@ -526,11 +578,15 @@ class Bot:
         settings = get_settings()
         if not settings.database_url or not settings.telegram_bot_token:
             return "⚠️ Chýba databáza alebo Telegram token — /show nedostupné."
+        prefs = await self.store.get_prefs(chat_id)
+        if prefs is None:
+            return "Žiadne nastavenia. /help"
         try:
-            limit = max(1, min(int(arg or 5), 10))
+            limit = max(1, min(int(arg or prefs.show_limit), 10))
         except ValueError:
             limit = 5
-        prefs = await self.store.get_prefs(chat_id)
+        if arg.isdigit() and int(arg) != prefs.show_limit:
+            await self.store.update_prefs(chat_id, show_limit=limit)  # remember default
         if prefs is None:
             return "Žiadne nastavenia. /help"
         model = prefs.model or (load_llm_config().model)

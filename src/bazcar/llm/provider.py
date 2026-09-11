@@ -51,7 +51,11 @@ def _listing_text(listing: Listing) -> str:
 
 
 async def list_models() -> tuple[list[str], list[str]]:
-    """All OpenRouter models split into (free, paid) by prompt pricing."""
+    """OpenRouter models that can output strict JSON, split (free, paid).
+
+    Only models advertising ``response_format`` or ``structured_outputs`` in
+    ``supported_parameters`` are listed — our evaluation prompt requires JSON.
+    """
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         resp = await client.get(f"{DEFAULT_BASE_URL.rstrip('/')}/models")
         resp.raise_for_status()
@@ -60,6 +64,12 @@ async def list_models() -> tuple[list[str], list[str]]:
     paid: list[str] = []
     for model in data:
         model_id = model.get("id", "")
+        supports_json = bool(
+            {"response_format", "structured_outputs"}
+            & set(model.get("supported_parameters") or [])
+        )
+        if not supports_json:
+            continue
         pricing = model.get("pricing") or {}
         prompt_cost = pricing.get("prompt", "1")
         (free if prompt_cost == "0" else paid).append(model_id)

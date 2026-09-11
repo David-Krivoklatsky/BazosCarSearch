@@ -239,7 +239,9 @@ async def _process_eval_tasks() -> int:
     try:
         await repo.init_schema()
         for task in await repo.pending_eval_tasks():
-            rows = await repo.fetch_recent_listings(days=3, limit=task["max_listings"])
+            rows = await repo.fetch_recent_listings(
+                days=task.get("days") or 3, limit=task["max_listings"]
+            )
             listings = [Listing(**row) for row in rows]
             count = await _evaluate_profile(
                 listings,
@@ -256,14 +258,14 @@ async def _process_eval_tasks() -> int:
                 task["profile_key"],
                 count,
             )
-            await _report_eval_task_done(settings, task, count)
+            await _report_eval_task_done(settings, task, count, listings)
     finally:
         await repo.close()
     return processed
 
 
-async def _report_eval_task_done(settings, task: dict, count: int) -> None:
-    """Push a short status message when a re-evaluation backfill completes."""
+async def _report_eval_task_done(settings, task: dict, count: int, listings: list[Listing]) -> None:
+    """Push a completion message when a re-evaluation backfill finishes."""
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         return
     try:
@@ -271,12 +273,17 @@ async def _report_eval_task_done(settings, task: dict, count: int) -> None:
 
         criteria_short = (task.get("criteria") or "bez kritérií").strip()
         label = criteria_short if len(criteria_short) <= 60 else criteria_short[:57] + "…"
+        scored_now = sum(
+            1
+            for listing in listings
+            if listing.evaluation is not None and listing.evaluation.model == task.get("model")
+        )
         async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as ntf:
             await ntf.send_message(
-                f"🧮 <b>Prehodnotenie hotové</b>\n"
+                f"✅ <b>Prehodnotenie hotové</b>\n"
                 f"Search: <i>{_tg_escape(label)}</i>\n"
-                f"Skórovaných: <b>{count}</b> áut\n"
-                f"Prehľad: <code>/show</code> | filtruje sa cez <code>/score</code>"
+                f"Skórovaných: <b>{scored_now}</b> áut (celkom v rozsahu {count})\n"
+                f"➡️ <code>/show</code> ukáže výsledky podľa <code>/score</code>"
             )
     except Exception:
         logger.warning("eval task report failed", exc_info=True)

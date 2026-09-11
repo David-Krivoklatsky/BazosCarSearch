@@ -110,7 +110,7 @@ def webhook(
     if set_commands:
         resp = httpx.post(
             f"{api}/setMyCommands",
-            json={"commands": BOT_COMMANDS, "language_code": "sk"},
+            json={"commands": BOT_COMMANDS},
             timeout=30,
         )
         data = resp.json()
@@ -148,7 +148,7 @@ def webhook(
         typer.echo("[NOTE] polling (bazcar bot) is now disabled — Telegram pushes updates instead.")
         cmds = httpx.post(
             f"{api}/setMyCommands",
-            json={"commands": BOT_COMMANDS, "language_code": "sk"},
+            json={"commands": BOT_COMMANDS},
             timeout=30,
         )
         if cmds.json().get("ok"):

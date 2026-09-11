@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS eval_tasks (
     criteria     text,
     model        text,
     max_listings int NOT NULL DEFAULT 100,
+    days         int NOT NULL DEFAULT 3,
     created_at   timestamptz NOT NULL DEFAULT now(),
     done_at      timestamptz
 );
@@ -119,10 +120,14 @@ CREATE TABLE IF NOT EXISTS eval_tasks (
 -- Idempotent migrations for tables created before these columns existed.
 ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE user_prefs
+    ADD COLUMN IF NOT EXISTS show_limit int NOT NULL DEFAULT 5;
 ALTER TABLE user_searches
     ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE user_searches
     ADD COLUMN IF NOT EXISTS min_score int;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS days int NOT NULL DEFAULT 3;
 """
 
 _UPSERT_LISTING_SQL = """
@@ -478,23 +483,24 @@ class ListingRepository:
     # ------------------------------------------------- evaluation backfill
 
     async def create_eval_task(
-        self, profile_key: str, criteria: str | None, model: str, max_listings: int
+        self, profile_key: str, criteria: str | None, model: str, max_listings: int, days: int = 3
     ) -> None:
         """Queue a backfill: score recent ads under this search profile."""
         conn = self._require_conn()
         await conn.execute(
-            "INSERT INTO eval_tasks (profile_key, criteria, model, max_listings)"
-            " VALUES ($1, $2, $3, $4)",
+            "INSERT INTO eval_tasks (profile_key, criteria, model, max_listings, days)"
+            " VALUES ($1, $2, $3, $4, $5)",
             profile_key,
             criteria,
             model,
             max_listings,
+            days,
         )
 
     async def pending_eval_tasks(self) -> list[dict]:
         conn = self._require_conn()
         rows = await conn.fetch(
-            "SELECT id, profile_key, criteria, model, max_listings FROM eval_tasks"
+            "SELECT id, profile_key, criteria, model, max_listings, days FROM eval_tasks"
             " WHERE done_at IS NULL ORDER BY id"
         )
         return [dict(row) for row in rows]

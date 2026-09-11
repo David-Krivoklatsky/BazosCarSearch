@@ -25,6 +25,7 @@ class UserPrefs:
     min_score: int | None = None
     show_photo: bool = False
     filters: dict = field(default_factory=dict)
+    show_limit: int = 5
 
 
 @dataclass
@@ -76,7 +77,7 @@ class UserStore:
 
     async def get_prefs(self, chat_id: int) -> UserPrefs | None:
         row = await self._require().fetchrow(
-            "SELECT chat_id, criteria, model, min_score, show_photo, filters"
+            "SELECT chat_id, criteria, model, min_score, show_photo, filters, show_limit"
             " FROM user_prefs WHERE chat_id = $1",
             chat_id,
         )
@@ -97,7 +98,7 @@ class UserStore:
         return UserPrefs(chat_id=chat_id)
 
     async def update_prefs(self, chat_id: int, **fields) -> None:
-        allowed = {"criteria", "model", "min_score", "show_photo", "filters"}
+        allowed = {"criteria", "model", "min_score", "show_photo", "filters", "show_limit"}
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return
