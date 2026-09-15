@@ -194,8 +194,10 @@ SELECT l.ad_id, l.url, l.title, l.price_eur, l.city, l.image_urls,
        e.score, e.why, e.risk, e.model AS eval_model
 FROM listings l
 JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
-WHERE e.score >= $2 AND l.last_seen_at >= now() - make_interval(days => $3)
-ORDER BY e.score DESC, l.last_seen_at DESC
+WHERE e.score >= $2
+  AND COALESCE(l.published_date, l.first_seen_at::date)
+      >= (now() - make_interval(days => $3))::date
+ORDER BY e.score DESC, l.first_seen_at DESC
 LIMIT $4
 """
 
@@ -454,7 +456,8 @@ class ListingRepository:
             value = await conn.fetchval(
                 "SELECT count(*) FROM listings l"
                 " JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1"
-                " WHERE e.score >= $2 AND l.last_seen_at >= now() - make_interval(days => $3)",
+                " WHERE e.score >= $2 AND COALESCE(l.published_date, l.first_seen_at::date)"
+                "       >= (now() - make_interval(days => $3))::date",
                 profile_key,
                 min_score,
                 days,

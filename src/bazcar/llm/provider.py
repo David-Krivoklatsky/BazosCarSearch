@@ -50,20 +50,31 @@ def _listing_text(listing: Listing) -> str:
     return "\n".join(p for p in parts if p)
 
 
-async def list_models() -> tuple[list[str], list[str]]:
-    """OpenRouter models that can output strict JSON, split (free, paid).
+def _fmt_price(per_token: str) -> str:
+    """Render per-token USD as a readable per-1M-token figure."""
+    try:
+        cost = float(per_token) * 1_000_000
+    except (TypeError, ValueError):
+        return "?"
+    if cost < 0.001:
+        return "<0.001"
+    return f"{cost:g}"
 
-    Only models advertising ``response_format`` or ``structured_outputs`` in
-    ``supported_parameters`` are listed — our evaluation prompt requires JSON.
+
+async def list_models() -> list[dict]:
+    """OpenRouter models that can output strict JSON, with key parameters.
+
+    Each entry: ``id``, ``name``, ``free``, ``price_in``/``price_out``
+    (per 1M tokens), ``rpm`` (requests/min limit — None = unlimited),
+    ``ctx`` (context length). Only models advertising ``response_format`` or
+    ``structured_outputs`` are included (our prompt requires JSON).
     """
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         resp = await client.get(f"{DEFAULT_BASE_URL.rstrip('/')}/models")
         resp.raise_for_status()
         data = resp.json().get("data", [])
-    free: list[str] = []
-    paid: list[str] = []
+    models: list[dict] = []
     for model in data:
-        model_id = model.get("id", "")
         supports_json = bool(
             {"response_format", "structured_outputs"}
             & set(model.get("supported_parameters") or [])
@@ -72,8 +83,19 @@ async def list_models() -> tuple[list[str], list[str]]:
             continue
         pricing = model.get("pricing") or {}
         prompt_cost = pricing.get("prompt", "1")
-        (free if prompt_cost == "0" else paid).append(model_id)
-    return sorted(free), sorted(paid)
+        limits = model.get("per_request_limits") or {}
+        models.append(
+            {
+                "id": model.get("id", ""),
+                "name": model.get("name") or model.get("id", ""),
+                "free": prompt_cost == "0",
+                "price_in": _fmt_price(prompt_cost),
+                "price_out": _fmt_price(pricing.get("completion", "1")),
+                "rpm": limits.get("requests_per_minute"),
+                "ctx": model.get("context_length"),
+            }
+        )
+    return models
 
 
 def parse_evaluation(content: str | None) -> DealEvaluation | None:

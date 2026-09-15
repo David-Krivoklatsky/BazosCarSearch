@@ -139,17 +139,30 @@ COMMAND_HELP: dict[str, str] = {
         "Pri každom inzeráte máš vždy tlačidlá 💾 Uložiť a 🔗 Otvoriť."
     ),
     "/models": (
-        "<b>/models</b> — dostupné AI modely\n\n"
-        "Zobrazí modely z OpenRouteru rozdelené na 🆓 Free a 💰 Paid.\n"
-        "Zmeníš ich príkazom <code>/model názov</code> — napr. "
-        "<code>/model nvidia/nemotron-3-super-120b-a12b:free</code>\n\n"
-        "💡 Zmena modelu = nový hodnotiaci profil → autá sa prehodnotia podľa neho."
+        "<b>/models</b> — AI modely (len tie s JSON výstupom)\n\n"
+        "Zoznam rozdelený na 🆓 Free a 💰 Paid. Pre každý model:\n"
+        "  • 💰 <b>cena</b> za 1M tokenov ($/M; free = 0)\n"
+        "  • ⚡ <b>Rychlosť</b> = <i>requests za minútu</i> — TOTO rozhoduje, či model stíha: "
+        "∞ = bez limitu (backfill rýchly), nízke číslo = pomalý backfill (429)\n"
+        "  • 🔡 kontext (veľkosť okna)\n\n"
+        "<b>Použitie:</b>\n"
+        "  <code>/models</code> — zoznam\n"
+        "  <code>/models deepseek</code> — filtrovanie podľa textu\n"
+        "  <code>/model info ID</code> — detail jedného modelu\n"
+        "  <code>/model ID</code> — zmeniť model\n\n"
+        "💡 Ak backfill hádže 429, prejdi na model s ⚡∞."
     ),
     "/model": (
         "<b>/model</b> — zmeniť AI model\n\n"
-        "<code>/model nvidia/nemotron-3-super-120b-a12b:free</code>\n\n"
-        "Zoznam: <code>/models</code>. Free modely sú zadarmo ale pomalšie a "
-        "občas nespoľahlivé; platené sú rýchle a presné (účtuje OpenRouter)."
+        "<b>Použitie:</b>\n"
+        "  <code>/model</code> — ukáže aktuálny model + detail\n"
+        "  <code>/model ID</code> — nastaví model a spustí prehodnotenie\n"
+        "  <code>/model info ID</code> — detail konkrétneho modelu\n\n"
+        "<b>Príklad:</b>\n"
+        "  <code>/model ~deepseek/deepseek-v4-flash-latest</code>\n\n"
+        "Key parametre (pri /model info): 💰 cena za 1M tokenov, "
+        "⚡ requests/min (∞ = bez limitu), 🔡 kontext.\n"
+        "Zoznam všetkých: <code>/models</code>."
     ),
     "/save": (
         "<b>/save</b> — uložiť inzerát na neskôr\n\n"
@@ -380,7 +393,7 @@ class Bot:
             case "/show":
                 return await self._show(chat_id, arg)
             case "/models":
-                return await self._models(chat_id)
+                return await self._models(chat_id, arg)
             case "/save":
                 return await self._save(chat_id, arg)
             case "/saved":
@@ -508,10 +521,75 @@ class Bot:
         return f"Nenašiel som „{_em(name)}“. /searches"
 
     async def _model(self, chat_id: int, model: str) -> str:
-        if not model:
-            return "/model nazov — napr. `/model openrouter/free`."
-        await self.store.update_prefs(chat_id, model=model.strip())
-        return f"✅ Model: <code>{_em(model.strip())}</code>"
+        """/model — show current, /model info ID — detail, /model ID — set."""
+        from bazcar.llm.provider import list_models
+
+        models = {m["id"]: m for m in await list_models()}
+
+        # /model info <ID> — full detail of a specific model
+        arg = model.strip()
+        if arg.lower().startswith("info "):
+            target = arg.split(maxsplit=1)[1].strip()
+            return self._model_detail(models, target, is_current=False)
+        if arg.startswith("info") and len(arg.split()) == 1:
+            return "Použitie: <code>/model info ID</code> — napr. <code>/model info ~deepseek/deepseek-v4-flash-latest</code>"
+
+        prefs = await self.store.get_prefs(chat_id)
+        current = prefs.model or load_llm_config().model if prefs else load_llm_config().model
+
+        # /model <ID> — switch
+        if arg:
+            if arg not in models:
+                return (
+                    f"Nenájdený model <code>{_em(arg)}</code> (musí podporovať JSON).\n"
+                    "Zoznam: <code>/models</code>, filtruj: <code>/models deepseek</code>"
+                )
+            await self.store.update_prefs(chat_id, model=arg)
+            self._schedule_recheck(chat_id)  # silent: re-evaluate under new model
+            return (
+                f"✅ Model: <code>{_em(arg)}</code>\n\n"
+                + self._model_detail(models, arg, is_current=True)
+            )
+
+        # /model — current model detail
+        return self._model_detail(models, current, is_current=True)
+
+    @staticmethod
+    def _model_detail(models: dict, model_id: str, *, is_current: bool) -> str:
+        m = models.get(model_id)
+        if m is None:
+            return f"Model <code>{_em(model_id)}</code> nie je v JSON-capable zozname (môže byť vypnutý)."
+        rpm = m["rpm"] if m["rpm"] else "∞ (bez limitu) ✅"
+        ctx = f"{m['ctx']:,}".replace(",", " ") if m["ctx"] else "?"
+        price = "0 (zadarmo)" if m["free"] else f"{m['price_in']} $ / 1M tokenov vstupu, {m['price_out']} $ / 1M výstupu"
+        head = "<b>⬆️ Aktuálny model</b>\n\n" if is_current else "<b>Detail modelu</b>\n\n"
+        flags = []
+        if m["rpm"] is None:
+            flags.append("⚡ žiadny rate limit (vhodné na dávku)")
+        elif m["rpm"] and m["rpm"] < 60:
+            flags.append("⚠️ pomalý rate limit — backfill môže trvať")
+        if m["free"]:
+            flags.append("🆓 zadarmo")
+        return (
+            head
+            + f"<b>{_em(m['name'])}</b>\n"
+            f"<code>{_em(m['id'])}</code>\n\n"
+            f"💰 {price}\n"
+            f"⚡ Rychlosť: {rpm}\n"
+            f"🔡 Kontext: {ctx}\n\n"
+            + ("".join(f"{f}\n" for f in flags) if flags else "")
+            + ("\nZmeniť: <code>/model ID</code>, zoznam: <code>/models</code>" if is_current else "")
+        )
+
+    def _schedule_recheck(self, chat_id: int) -> None:
+        """Trigger a re-score under the new model (best-effort, async fire-and-forget)."""
+        async def _go() -> None:
+            try:
+                await self._queue_rehodnotenie(chat_id)
+            except Exception:
+                logger.warning("re-score after model change failed", exc_info=True)
+
+        asyncio.ensure_future(_go())
 
     async def _score(self, chat_id: int, arg: str) -> str:
         if not arg:
@@ -648,23 +726,46 @@ class Bot:
             f"(skóre >= {min_score}, okno {days} dní){tail}:"
         )
 
-    async def _models(self, chat_id: int) -> str:
+    async def _models(self, chat_id: int, arg: str = "") -> str:
         from bazcar.llm.provider import list_models
 
-        free, paid = await list_models()
+        models = await list_models()
+        query = arg.strip().lower()
+        if query:
+            models = [m for m in models if query in m["id"].lower()]
+        free = [m for m in models if m["free"]]
+        paid = [m for m in models if not m["free"]]
+        free.sort(key=lambda m: m["id"])
+        paid.sort(key=lambda m: m["id"])
 
-        def _lines(models: list[str], cap: int) -> list[str]:
-            shown = [f"  • <code>{_em(m)}</code>" for m in models[:cap]]
-            if len(models) > cap:
-                shown.append(f"  • … +{len(models) - cap} ďalších (openrouter.ai/models)")
-            return shown
+        def _line(m: dict) -> str:
+            rpm = m["rpm"] if m["rpm"] else "∞"
+            ctx = f"{m['ctx'] // 1000}k" if m["ctx"] else "?"
+            price = "$0" if m["free"] else f"${m['price_in']}/M"
+            return (
+                f"  • <code>{_em(m['id'])}</code>\n"
+                f"    ─ {price} · ⚡{rpm}/min · 🔡{ctx}"
+            )
 
-        return (
-            "<b>🤖 Dostupné modely</b>\n\n"
-            "<b>🆓 Free</b>\n" + "\n".join(_lines(free, 30) or ["  • —"]) + "\n\n"
-            "<b>💰 Paid</b>\n" + "\n".join(_lines(paid, 20))
-            + "\n\nNastaviť: <code>/model názov-modelu</code>"
-        )
+        def _block(title: str, items: list[dict], cap: int) -> list[str]:
+            shown = [_line(m) for m in items[:cap]]
+            if len(items) > cap:
+                shown.append(f"  • … +{len(items) - cap} ďalších")
+            return [f"<b>{title}</b>", *shown]
+
+        cap = 8 if query else 6
+        lines: list[str] = ["<b>🤖 Modely (JSON-capable)</b>", ""]
+        if not models:
+            lines.append("Žiadny model nevyhovuje filtru.")
+            lines.append("Skús: /models gemini · /models deepseek · /models llama · /models flash")
+            return "\n".join(lines)
+        lines += _block("🆓 Free", free[:cap], cap)
+        lines.append("")
+        lines += _block("💰 Paid", paid[:cap], cap)
+        lines.append("")
+        lines.append("<i>⚡ = rýchlosť (requests/min, ∞ = bez limitu), 🔡 = kontext, $/M = cena za 1M tokenov vstupu</i>")
+        lines.append("Nastav: <code>/model ID</code> · filtruj: <code>/models text</code> · detail: <code>/model info ID</code>")
+        return "\n".join(lines)
 
     async def _save(self, chat_id: int, arg: str) -> str:
         try:

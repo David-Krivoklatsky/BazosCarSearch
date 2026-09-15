@@ -8,17 +8,15 @@
 #     rate-limited and does not aggregate quotas.
 #   * "nvidia/nemotron-3-super-120b-a12b:free" = NVIDIA Nemotron reasoning
 #     model, free tier (rate-limited, CoT replies are long).
-#   * NOTE: "nvidia/nemotron-3-ultra-550b-a55b:free" exists but times out on
-#     the free tier (OpenRouter 504 idle timeout) — too slow to be usable.
+#   * "~deepseek/deepseek-v4-flash-latest" = ultra-cheap (~0.00004 $/M in),
+#     unthrottled (no free-tier 429), JSON-capable — recommended default.
 #   * Model can also be overridden at runtime with BAZCAR_OPENROUTER_MODEL.
 
 # Base URL of the OpenRouter Chat Completions API.
 base_url: "https://openrouter.ai/api/v1"
 
 # Model used for evaluations. See "Supported Models" on openrouter.ai.
-# Nemotron-3 is a reasoning model — the JSON answer arrives after its
-# chain-of-thought, so max_tokens stays generous below.
-model: nvidia/nemotron-3-super-120b-a12b:free
+model: "~deepseek/deepseek-v4-flash-latest"
 
 # --- LLM parameters (sampling config) ---
 temperature: 0.0 # 0..2 — 0 = deterministické skórovanie
