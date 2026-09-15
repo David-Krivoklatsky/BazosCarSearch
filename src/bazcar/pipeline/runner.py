@@ -200,6 +200,7 @@ async def _evaluate_profile(
             listing.evaluation = ev
 
     fresh_items: list[tuple[int, DealEvaluation]] = []
+    flushed = 0
     to_eval = [listing for listing in listings if listing.evaluation is None]
     if to_eval:
         from bazcar.llm import LLMProvider
@@ -221,17 +222,24 @@ async def _evaluate_profile(
                     await asyncio.sleep(delay)
                 try:
                     listing.evaluation = await llm.evaluate(listing, criteria=criteria)
+                    if listing.evaluation is not None:
+                        listing.evaluation.model = model
                 except LlmError as exc:
                     logger.warning("eval failed for ad %s: %s", listing.ad_id, exc)
                     listing.evaluation = None
-        fresh_items = [
-            (listing.ad_id, listing.evaluation)
-            for listing in to_eval
-            if listing.evaluation is not None
-        ]
-        if repo is not None and fresh_items:
+                if listing.evaluation is not None:
+                    fresh_items.append((listing.ad_id, listing.evaluation))
+                # Flush incrementally so long backfills survive process timeouts —
+                # progress is committed every EVAL_FLUSH_BATCH listings.
+                if len(fresh_items) - flushed >= EVAL_FLUSH_BATCH and repo is not None:
+                    try:
+                        await repo.upsert_evaluations(p_key, fresh_items[flushed:])
+                        flushed = len(fresh_items)
+                    except Exception:
+                        logger.warning("evaluation cache write failed", exc_info=True)
+        if repo is not None and len(fresh_items) > flushed:
             try:
-                await repo.upsert_evaluations(p_key, fresh_items)
+                await repo.upsert_evaluations(p_key, fresh_items[flushed:])
             except Exception:
                 logger.warning("evaluation cache write failed", exc_info=True)
 
@@ -270,12 +278,29 @@ async def _process_eval_tasks() -> int:
                 delay=2.0,  # stay under free-tier rate limits during backfill
             )
             if fresh == 0 and len(listings) > attached:
-                # every LLM call failed — keep the task pending, retry next run
-                logger.warning(
-                    "eval task %d scored 0/%d — left pending for retry",
-                    task["id"],
-                    len(listings) - attached,
-                )
+                # every LLM call failed (e.g. model stuck behind 429) — bump the
+                # counter; after MAX we abandon the task so it cannot block the
+                # pipeline forever behind a dead model.
+                attempts = (task.get("attempts") or 0) + 1
+                await repo.bump_eval_task_attempt(task["id"])
+                if attempts >= MAX_EVAL_TASK_RETRIES:
+                    await repo.complete_eval_task(task["id"])
+                    logger.warning(
+                        "eval task %d abandoned after %d failed attempts (model %s)",
+                        task["id"],
+                        attempts,
+                        task["model"],
+                    )
+                    await _report_eval_task_abandoned(settings, task)
+                else:
+                    logger.warning(
+                        "eval task %d scored 0/%d (model %s) — attempt %d/%d, left pending",
+                        task["id"],
+                        len(listings) - attached,
+                        task["model"],
+                        attempts,
+                        MAX_EVAL_TASK_RETRIES,
+                    )
                 continue
             await repo.complete_eval_task(task["id"])
             processed += 1
@@ -314,6 +339,25 @@ async def _report_eval_task_done(settings, task: dict, count: int, listings: lis
             )
     except Exception:
         logger.warning("eval task report failed", exc_info=True)
+
+
+async def _report_eval_task_abandoned(settings, task: dict) -> None:
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        return
+    try:
+        from bazcar.notify import TelegramNotifier
+
+        criteria_short = (task.get("criteria") or "bez kritérií").strip()
+        label = criteria_short if len(criteria_short) <= 60 else criteria_short[:57] + "…"
+        async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as ntf:
+            await ntf.send_message(
+                f"⚠️ <b>Prehodnotenie zrušené</b>\n"
+                f"Search: <i>{_tg_escape(label)}</i>\n"
+                f"Model <code>{_tg_escape(task.get('model') or '?')}</code> opakovane zlyháva "
+                f"(napr. 429 rate-limit). Má dobiehajúci backend — skús /models a /model iný."
+            )
+    except Exception:
+        logger.warning("eval task abandon report failed", exc_info=True)
 
 
 def _tg_escape(text: str) -> str:
@@ -423,6 +467,8 @@ async def _persist(
 
 NOTIFY_WINDOW_DAYS = 7      # how far back deal alerts look
 NOTIFY_CAP_PER_RUN = 10     # max deal alerts per run (rest stays for /show)
+MAX_EVAL_TASK_RETRIES = 2   # abandon a backfill after this many empty attempts
+EVAL_FLUSH_BATCH = 5        # commit evaluations incrementally during long backfills
 
 
 async def _notify_unseen_matches(prefs: dict | None, *, enabled: bool | None) -> int:

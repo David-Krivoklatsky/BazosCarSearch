@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS eval_tasks (
     model        text,
     max_listings int NOT NULL DEFAULT 100,
     days         int NOT NULL DEFAULT 3,
+    attempts     int NOT NULL DEFAULT 0,
     created_at   timestamptz NOT NULL DEFAULT now(),
     done_at      timestamptz
 );
@@ -137,6 +138,8 @@ ALTER TABLE user_searches
     ADD COLUMN IF NOT EXISTS min_score int;
 ALTER TABLE eval_tasks
     ADD COLUMN IF NOT EXISTS days int NOT NULL DEFAULT 3;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS attempts int NOT NULL DEFAULT 0;
 """
 
 _UPSERT_LISTING_SQL = """
@@ -585,10 +588,15 @@ class ListingRepository:
     async def pending_eval_tasks(self) -> list[dict]:
         conn = self._require_conn()
         rows = await conn.fetch(
-            "SELECT id, profile_key, criteria, model, max_listings, days FROM eval_tasks"
+            "SELECT id, profile_key, criteria, model, max_listings, days, attempts FROM eval_tasks"
             " WHERE done_at IS NULL ORDER BY id"
         )
         return [dict(row) for row in rows]
+
+    async def bump_eval_task_attempt(self, task_id: int) -> None:
+        await self._require_conn().execute(
+            "UPDATE eval_tasks SET attempts = attempts + 1 WHERE id = $1", task_id
+        )
 
     async def complete_eval_task(self, task_id: int) -> None:
         await self._require_conn().execute(

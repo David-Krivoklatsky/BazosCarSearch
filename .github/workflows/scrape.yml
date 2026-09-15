@@ -13,7 +13,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # backfill tasks can take longer (free LLM latency)
+    timeout-minutes: 45   # scrape + backfill tasks (free LLM latency)
     steps:
       - uses: actions/checkout@v4
 
