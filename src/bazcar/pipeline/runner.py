@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -81,6 +82,7 @@ async def run_scrape(
     if evaluate is not False:
         evaluated = await _evaluate(listings, enabled=evaluate, criteria=(prefs or {}).get("criteria"))
         try:
+            await _auto_backfill_missing(prefs)
             await _process_eval_tasks()
         except Exception:
             logger.warning("eval task processing failed", exc_info=True)
@@ -93,13 +95,21 @@ async def run_scrape(
 
     notified = 0
     if notify is not False:
-        notified = await _notify(
-            listings,
-            inserted_ids=inserted_ids,
-            persist_enabled=db_summary is not None,
-            prefs=prefs,
-            enabled=notify,
-        )
+        if db_summary is not None:
+            # DB runs: match-driven alerts (heals failed evals + search switches).
+            try:
+                notified = await _notify_unseen_matches(prefs, enabled=notify)
+            except Exception:
+                logger.warning("match sweep failed", exc_info=True)
+        else:
+            # Manual --no-db run: notify everything scraped (no dedupe possible).
+            notified = await _notify(
+                listings,
+                inserted_ids=inserted_ids,
+                persist_enabled=False,
+                prefs=prefs,
+                enabled=notify,
+            )
 
     summary = ScrapeSummary(
         source=platform,
@@ -161,14 +171,19 @@ async def _evaluate_profile(
     model: str,
     cfg,
     repo=None,
-) -> int:
+    delay: float = 0.0,
+) -> tuple[int, int]:
     """Score ``listings`` under one search profile (criteria + model).
 
     Ads already scored for this exact profile (same criteria, same model) are
     skipped — everything is cached in the ``evaluations`` table.
+
+    Returns ``(attached, fresh)`` — how many listings carry an evaluation and
+    how many were scored in THIS call (0 fresh + pending work = all LLM calls
+    failed, caller should retry later instead of marking the task done).
     """
     if not listings:
-        return 0
+        return 0, 0
     settings = get_settings()
     p_key = profile_key(criteria, model)
 
@@ -202,6 +217,8 @@ async def _evaluate_profile(
             stream=cfg.stream,
         ) as llm:
             for listing in to_eval:
+                if delay:
+                    await asyncio.sleep(delay)
                 try:
                     listing.evaluation = await llm.evaluate(listing, criteria=criteria)
                 except LlmError as exc:
@@ -218,7 +235,8 @@ async def _evaluate_profile(
             except Exception:
                 logger.warning("evaluation cache write failed", exc_info=True)
 
-    return sum(1 for listing in listings if listing.evaluation is not None)
+    attached = sum(1 for listing in listings if listing.evaluation is not None)
+    return attached, len(fresh_items)
 
 
 async def _process_eval_tasks() -> int:
@@ -243,22 +261,31 @@ async def _process_eval_tasks() -> int:
                 days=task.get("days") or 3, limit=task["max_listings"]
             )
             listings = [Listing(**row) for row in rows]
-            count = await _evaluate_profile(
+            attached, fresh = await _evaluate_profile(
                 listings,
                 criteria=task["criteria"],
                 model=task["model"],
                 cfg=cfg,
                 repo=repo,
+                delay=2.0,  # stay under free-tier rate limits during backfill
             )
+            if fresh == 0 and len(listings) > attached:
+                # every LLM call failed — keep the task pending, retry next run
+                logger.warning(
+                    "eval task %d scored 0/%d — left pending for retry",
+                    task["id"],
+                    len(listings) - attached,
+                )
+                continue
             await repo.complete_eval_task(task["id"])
             processed += 1
             logger.info(
                 "eval task %d done (profile %s): %d ads scored",
                 task["id"],
                 task["profile_key"],
-                count,
+                fresh,
             )
-            await _report_eval_task_done(settings, task, count, listings)
+            await _report_eval_task_done(settings, task, attached, listings)
     finally:
         await repo.close()
     return processed
@@ -291,6 +318,34 @@ async def _report_eval_task_done(settings, task: dict, count: int, listings: lis
 
 def _tg_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def _auto_backfill_missing(prefs: dict | None) -> None:
+    """Self-healing: queue a backfill when ads lack a score for the active profile.
+
+    Covers ads whose first-run LLM eval failed (flaky free tier) and ads
+    inserted before the profile switch. Skips when a task for the profile is
+    already pending. Tasks converge over a few runs (cached evals skip).
+    """
+    settings = get_settings()
+    if not settings.database_url or not settings.openrouter_api_key or not prefs:
+        return
+    from bazcar.db import ListingRepository
+
+    model = prefs.get("model") or load_llm_config().model
+    p_key = profile_key(prefs.get("criteria"), model)
+    repo = ListingRepository(settings.database_url)
+    await repo.connect()
+    try:
+        missing, total = await repo.count_missing_evaluations(p_key, days=30, limit=500)
+        if missing <= 0:
+            return
+        if any(t["profile_key"] == p_key for t in await repo.pending_eval_tasks()):
+            return
+        await repo.create_eval_task(p_key, prefs.get("criteria"), model, max_listings=min(total or 500, 500), days=30)
+        logger.info("auto-backfill queued: %d/%d ads missing eval for %s", missing, total, p_key)
+    finally:
+        await repo.close()
 
 
 async def _evaluate(listings: list[Listing], *, enabled: bool | None, criteria: str | None = None) -> int:
@@ -329,13 +384,14 @@ async def _evaluate(listings: list[Listing], *, enabled: bool | None, criteria: 
                 repo = None
 
     try:
-        return await _evaluate_profile(
+        attached, _ = await _evaluate_profile(
             listings,
             criteria=criteria or (prefs or {}).get("criteria"),
             model=model,
             cfg=cfg,
             repo=repo,
         )
+        return attached
     finally:
         if repo is not None:
             await repo.close()
@@ -365,6 +421,73 @@ async def _persist(
     return DbSyncSummary(**result.stats.as_dict()), result.inserted_ids
 
 
+NOTIFY_WINDOW_DAYS = 7      # how far back deal alerts look
+NOTIFY_CAP_PER_RUN = 10     # max deal alerts per run (rest stays for /show)
+
+
+async def _notify_unseen_matches(prefs: dict | None, *, enabled: bool | None) -> int:
+    """Match-driven deal alerts (DB runs).
+
+    Instead of notifying only on first DB insert, every run finds listings that
+    match the active search profile (score >= min_score, whole cars) which have
+    NOT yet been pushed to the chat under this profile — and pushes them. This
+    heals every historical hole: ads whose first-run eval failed, ads inserted
+    under a previous search, and backfilled evaluations.
+
+    Each (chat, ad, profile) is sent at most once (notifications table). Cap
+    per run keeps the chat readable — the rest is available via /show.
+    """
+    settings = get_settings()
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        if enabled is True:
+            raise ConfigError("notification requested but TELEGRAM_BOT_TOKEN/CHAT_ID is not set")
+        return 0
+    if not settings.database_url:
+        return 0
+
+    from bazcar.bot.classify import filter_cars
+    from bazcar.db import ListingRepository
+    from bazcar.notify import TelegramNotifier
+
+    min_score = (prefs or {}).get("min_score")
+    if min_score is None:
+        min_score = settings.telegram_min_score or 0
+    model = (prefs or {}).get("model") or load_llm_config().model
+    p_key = profile_key((prefs or {}).get("criteria"), model)
+    chat_id = int(settings.telegram_chat_id)
+
+    part_markers = load_scraper_config().markers.part_markers or None
+    repo = ListingRepository(settings.database_url)
+    await repo.connect()
+    try:
+        matches = await repo.fetch_recent_matches(p_key, min_score, NOTIFY_WINDOW_DAYS, limit=50)
+        seen = await repo.fetch_notified_ids(chat_id, p_key, [m["ad_id"] for m in matches])
+        targets = filter_cars(
+            [_row_to_notification_listing(m) for m in matches if m["ad_id"] not in seen],
+            part_markers=part_markers,
+        )[:NOTIFY_CAP_PER_RUN]
+        if not targets:
+            return 0
+        show_photo = bool((prefs or {}).get("show_photo"))
+        async with TelegramNotifier(settings.telegram_bot_token, chat_id) as ntf:
+            if show_photo:
+                sent = await ntf.send_listings_with_photos(targets, chat_id=chat_id)
+            else:
+                sent = await ntf.send_listings(targets, chat_id=chat_id)
+        if sent:
+            await repo.record_notifications(chat_id, p_key, [t.ad_id for t in targets])
+        return sent
+    finally:
+        await repo.close()
+
+
+def _row_to_notification_listing(row: dict) -> Listing:
+    """Rebuild a Listing from a fetch_recent_matches row (for deal alerts)."""
+    from bazcar.bot.daemon import _row_to_listing
+
+    return _row_to_listing(row)
+
+
 async def _notify(
     listings: list[Listing],
     *,
@@ -373,16 +496,10 @@ async def _notify(
     prefs: dict | None,
     enabled: bool | None,
 ) -> int:
-    """Send Telegram alerts for the newly inserted listings.
+    """Legacy insert-driven alert path — only used for ``--no-db`` runs.
 
-    Only deals that are genuinely new are notified when persistence ran. When
-    persistence did not run (``persist_enabled`` is False) we cannot know what
-    is new, so we notify everything — that matches a manual `--no-db` run.
-
-    Non-car listings (parts, accessories) are dropped, and only listings with
-    evaluation score at least ``min_score`` (from user prefs, else env) are
-    notified. When the user enabled photos, ``sendPhoto`` is used. Returns the
-    number of messages sent.
+    Without a database we cannot dedupe, so every scraped listing that scores
+    >= min_score and is a whole car is pushed (a manual one-off run).
     """
     if not listings:
         return 0

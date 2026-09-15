@@ -117,6 +117,15 @@ CREATE TABLE IF NOT EXISTS eval_tasks (
     done_at      timestamptz
 );
 
+-- Deal alerts dedupe: each (chat, ad, search profile) is pushed at most once.
+CREATE TABLE IF NOT EXISTS notifications (
+    chat_id     bigint NOT NULL,
+    ad_id       bigint NOT NULL REFERENCES listings(ad_id) ON DELETE CASCADE,
+    profile_key text NOT NULL,
+    notified_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (chat_id, ad_id, profile_key)
+);
+
 -- Idempotent migrations for tables created before these columns existed.
 ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
@@ -478,6 +487,60 @@ class ListingRepository:
             return int(value or 0)
         except asyncpg.PostgresError as exc:
             raise DbError(f"evaluation count failed: {exc}") from exc
+
+    async def count_missing_evaluations(
+        self, profile_key: str, days: int, limit: int
+    ) -> tuple[int, int]:
+        """(missing, total) ads in the window without a score for this profile."""
+        rows = await self.fetch_recent_listings(days=days, limit=limit)
+        total = len(rows)
+        missing = 0
+        if not rows:
+            return 0, 0
+        conn = self._require_conn()
+        scored_rows = await conn.fetch(
+            "SELECT ad_id FROM evaluations WHERE profile_key = $1"
+            " AND ad_id = ANY($2::bigint[])",
+            profile_key,
+            [row["ad_id"] for row in rows],
+        )
+        scored = {row["ad_id"] for row in scored_rows}
+        missing = sum(1 for row in rows if row["ad_id"] not in scored)
+        return missing, total
+
+    # ------------------------------------------------------------ notifications
+
+    async def fetch_notified_ids(
+        self, chat_id: int, profile_key: str, ad_ids: list[int]
+    ) -> set[int]:
+        """Ads already pushed to this chat under this search profile."""
+        if not ad_ids:
+            return set()
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(
+                "SELECT ad_id FROM notifications WHERE chat_id = $1 AND profile_key = $2"
+                " AND ad_id = ANY($3::bigint[])",
+                chat_id,
+                profile_key,
+                ad_ids,
+            )
+            return {row["ad_id"] for row in rows}
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"notifications fetch failed: {exc}") from exc
+
+    async def record_notifications(
+        self, chat_id: int, profile_key: str, ad_ids: list[int]
+    ) -> None:
+        conn = self._require_conn()
+        try:
+            await conn.executemany(
+                "INSERT INTO notifications (chat_id, ad_id, profile_key) VALUES ($1, $2, $3)"
+                " ON CONFLICT (chat_id, ad_id, profile_key) DO NOTHING",
+                [(chat_id, ad_id, profile_key) for ad_id in ad_ids],
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"notifications record failed: {exc}") from exc
 
     async def pending_eval_task_for(self, profile_key: str) -> dict | None:
         """Pending backfill task for this profile, if any (bot /status info)."""

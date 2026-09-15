@@ -83,6 +83,20 @@ async def test_eval_tasks_flow(repo: ListingRepository) -> None:
 
 
 @pytest.mark.asyncio
+async def test_notifications_dedupe(repo: ListingRepository) -> None:
+    """Deal alerts: unseen ids returned, recorded ids skipped."""
+    await repo.init_schema()
+    ad = _listing(900003, Decimal("5000"))
+    await repo.sync_many([ad])
+    await repo.record_notifications(42, "testprofile", [900003])
+    seen = await repo.fetch_notified_ids(42, "testprofile", [900003])
+    assert seen == {900003}
+    seen = await repo.fetch_notified_ids(42, "other", [900003])
+    assert seen == set()  # different profile -> not yet notified
+    await repo.record_notifications(42, "testprofile", [900003])  # idempotent
+
+
+@pytest.mark.asyncio
 async def test_second_sync_produces_no_duplicates_and_tracks_price_changes(
     repo: ListingRepository,
 ) -> None:

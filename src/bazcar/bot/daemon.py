@@ -625,6 +625,9 @@ class Bot:
             if not rows:
                 # transparency: what is the best achieved score for this profile?
                 best = await repo.fetch_evaluations_max_score(p_key)
+            if rows:
+                # /show counts as seen — the deal-alert sweep must not re-send these
+                await repo.record_notifications(chat_id, p_key, [r["ad_id"] for r in rows])
         finally:
             await repo.close()
         if not rows:

@@ -182,13 +182,29 @@ class LLMProvider:
         try:
             content = await self._completion(payload, listing)
         except LlmError as exc:
-            logger.warning("LLM call failed (%s), retrying once", exc)
-            await asyncio.sleep(1.5)
+            rate_limited = "rate limited" in str(exc)
+            if rate_limited:
+                # Free tier: 429 persists for ~a minute — wait it out, retry once.
+                logger.warning("LLM rate limited for ad %s — backing off 30s", listing.ad_id)
+                await asyncio.sleep(30)
+            else:
+                logger.warning("LLM call failed (%s), retrying once", exc)
+                await asyncio.sleep(1.5)
             try:
                 content = await self._completion(payload, listing)
             except LlmError as exc2:
-                logger.warning("LLM retry also failed: %s", exc2)
-                return None
+                if rate_limited:
+                    logger.warning("LLM still rate limited for ad %s after backoff", listing.ad_id)
+                    # give the limiter one long breath, then a final attempt
+                    await asyncio.sleep(30)
+                    try:
+                        content = await self._completion(payload, listing)
+                    except LlmError as exc3:
+                        logger.warning("LLM final attempt failed for ad %s: %s", listing.ad_id, exc3)
+                        return None
+                else:
+                    logger.warning("LLM retry also failed: %s", exc2)
+                    return None
         if content is None:
             return None
         evaluation = parse_evaluation(content)
@@ -209,5 +225,9 @@ class LLMProvider:
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"].get("content")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise LlmError(f"rate limited (429) for ad {listing.ad_id}") from exc
+            raise LlmError(f"OpenRouter request failed for ad {listing.ad_id}: {exc}") from exc
         except Exception as exc:
             raise LlmError(f"OpenRouter request failed for ad {listing.ad_id}: {exc}") from exc
