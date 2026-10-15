@@ -46,7 +46,13 @@ Tests:
 ```bash
 uv run pytest            # unit (offline, mocked)
 uv run pytest -m live    # live: scrape against real Bazoš + Neon DB (network)
+node --test "tests/js/**/*.test.mjs"   # Mini App SPA in a real JS engine (needs node)
 ```
+
+The Mini App SPA is embedded in `dashboard/index.html`; `tests/js/spa.test.mjs`
+executes the shipped script in a stubbed DOM to catch syntax errors and
+formatter regressions. It also runs (and auto-skips without node) as part of
+`uv run pytest` via `tests/unit/test_spa_runtime.py`.
 
 The live DB test (`tests/integration/test_live_db.py`) verifies dedupe and price
 tracking against real Neon using `BAZCAR_DATABASE_URL` from `.env`.

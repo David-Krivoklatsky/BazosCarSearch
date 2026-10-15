@@ -9,6 +9,7 @@ venv/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
+.playwright-mcp/
 
 # Secrets & local env
 .env
