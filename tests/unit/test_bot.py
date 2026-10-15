@@ -896,6 +896,21 @@ def test_save_falls_back_to_untitled_without_db(monkeypatch):
     assert saved[0].ad_title is None
 
 
+def test_save_survives_db_errors(fake_repo, monkeypatch):
+    """A failing DB lookup must not break /save — export fallback applies."""
+
+    class _BoomRepo(_FakeRepo):
+        async def fetch_listing_by_id(self, ad_id, profile_key):
+            raise RuntimeError("db down")
+
+    monkeypatch.setattr("bazcar.bot.daemon.ListingRepository", _BoomRepo)
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 999999998"}})
+    saved = asyncio.run(bot.store.list_saved(42))
+    assert [s.ad_id for s in saved] == [999999998]
+    assert "Uložené" in bot.notifier.sent[-1][1]
+
+
 def test_note_command_sets_and_clears(monkeypatch):
     monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
     bot = _bot()

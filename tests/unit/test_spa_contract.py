@@ -78,6 +78,22 @@ def test_spa_compare_back_navigation() -> None:
     assert 'from === "compare"' in HTML
 
 
+def test_spa_native_hardening() -> None:
+    """Phase 2: Telegram-native link handling, no prompt(), inline notes."""
+    assert "tg.openLink" in HTML
+    assert "disableVerticalSwipes" in HTML
+    assert "showAlert" in HTML
+    assert "toggleSave" in HTML
+    assert "saveNote" in HTML
+    assert "prompt(" not in HTML, "prompt() is unreliable in Telegram webviews"
+    assert "javascript:" not in HTML
+
+
+def test_spa_tables_scroll_on_mobile() -> None:
+    assert "overflow-x: auto" in HTML
+    assert "min-width" in HTML
+
+
 def test_spa_js_balanced_braces() -> None:
     scripts = re.findall(r"<script>(.*?)</script>", HTML, re.DOTALL)
     assert scripts, "no inline script found"

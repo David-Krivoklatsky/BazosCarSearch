@@ -29,8 +29,10 @@
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-    padding: 12px 14px;
+    padding: 12px 14px; overflow-x: auto;
   }
+  table { min-width: 540px; }
+  .cmp-table { min-width: 620px; }
   .kpi .num { font-size: 24px; font-weight: 700; }
   .kpi .lbl { color: var(--muted); font-size: 12px; }
   .section { margin-top: 16px; }
@@ -121,6 +123,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 const Haptic = tg && tg.HapticFeedback;
 if (tg) {
   tg.ready(); tg.expand();
+  try { if (tg.disableVerticalSwipes) tg.disableVerticalSwipes(); } catch (e) {}
   try {
     // Apply the native theme only when Telegram actually provided one —
     // outside Telegram (plain browser) themeParams is empty and colorScheme
@@ -161,6 +164,27 @@ function buzz(kind) {
     else Haptic.selectionChanged();
   } catch (e) {}
 }
+function toast(msg) {
+  try {
+    if (tg && tg.showAlert) { tg.showAlert(msg); return; }
+  } catch (e) {}
+  try { alert(msg); } catch (e) {}
+}
+function extUrl(u) {
+  return typeof u === "string" && /^(https?:\/\/)/i.test(u);
+}
+document.addEventListener("click", e => {
+  // Route external links through Telegram's opener inside the Mini App;
+  // block anything that is not http(s) coming from ad data.
+  const a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+  if (!a) return;
+  const href = a.getAttribute("href") || "";
+  if (!extUrl(href)) { e.preventDefault(); return; }
+  if (tg && tg.openLink) {
+    e.preventDefault();
+    try { tg.openLink(href); } catch (err) { window.open(href, "_blank", "noopener"); }
+  }
+});
 function setBack(fn) {
   if (!tg || !tg.BackButton) return;
   try {
@@ -350,7 +374,7 @@ function cmpBar(from) {
 }
 
 function gallery(images) {
-  const imgs = (images || []).filter(u => typeof u === "string" && u.startsWith("http"));
+  const imgs = (images || []).filter(extUrl);
   if (!imgs.length) return "";
   const main = imgs[0];
   const thumbs = imgs.slice(0, 8).map((u, i) =>
@@ -427,6 +451,7 @@ function renderInventory(d) {
   lastItems = items;
   const from = d.page * d.page_size + 1;
   const to = d.page * d.page_size + items.length;
+  const savedSet = new Set(d.saved_ids || []);
   const rows = items.map(r => `
     <tr>
       <td>${badge(r)}${staleBadge(r.last_seen_at)}</td>
@@ -436,6 +461,7 @@ function renderInventory(d) {
       <td style="white-space:nowrap">
         <button class="mini" onclick="openListing(${r.ad_id}, 'inventory')">🔎</button>
         <button class="mini ${compareIds.includes(r.ad_id) ? "on" : ""}" onclick="toggleCompare(${r.ad_id}, this)">⚖️</button>
+        <button class="mini ${savedSet.has(r.ad_id) ? "on" : ""}" onclick="toggleSave(${r.ad_id}, this)">${savedSet.has(r.ad_id) ? "💾✓" : "💾"}</button>
       </td>
     </tr>`).join("");
   content.innerHTML = toolbar() + `
@@ -482,7 +508,7 @@ function renderSaved(d) {
       <td style="white-space:nowrap">
         <button class="mini" onclick="openListing(${s.ad_id}, 'saved')">🔎</button>
         <button class="mini ${compareIds.includes(s.ad_id) ? "on" : ""}" onclick="toggleCompare(${s.ad_id}, this)">⚖️</button>
-        <button class="mini" onclick="editNote(${s.ad_id}, '${esc((s.note || "").replace(/'/g, "\\'"))}')">📝</button>
+        <button class="mini" data-note="${esc(s.note || "")}" onclick="editNote(${s.ad_id}, this)">📝</button>
         <button class="mini" onclick="unsave(${s.ad_id})">🗑</button>
       </td>
     </tr>`;
@@ -497,15 +523,33 @@ async function unsave(id) {
   const r = await post("unsave", { id });
   if (r && r.ok) { buzz("ok"); load("saved"); }
 }
-async function editNote(id, current) {
-  const note = prompt("Poznámka k inzerátu:", current || "");
-  if (note === null) return;
-  const r = await post("note", { id, note: note.slice(0, 500) });
+function editNote(id, btn) {
+  const cell = btn.closest("td") || btn.parentNode;
+  const current = btn.dataset ? (btn.dataset.note || "") : "";
+  cell.innerHTML = `<input id="note-${id}" maxlength="500" value="${esc(current).replace(/"/g, "&quot;")}" ` +
+    `style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 9px;font-size:13px">` +
+    `<div class="rowbtn"><button class="mini on" onclick="saveNote(${id})">OK</button>` +
+    `<button class="mini" onclick="load('saved')">✖</button></div>`;
+  const inp = document.getElementById(`note-${id}`);
+  if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+}
+async function saveNote(id) {
+  const inp = document.getElementById(`note-${id}`);
+  const r = await post("note", { id, note: ((inp && inp.value) || "").slice(0, 500) });
   if (r && r.ok) { buzz("ok"); load("saved"); }
 }
 async function saveCurrent(id) {
   const r = await post("save", { id });
-  if (r && r.ok) { buzz("ok"); alert("💾 Uložené"); }
+  if (r && r.ok) { buzz("ok"); toast("💾 Uložené"); }
+}
+async function toggleSave(id, btn) {
+  const saved = btn.classList.contains("on");
+  const r = await post(saved ? "unsave" : "save", { id });
+  if (r && r.ok) {
+    buzz("ok");
+    btn.classList.toggle("on");
+    btn.textContent = saved ? "💾" : "💾✓";
+  }
 }
 
 function descBlock(text) {

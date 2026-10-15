@@ -24,7 +24,9 @@ def test_serves_html_from_repo_root_layout() -> None:
     status, body, headers = _call("GET")
     assert status == 200
     assert b"<html" in body.lower()
-    assert dict(headers["headers"])["Content-Type"] == "text/html; charset=utf-8"
+    hdrs = dict(headers["headers"])
+    assert hdrs["Content-Type"] == "text/html; charset=utf-8"
+    assert hdrs["Cache-Control"] == "public, max-age=300"
 
 
 def test_rejects_non_get() -> None:

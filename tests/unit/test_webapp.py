@@ -306,6 +306,7 @@ class _RichRepo(_FakeListRepo):
     async def fetch_catalog(self, p_key, days, limit, offset=0, sort="newest",
                             status="all", **kw):
         self.catalog_kwargs = {"sort": sort, "status": status, **kw}
+        self.catalog_limit = limit
         return [{"ad_id": 7, "title": "Skoda Fabia", "url": "https://x/7"}]
 
     async def count_catalog(self, p_key, days, status="all", **kw):
@@ -411,6 +412,12 @@ def test_stats_view_bundles_v2(_rich_deps) -> None:
     assert payload["cost"]["total"]["n"] == 4
 
 
+def test_inventory_includes_saved_ids(_rich_deps) -> None:
+    payload, status = _run_view("inventory", {})
+    assert status == 200
+    assert payload["saved_ids"] == [1]
+
+
 def test_compare_view_bundles_up_to_three(_rich_deps) -> None:
     payload, status = _run_view("compare", {"ids": [9, 404]})
     assert status == 200
@@ -421,6 +428,29 @@ def test_unknown_view_is_400(_rich_deps) -> None:
     payload, status = _run_view("nope")
     assert status == 400
     assert "unknown view" in payload["error"]
+
+
+def test_inventory_per_page_is_clamped(_rich_deps) -> None:
+    _, repo = _rich_deps
+    _run_view("inventory", {"per": "500"})
+    assert repo.catalog_limit == 200
+    _run_view("inventory", {"per": "abc"})
+    assert repo.catalog_limit == 15
+    _run_view("inventory", {})
+    assert repo.catalog_limit == 15
+
+
+def test_use_action_activates_search(_fresh_settings, _rich_deps) -> None:
+    store, _ = _rich_deps
+    init_data = _make_init_data(user_id=42)
+    status, payload = _call_post({"action": "use", "name": "diesel"}, init_data)
+    assert status.startswith("200") and payload == {"ok": True}
+    assert ("prefs", {"criteria": "diesel", "filters": {}, "min_score": 70}) in [
+        c for c in store.calls if c[0] == "prefs"
+    ]
+    status, payload = _call_post({"action": "use", "name": "missing"}, init_data)
+    assert status.startswith("404")
+    assert payload["error"] == "search not found"
 
 
 def _call_post(body: dict, init_header: str, token: str = BOT_TOKEN):

@@ -142,12 +142,17 @@ async def _load_view(
     await repo.connect()
     try:
         criteria, model = None, load_llm_config().model
+        saved_ids: set[int] = set()
         try:
             async with UserStore(settings.database_url) as store:
                 prefs = await store.get_prefs(chat_id)
                 if prefs is not None:
                     criteria = prefs.criteria
                     model = prefs.model or model
+                try:
+                    saved_ids = {s.ad_id for s in await store.list_saved(chat_id)}
+                except Exception:
+                    logger.warning("saved-ids load failed in webapp", exc_info=True)
         except Exception:
             logger.warning("prefs load failed in webapp", exc_info=True)
         p_key = profile_key(criteria, model)
@@ -192,6 +197,7 @@ async def _load_view(
                 "page": page,
                 "page_size": limit,
                 "items": rows,
+                "saved_ids": sorted(saved_ids),
             }, HTTPStatus.OK
         if view == "queue":
             return {
