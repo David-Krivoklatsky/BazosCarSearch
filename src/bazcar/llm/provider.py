@@ -232,8 +232,9 @@ class LLMProvider:
         }
         payload.update({key: value for key, value in optional.items() if value is not None})
         content: str | None = None
+        usage: dict[str, Any] | None = None
         try:
-            content = await self._completion(payload, listing)
+            content, usage = await self._completion(payload, listing)
         except LlmError as exc:
             rate_limited = "rate limited" in str(exc)
             if rate_limited:
@@ -244,14 +245,14 @@ class LLMProvider:
                 logger.warning("LLM call failed (%s), retrying once", exc)
                 await asyncio.sleep(1.5)
             try:
-                content = await self._completion(payload, listing)
+                content, usage = await self._completion(payload, listing)
             except LlmError as exc2:
                 if rate_limited:
                     logger.warning("LLM still rate limited for ad %s after backoff", listing.ad_id)
                     # give the limiter one long breath, then a final attempt
                     await asyncio.sleep(30)
                     try:
-                        content = await self._completion(payload, listing)
+                        content, usage = await self._completion(payload, listing)
                     except LlmError as exc3:
                         logger.warning("LLM final attempt failed for ad %s: %s", listing.ad_id, exc3)
                         return None
@@ -264,20 +265,43 @@ class LLMProvider:
         if evaluation is None:
             # Free-tier models are flaky — one retry with slightly higher temperature.
             payload["temperature"] = min(float(self.temperature or 0.0) + 0.6, 1.0)
-            content = await self._completion(payload, listing)
+            content, usage = await self._completion(payload, listing)
             if content is None:
                 return None
             evaluation = parse_evaluation(content)
         if evaluation is not None:
             evaluation.model = self.model
+            self._attach_usage(evaluation, usage)
         return evaluation
 
-    async def _completion(self, payload: dict[str, Any], listing: Listing) -> str | None:
+    @staticmethod
+    def _attach_usage(evaluation: DealEvaluation, usage: dict[str, Any] | None) -> None:
+        """Copy token counts (+ cost when the gateway reports it) onto the score."""
+        if not usage:
+            return
+        try:
+            prompt = usage.get("prompt_tokens")
+            completion = usage.get("completion_tokens") or usage.get("completionTokens")
+            evaluation.prompt_tokens = int(prompt) if prompt is not None else None
+            evaluation.completion_tokens = (
+                int(completion) if completion is not None else None
+            )
+            cost = usage.get("cost") or usage.get("total_cost")
+            evaluation.cost_usd = float(cost) if cost is not None else None
+        except (TypeError, ValueError):
+            logger.debug("unparseable LLM usage payload: %r", usage)
+
+    async def _completion(
+        self, payload: dict[str, Any], listing: Listing
+    ) -> tuple[str | None, dict[str, Any] | None]:
         try:
             resp = await self._client.post(f"{self.base_url}/chat/completions", json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"].get("content")
+            usage = data.get("usage")
+            return data["choices"][0]["message"].get("content"), (
+                dict(usage) if isinstance(usage, dict) else None
+            )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
                 raise LlmError(f"rate limited (429) for ad {listing.ad_id}") from exc

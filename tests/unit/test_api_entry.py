@@ -36,9 +36,15 @@ def test_telegram_route_rejects_get() -> None:
     assert b"POST only" in body
 
 
-def test_unknown_path_falls_through_to_telegram() -> None:
-    status, _ = _call("/api/whatever")
-    assert status == 405  # telegram WSGI app answers non-POST
+def test_unknown_path_returns_404() -> None:
+    status, body = _call("/api/whatever")
+    assert status == 404
+    assert b"not found" in body
+
+
+def test_root_path_returns_404() -> None:
+    status, _ = _call("/")
+    assert status == 404
 
 
 def test_routes_from_request_uri_when_path_info_empty() -> None:

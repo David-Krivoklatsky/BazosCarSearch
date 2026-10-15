@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Bazcar dashboard</title>
+<link rel="icon" href="data:,">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
@@ -42,13 +43,15 @@
   .b-wait { background: #3a3f52; color: var(--muted); }
   .b-score { background: #1d3a2b; color: var(--good); }
   .b-part { background: #40262a; color: var(--bad); }
+  .b-drop { background: #1d3a2b; color: var(--good); }
+  .b-warn { background: #40351d; color: var(--warn); }
   .spark { display: flex; align-items: flex-end; gap: 3px; height: 40px; margin-top: 6px; }
   .spark div { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .85; }
   .bars .row { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 12px; }
-  .bars .row .lab { width: 48px; color: var(--muted); text-align: right; }
+  .bars .row .lab { width: 64px; color: var(--muted); text-align: right; flex-shrink: 0; }
   .bars .track { flex: 1; background: var(--card2); border-radius: 6px; height: 14px; overflow: hidden; }
   .bars .fill { height: 100%; background: var(--accent); border-radius: 6px; }
-  .bars .val { width: 30px; }
+  .bars .val { width: 44px; text-align: right; }
   .q-item { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
   .q-item .crit { font-weight: 600; }
   .q-item .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
@@ -56,7 +59,7 @@
   .prog .fill { height: 100%; background: var(--good); }
   .err { background: #40262a; border: 1px solid var(--bad); padding: 10px 14px; border-radius: 10px; margin-top: 10px; }
   .muted { color: var(--muted); }
-  .pager { display: flex; gap: 8px; margin-top: 10px; }
+  .pager { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .pager button {
     background: var(--card); border: 1px solid var(--line); color: var(--text);
     padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
@@ -66,13 +69,37 @@
     background: var(--card2); border: 1px solid var(--line); color: var(--text);
     border-radius: 8px; padding: 4px 9px; cursor: pointer; font-size: 13px;
   }
+  .mini.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .kv { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
   .kv:last-child { border-bottom: 0; }
-  .kv .k { color: var(--muted); }
+  .kv .k { color: var(--muted); flex-shrink: 0; }
+  .kv .v { text-align: right; }
   .hist { display: flex; align-items: flex-end; gap: 3px; height: 54px; margin: 8px 0 4px; }
   .hist div { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 3px; opacity: .85; }
   .trend-down { color: var(--good); } .trend-up { color: var(--bad); }
   #loading { color: var(--muted); margin-top: 20px; }
+  .toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .toolbar input, .toolbar select {
+    background: var(--card2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 7px 9px; font-size: 13px; max-width: 100%;
+  }
+  .toolbar input[type="search"] { flex: 1 1 140px; }
+  .toolbar input.num { width: 84px; }
+  .gallery { margin: 8px 0 4px; }
+  .gallery .main { width: 100%; border-radius: 10px; max-height: 320px; object-fit: cover; display: block; }
+  .gallery .thumbs { display: flex; gap: 6px; margin-top: 6px; overflow-x: auto; }
+  .gallery .thumbs img { height: 56px; border-radius: 8px; cursor: pointer; border: 2px solid transparent; }
+  .gallery .thumbs img.sel { border-color: var(--accent); }
+  .desc { font-size: 13px; white-space: pre-wrap; color: var(--text); margin-top: 6px; }
+  .desc.clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
+  .skel { background: linear-gradient(90deg, var(--card) 25%, var(--card2) 50%, var(--card) 75%); background-size: 200% 100%; animation: sh 1.2s infinite; border-radius: 10px; height: 64px; margin-bottom: 8px; }
+  @keyframes sh { to { background-position: -200% 0; } }
+  .cmp-table td:first-child { color: var(--muted); width: 110px; }
+  .rowbtn { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .switch:last-child { border-bottom: 0; }
+  .tgl { background: var(--card2); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 4px 12px; cursor: pointer; font-size: 13px; }
+  .tgl.on { background: #1d3a2b; border-color: var(--good); color: var(--good); }
 </style>
 </head>
 <body>
@@ -81,21 +108,63 @@
 <div class="tabs">
   <button class="tab active" data-view="overview">Prehľad</button>
   <button class="tab" data-view="inventory">Inzeráty</button>
+  <button class="tab" data-view="saved">Uložené</button>
   <button class="tab" data-view="queue">Fronta AI</button>
   <button class="tab" data-view="stats">Štatistiky</button>
+  <button class="tab" data-view="profiles">Profily</button>
 </div>
 <div id="loading">Načítavam…</div>
 <div id="content"></div>
 
 <script>
 const tg = window.Telegram && window.Telegram.WebApp;
-if (tg) { tg.ready(); tg.expand(); }
+const Haptic = tg && tg.HapticFeedback;
+if (tg) {
+  tg.ready(); tg.expand();
+  try {
+    // Apply the native theme only when Telegram actually provided one —
+    // outside Telegram (plain browser) themeParams is empty and colorScheme
+    // defaults are meaningless, so keep the bundled dark theme.
+    const p = tg.themeParams || {};
+    if (p.bg_color) {
+      const root = document.documentElement.style;
+      root.setProperty("--bg", p.bg_color);
+      if (p.secondary_bg_color) root.setProperty("--card", p.secondary_bg_color);
+      if (p.text_color) root.setProperty("--text", p.text_color);
+      if (p.hint_color) root.setProperty("--muted", p.hint_color);
+      if (p.button_color) root.setProperty("--accent", p.button_color);
+      if (tg.colorScheme === "light") {
+        root.setProperty("--card2", "#e6ebf4");
+        root.setProperty("--line", "#d4dbe8");
+      }
+    }
+  } catch (e) { /* keep defaults */ }
+}
 const initData = tg ? tg.initData : "";
 const content = document.getElementById("content");
 const loading = document.getElementById("loading");
 let currentView = "overview";
 let invPage = 0, invDays = 30;
+let inv = { q: "", sort: "newest", status: "all", min_price: "", max_price: "", min_year: "", max_year: "" };
+let lastItems = [];
+let compareIds = [];
+let lastRetry = () => load("overview");
 
+function buzz(kind) {
+  try {
+    if (!Haptic) return;
+    if (kind === "ok") Haptic.notificationOccurred("success");
+    else if (kind === "err") Haptic.notificationOccurred("error");
+    else Haptic.selectionChanged();
+  } catch (e) {}
+}
+function setBack(fn) {
+  if (!tg || !tg.BackButton) return;
+  try {
+    if (fn) { tg.BackButton.show(); tg.BackButton.onClick(fn); }
+    else { tg.BackButton.hide(); }
+  } catch (e) {}
+}
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"]/g,
     c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -113,17 +182,23 @@ function ago(iso) {
   if (s < 86400) return "pred " + Math.floor(s/3600) + " h";
   return "pred " + Math.floor(s/86400) + " d";
 }
+function staleBadge(iso) {
+  if (!iso) return "";
+  const d = Math.floor(Math.max(0, Date.now() - new Date(iso).getTime()) / 86400000);
+  return d > 7 ? ` <span class="badge b-warn">🕸 ${d} d bez videnia</span>` : "";
+}
 function spark(counts) {
+  if (!counts.length) return '<div class="muted">žiadne dáta</div>';
   const max = Math.max(...counts, 1);
   return '<div class="spark">' + counts.map(c =>
     `<div style="height:${Math.max(5, Math.round(c / max * 100))}%"></div>`).join("") + "</div>";
 }
-function bars(bands) {
-  const rows = [["90+","b90"],["80–89","b80"],["70–79","b70"],["50–69","b50"],["<50","b0"]];
-  const total = rows.reduce((s, [,k]) => s + (bands[k]||0), 0) || 1;
-  return '<div class="bars">' + rows.map(([lab, k]) => {
-    const v = bands[k] || 0;
-    return `<div class="row"><span class="lab">${lab}</span>` +
+function bars(rows, labKey, valKey, fmtVal) {
+  const total = rows.reduce((s, r) => s + (Number(r[valKey]) || 0), 0) || 1;
+  return '<div class="bars">' + rows.map(r => {
+    const v = Number(r[valKey]) || 0;
+    const lab = fmtVal ? fmtVal(r) : r[labKey];
+    return `<div class="row"><span class="lab">${esc(String(lab)).slice(0, 18)}</span>` +
       `<div class="track"><div class="fill" style="width:${Math.round(v/total*100)}%"></div></div>` +
       `<span class="val">${v}</span></div>`;
   }).join("") + "</div>";
@@ -133,10 +208,16 @@ function badge(row) {
   if (row.is_car === false) return '<span class="badge b-part">🛠 diel</span>';
   return `<span class="badge b-score">⭐ ${row.score}</span>`;
 }
-
-function showErr(html) {
+function skeleton(n) {
   loading.style.display = "none";
-  content.innerHTML = '<div class="err">' + html + "</div>";
+  content.innerHTML = Array.from({length: n || 3}, () => '<div class="skel"></div>').join("");
+}
+function showErr(html, retry) {
+  loading.style.display = "none";
+  if (retry) lastRetry = retry;
+  content.innerHTML = '<div class="err">' + html + "</div>" +
+    '<div class="rowbtn"><button class="mini" onclick="lastRetry()">🔄 Skúsiť znova</button></div>';
+  buzz("err");
 }
 
 async function get(params) {
@@ -155,33 +236,121 @@ async function get(params) {
     return null;
   }
 }
+async function post(action, fields) {
+  try {
+    const resp = await fetch("/api/webapp", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": initData
+      },
+      body: JSON.stringify(Object.assign({ action }, fields || {}))
+    });
+    if (resp.status === 401) {
+      showErr("🔒 Relácia vypršala — otvor dashboard znova cez /dashboard v bote.");
+      return null;
+    }
+    return await resp.json();
+  } catch (e) {
+    showErr("⚠️ Chyba ukladania: " + esc(e.message));
+    return null;
+  }
+}
 
-async function load(view) {
-  currentView = view;
+function markTab(view) {
   document.querySelectorAll(".tab").forEach(t =>
     t.classList.toggle("active", t.dataset.view === view));
-  loading.style.display = "block";
+}
+async function load(view) {
+  currentView = view;
+  markTab(view);
+  setBack(null);
+  buzz();
+  skeleton(3);
   content.innerHTML = "";
   const params = new URLSearchParams({ view });
-  if (view === "inventory") { params.set("page", invPage); params.set("days", invDays); }
+  if (view === "inventory") {
+    params.set("page", invPage); params.set("days", invDays);
+    params.set("sort", inv.sort); params.set("status", inv.status);
+    if (inv.q) params.set("q", inv.q);
+    ["min_price", "max_price", "min_year", "max_year"].forEach(k => {
+      if (inv[k] !== "") params.set(k, inv[k]);
+    });
+  }
+  lastRetry = () => load(view);
   const data = await get(params);
   if (data == null) return;
   loading.style.display = "none";
+  if (data.error && view !== "listing") { showErr("⚠️ " + esc(data.error)); return; }
   if (view === "overview") renderOverview(data);
   else if (view === "inventory") renderInventory(data);
+  else if (view === "saved") renderSaved(data);
   else if (view === "queue") renderQueue(data);
   else if (view === "stats") renderStats(data);
+  else if (view === "profiles") renderProfiles(data);
 }
+function backTo(view) { setBack(null); load(view); }
 
-async function openListing(id) {
+async function openListing(id, from) {
   currentView = "listing";
-  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-  loading.style.display = "block";
+  markTab("");
+  buzz();
+  skeleton(2);
   content.innerHTML = "";
+  setBack(() => backTo(from || "inventory"));
+  lastRetry = () => openListing(id, from);
   const data = await get(new URLSearchParams({ view: "listing", id: String(id) }));
   if (data == null) return;
   loading.style.display = "none";
-  renderListing(data);
+  renderListing(data, from);
+}
+async function openCompare(ids, from) {
+  currentView = "compare";
+  markTab("");
+  buzz();
+  skeleton(2);
+  content.innerHTML = "";
+  setBack(() => backTo(from || "inventory"));
+  lastRetry = () => openCompare(ids, from);
+  const data = await get(new URLSearchParams({ view: "compare", ids: ids.join(",") }));
+  if (data == null) return;
+  loading.style.display = "none";
+  if (data.error) { showErr("⚠️ " + esc(data.error)); return; }
+  renderCompare(data, from);
+}
+
+function toggleCompare(id, btn) {
+  id = Number(id);
+  const i = compareIds.indexOf(id);
+  if (i >= 0) { compareIds.splice(i, 1); if (btn) btn.classList.remove("on"); }
+  else {
+    if (compareIds.length >= 3) return;
+    compareIds.push(id); if (btn) btn.classList.add("on");
+  }
+  buzz();
+  const bar = document.getElementById("cmpbar");
+  if (bar) {
+    bar.style.display = compareIds.length >= 2 ? "block" : "none";
+    const n = document.getElementById("cmpn");
+    if (n) n.textContent = compareIds.length;
+  }
+}
+function cmpBar(from) {
+  return `<div class="rowbtn" id="cmpbar" style="display:${compareIds.length >= 2 ? "block" : "none"}">` +
+    `<button class="mini on" onclick="openCompare(compareIds, '${from}')">⚖️ Porovnať (<span id="cmpn">${compareIds.length}</span>)</button>` +
+    `<button class="mini" onclick="compareIds=[];load('${from}')">✖️ Zrušiť výber</button></div>`;
+}
+
+function gallery(images) {
+  const imgs = (images || []).filter(u => typeof u === "string" && u.startsWith("http"));
+  if (!imgs.length) return "";
+  const main = imgs[0];
+  const thumbs = imgs.slice(0, 8).map((u, i) =>
+    `<img src="${esc(u)}" class="${i === 0 ? "sel" : ""}" onclick="this.parentNode.parentNode.querySelector('.main').src=this.src;` +
+    `this.parentNode.querySelectorAll('img').forEach(x=>x.classList.remove('sel'));this.classList.add('sel')" loading="lazy" alt="">`
+  ).join("");
+  return `<div class="gallery"><img class="main" src="${esc(main)}" loading="lazy" alt="">` +
+    (imgs.length > 1 ? `<div class="thumbs">${thumbs}</div>` : "") + `</div>`;
 }
 
 function renderOverview(d) {
@@ -207,40 +376,150 @@ function renderOverview(d) {
     </div>`;
 }
 
+function toolbar() {
+  return `<div class="toolbar">
+    <input type="search" id="fq" placeholder="🔎 Hľadať v titulkoch…" value="${esc(inv.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
+    <select id="fsort" onchange="applyFilters()">
+      <option value="newest" ${inv.sort === "newest" ? "selected" : ""}>Najnovšie</option>
+      <option value="score" ${inv.sort === "score" ? "selected" : ""}>Podľa AI skóre</option>
+      <option value="price_asc" ${inv.sort === "price_asc" ? "selected" : ""}>Od najlacnejšieho</option>
+      <option value="price_desc" ${inv.sort === "price_desc" ? "selected" : ""}>Od najdrahšieho</option>
+    </select>
+    <select id="fstatus" onchange="applyFilters()">
+      <option value="all" ${inv.status === "all" ? "selected" : ""}>Všetky</option>
+      <option value="rated" ${inv.status === "rated" ? "selected" : ""}>Len s AI</option>
+      <option value="unevaluated" ${inv.status === "unevaluated" ? "selected" : ""}>Len bez AI</option>
+    </select>
+    <input class="num" id="fminp" inputmode="numeric" placeholder="€ od" value="${esc(inv.min_price)}">
+    <input class="num" id="fmaxp" inputmode="numeric" placeholder="€ do" value="${esc(inv.max_price)}">
+    <input class="num" id="fminy" inputmode="numeric" placeholder="rok od" value="${esc(inv.min_year)}">
+    <input class="num" id="fmaxy" inputmode="numeric" placeholder="rok do" value="${esc(inv.max_year)}">
+    <button class="mini on" onclick="applyFilters()">Filtrovať</button>
+    <button class="mini" onclick="resetFilters()">✖️</button>
+  </div>`;
+}
+function applyFilters() {
+  const g = id => (document.getElementById(id) || {}).value || "";
+  inv.q = g("fq").trim();
+  inv.sort = g("fsort") || "newest";
+  inv.status = g("fstatus") || "all";
+  inv.min_price = g("fminp").trim(); inv.max_price = g("fmaxp").trim();
+  inv.min_year = g("fminy").trim(); inv.max_year = g("fmaxy").trim();
+  invPage = 0;
+  load("inventory");
+}
+function resetFilters() {
+  inv = { q: "", sort: "newest", status: "all", min_price: "", max_price: "", min_year: "", max_year: "" };
+  invPage = 0;
+  load("inventory");
+}
+
 function renderInventory(d) {
   const items = d.items || [];
+  lastItems = items;
   const from = d.page * d.page_size + 1;
   const to = d.page * d.page_size + items.length;
   const rows = items.map(r => `
     <tr>
-      <td>${badge(r)}</td>
+      <td>${badge(r)}${staleBadge(r.last_seen_at)}</td>
       <td><a href="${esc(r.url)}" target="_blank">${esc(r.title)}</a><br>
         <span class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)} · ${esc(r.city || "")}</span></td>
       <td class="muted">${esc((r.published_date || "").slice(5))}</td>
-      <td><button class="mini" onclick="openListing(${r.ad_id})">🔎</button></td>
+      <td style="white-space:nowrap">
+        <button class="mini" onclick="openListing(${r.ad_id}, 'inventory')">🔎</button>
+        <button class="mini ${compareIds.includes(r.ad_id) ? "on" : ""}" onclick="toggleCompare(${r.ad_id}, this)">⚖️</button>
+      </td>
     </tr>`).join("");
-  content.innerHTML = `
+  content.innerHTML = toolbar() + `
     <div class="section card">
       <h2>Inzeráty ${items.length ? from + "–" + to : 0} z ${d.total} (posledných ${invDays} dní)</h2>
-      <table><tr><th>AI</th><th>Inzerát</th><th>Dátum</th><th></th></tr>${rows}</table>
+      ${items.length ? `<table><tr><th>AI</th><th>Inzerát</th><th>Dátum</th><th></th></tr>${rows}</table>` : '<div class="muted">Na tieto filtre nič nesedí — skús ich uvoľniť.</div>'}
       <div class="pager">
         <button ${d.page === 0 ? "disabled" : ""} onclick="invPage--;load('inventory')">◀️</button>
         <button ${to >= d.total ? "disabled" : ""} onclick="invPage++;load('inventory')">▶️</button>
         <button onclick="invDays = invDays === 30 ? 90 : (invDays === 90 ? 7 : 30); invPage = 0; load('inventory')">okno: ${invDays} d</button>
+        <button onclick="exportCsv()">📄 CSV</button>
       </div>
-    </div>`;
+    </div>` + cmpBar("inventory");
+}
+async function exportCsv() {
+  const params = new URLSearchParams({ view: "inventory", per: 200, days: invDays, sort: inv.sort, status: inv.status });
+  if (inv.q) params.set("q", inv.q);
+  ["min_price", "max_price", "min_year", "max_year"].forEach(k => { if (inv[k] !== "") params.set(k, inv[k]); });
+  const data = await get(params);
+  if (!data || !data.items) return;
+  const head = "ad_id;title;price_eur;year;mileage_km;city;score;url\n";
+  const q = v => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+  const csv = head + data.items.map(r =>
+    [r.ad_id, q(r.title), r.price_eur ?? "", r.year ?? "", r.mileage_km ?? "", q(r.city), r.score ?? "", r.url].join(";")
+  ).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "bazcar.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  buzz("ok");
 }
 
-function renderListing(d) {
+function renderSaved(d) {
+  const items = d.items || [];
+  lastItems = [];
+  const rows = items.map(s => {
+    const drop = s.drop_pct ? ` <span class="badge b-drop">📉 −${s.drop_pct} %</span>` : "";
+    const note = s.note ? `<br><span class="muted">📝 ${esc(s.note)}</span>` : "";
+    return `<tr>
+      <td><a href="${esc(s.url || "#")}" target="_blank">${esc(s.title || ("ad " + s.ad_id))}</a>${drop}${note}<br>
+        <span class="muted">${s.current_price != null ? eur(s.current_price) : "cena ?"}${staleBadge(s.last_seen_at)}</span></td>
+      <td style="white-space:nowrap">
+        <button class="mini" onclick="openListing(${s.ad_id}, 'saved')">🔎</button>
+        <button class="mini ${compareIds.includes(s.ad_id) ? "on" : ""}" onclick="toggleCompare(${s.ad_id}, this)">⚖️</button>
+        <button class="mini" onclick="editNote(${s.ad_id}, '${esc((s.note || "").replace(/'/g, "\\'"))}')">📝</button>
+        <button class="mini" onclick="unsave(${s.ad_id})">🗑</button>
+      </td>
+    </tr>`;
+  }).join("");
+  content.innerHTML = `
+    <div class="section card">
+      <h2>💾 Uložené (${items.length})</h2>
+      ${items.length ? `<table>${rows}</table>` : '<div class="muted">Zatiaľ nič — ulož si inzerát tlačidlom 💾 v bote alebo tu v detaile (🔎 → Uložiť).</div>'}
+    </div>` + cmpBar("saved");
+}
+async function unsave(id) {
+  const r = await post("unsave", { id });
+  if (r && r.ok) { buzz("ok"); load("saved"); }
+}
+async function editNote(id, current) {
+  const note = prompt("Poznámka k inzerátu:", current || "");
+  if (note === null) return;
+  const r = await post("note", { id, note: note.slice(0, 500) });
+  if (r && r.ok) { buzz("ok"); load("saved"); }
+}
+async function saveCurrent(id) {
+  const r = await post("save", { id });
+  if (r && r.ok) { buzz("ok"); alert("💾 Uložené"); }
+}
+
+function descBlock(text) {
+  const t = (text || "").trim();
+  if (!t) return "";
+  const long = t.length > 600;
+  return `<div class="section card"><h2>📝 Popis</h2>` +
+    `<div class="desc${long ? " clamp" : ""}" id="descbody">${esc(t)}</div>` +
+    (long ? `<div class="rowbtn"><button class="mini" onclick="document.getElementById('descbody').classList.toggle('clamp');this.textContent=this.textContent.includes('viac')?'▲ menej':'▼ viac'">▼ viac</button></div>` : "") +
+    `</div>`;
+}
+
+function renderListing(d, from) {
   if (d.error) { showErr("⚠️ Inzerát sa nenašiel."); return; }
   const r = d.listing || {};
   const hist = (d.history || []).filter(h => h.price_eur != null);
   const bench = d.benchmark;
-  let spark = "";
+  let sparkHtml = "";
   if (hist.length >= 2) {
     const vals = hist.map(h => Number(h.price_eur));
     const max = Math.max(...vals, 1), min = Math.min(...vals);
-    spark = '<div class="hist">' + vals.map(v =>
+    sparkHtml = '<div class="hist">' + vals.map(v =>
       `<div style="height:${Math.max(8, Math.round((v - min) / (max - min || 1) * 100))}%"></div>`
     ).join("") + "</div>";
   }
@@ -252,41 +531,70 @@ function renderListing(d) {
       `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${eur(first.price_eur)} → ${eur(last.price_eur)} (${diff > 0 ? "+" : ""}${diff} %)</span></div>`;
   }
   const ai = r.score != null
-    ? `<div class="kv"><span class="k">AI skóre</span><span>⭐ ${r.score}/100</span></div>` +
-      (r.why ? `<div class="kv"><span class="k">prečo</span><span>${esc(r.why)}</span></div>` : "") +
-      (r.risk ? `<div class="kv"><span class="k">riziko</span><span>${esc(r.risk)}</span></div>` : "") +
-      (r.condition ? `<div class="kv"><span class="k">stav</span><span>${esc(r.condition)}</span></div>` : "") +
-      (r.target_offer ? `<div class="kv"><span class="k">prvá ponuka</span><span>${eur(r.target_offer)}</span></div>` : "")
+    ? `<div class="kv"><span class="k">AI skóre</span><span class="v">⭐ ${r.score}/100</span></div>` +
+      (r.why ? `<div class="kv"><span class="k">prečo</span><span class="v">${esc(r.why)}</span></div>` : "") +
+      (r.risk ? `<div class="kv"><span class="k">riziko</span><span class="v">${esc(r.risk)}</span></div>` : "") +
+      (r.condition ? `<div class="kv"><span class="k">stav</span><span class="v">${esc(r.condition)}</span></div>` : "") +
+      (r.target_offer ? `<div class="kv"><span class="k">prvá ponuka</span><span class="v">${eur(r.target_offer)}</span></div>` : "")
     : `<div class="kv"><span class="k">AI</span><span class="muted">⏳ zatiaľ bez hodnotenia</span></div>`;
   let market = "";
-  if (bench && bench.n >= 3 && r.price_eur != null && bench.median) {
+  if (bench && bench.n && r.price_eur != null && bench.median) {
     const diff = Math.round((Number(r.price_eur) / Number(bench.median) - 1) * 100);
     const verdict = diff < 0 ? "pod mediánom" : "nad mediánom";
-    market = `<div class="section card"><h2>📊 Trh (n=${bench.n}, rok ±2)</h2>` +
-      `<div class="kv"><span class="k">medián asking cien</span><span>${eur(bench.median)}</span></div>` +
+    const warn = bench.n < 3 ? ' <span class="badge b-warn">málo dát (n=' + bench.n + ")</span>"
+      : (bench.trimmed ? ' <span class="muted">(bez extrémov)</span>' : "");
+    market = `<div class="section card"><h2>📊 Trh (n=${bench.n}, rok ±2)${warn}</h2>` +
+      `<div class="kv"><span class="k">medián asking cien</span><span class="v">${eur(bench.median)}</span></div>` +
       `<div class="kv"><span class="k">tento inzerát</span>` +
       `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${Math.abs(diff)} % ${verdict}</span></div>` +
-      `<div class="kv"><span class="k">p10 – p90</span><span>${eur(bench.p10)} – ${eur(bench.p90)}</span></div></div>`;
+      `<div class="kv"><span class="k">p10 – p90</span><span class="v">${eur(bench.p10)} – ${eur(bench.p90)}</span></div></div>`;
   }
+  const stale = staleBadge(r.last_seen_at);
   content.innerHTML = `
     <div class="section">
-      <button class="mini" onclick="load('inventory')">◀️ späť na inzeráty</button>
+      <button class="mini" onclick="backTo('${from || "inventory"}')">◀️ späť</button>
+      <button class="mini" onclick="saveCurrent(${r.ad_id})">💾 Uložiť</button>
     </div>
     <div class="section card">
-      <h2>${esc(r.title)}</h2>
-      <div class="kv"><span class="k">cena</span><span>💰 ${eur(r.price_eur)}</span></div>
-      <div class="kv"><span class="k">rok · km</span><span>${r.year ?? "?"} · ${km(r.mileage_km)}</span></div>
-      <div class="kv"><span class="k">lokalita</span><span>${esc(r.city || "?")}</span></div>
-      ${r.views != null ? `<div class="kv"><span class="k">zobrazenia</span><span>👁 ${r.views}</span></div>` : ""}
-      <div class="kv"><span class="k">inzerát z</span><span>${esc(r.published_date || "?")}</span></div>
+      <h2>${esc(r.title)}${stale}</h2>
+      ${gallery(r.image_urls)}
+      <div class="kv"><span class="k">cena</span><span class="v">💰 ${eur(r.price_eur)}</span></div>
+      <div class="kv"><span class="k">rok · km</span><span class="v">${r.year ?? "?"} · ${km(r.mileage_km)}</span></div>
+      <div class="kv"><span class="k">lokalita</span><span class="v">${esc(r.city || "?")}</span></div>
+      ${r.views != null ? `<div class="kv"><span class="k">zobrazenia</span><span class="v">👁 ${r.views}</span></div>` : ""}
+      <div class="kv"><span class="k">inzerát z</span><span class="v">${esc(r.published_date || "?")}</span></div>
       ${trend}
-      ${spark}
+      ${sparkHtml}
     </div>
     <div class="section card"><h2>🤖 AI hodnotenie</h2>${ai}</div>
     ${market}
+    ${descBlock(r.description || r.description_preview)}
     <div class="section">
       <a href="${esc(r.url)}" target="_blank">🔗 Otvoriť inzerát na Bazoši</a>
     </div>`;
+}
+
+function renderCompare(d, from) {
+  const items = (d.items || []).map(x => x.listing).filter(Boolean);
+  const cols = items.map(r => `
+    <td><b>${esc(r.title)}</b><br><span class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)}</span><br>
+    ${r.score != null ? `<span class="badge b-score">⭐ ${r.score}</span>` : '<span class="badge b-wait">⏳ bez AI</span>'}
+    ${staleBadge(r.last_seen_at)}</td>`).join("");
+  const row = (label, fn) => `<tr><td>${label}</td>${items.map(r => `<td>${fn(r)}</td>`).join("")}</tr>`;
+  content.innerHTML = `
+    <div class="section"><button class="mini" onclick="backTo('${from || "inventory"}')">◀️ späť</button></div>
+    <div class="section card"><h2>⚖️ Porovnanie (${items.length})</h2>
+    <table class="cmp-table">
+      <tr><td></td>${cols}</tr>
+      ${row("cena", r => "💰 " + eur(r.price_eur))}
+      ${row("rok · km", r => (r.year ?? "?") + " · " + km(r.mileage_km))}
+      ${row("mesto", r => esc(r.city || "?"))}
+      ${row("skóre", r => r.score != null ? "⭐ " + r.score + "/100" : "—")}
+      ${row("prvá ponuka", r => r.target_offer ? eur(r.target_offer) : "—")}
+      ${row("stav", r => esc(r.condition || "—"))}
+      ${row("dôvod", r => esc((r.why || "—").slice(0, 120)))}
+      ${row("odkaz", r => `<a href="${esc(r.url)}" target="_blank">🔗</a> <button class="mini" onclick="openListing(${r.ad_id}, 'compare')">🔎</button>`)}
+    </table></div>`;
 }
 
 function renderQueue(d) {
@@ -312,6 +620,22 @@ function renderStats(d) {
   const s = d.stats || {};
   const counts = (s.new_by_day || []).map(x => x[1]);
   const p = s.price || {};
+  const t30 = d.trend30 || [];
+  const cov = d.coverage || [];
+  const drops = d.drops || [];
+  const funnel = d.funnel || {};
+  const cost = d.cost || {};
+  const ct = cost.total || {};
+  const funnelHtml = ["scraped", "evaluated", "notified", "saved"]
+    .map(k => `<div class="card kpi"><div class="num">${funnel[k] ?? "?"}</div><div class="lbl">${{scraped: "📦 nazbierané", evaluated: "🤖 ohodnotené", notified: "🔔 upozornené", saved: "💾 uložené"}[k]}</div></div>`).join("");
+  const dropsHtml = drops.map(x => `
+    <tr><td class="trend-down"><b>−${x.pct} %</b></td>
+    <td><a href="${esc(x.url)}" target="_blank">${esc(x.title)}</a><br><span class="muted">${eur(x.prev)} → ${eur(x.now_price)} · ${esc(x.city || "")}</span></td></tr>`).join("");
+  const costHtml = `<div class="kv"><span class="k">hodnotení (${ct.n ?? 0})</span><span class="v">${ct.unknown ? ct.unknown + " bez dát · " : ""}${Number(ct.cost_usd || 0).toFixed(4)} $</span></div>` +
+    `<div class="kv"><span class="k">tokeny prompt/completion</span><span class="v">${ct.prompt_tokens ?? 0} / ${ct.completion_tokens ?? 0}</span></div>` +
+    ((cost.by_model || []).map(m =>
+      `<div class="kv"><span class="k">${esc(m.model)}</span><span class="v">${m.n}× · ${Number(m.cost_usd || 0).toFixed(4)} $</span></div>`
+    ).join(""));
   content.innerHTML = `
     <div class="grid">
       <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 inzerátov</div></div>
@@ -320,9 +644,61 @@ function renderStats(d) {
       <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 zliav / 7 dní</div></div>
     </div>
     <div class="section card"><h2>Nové za 7 dní</h2>${spark(counts)}</div>
-    <div class="section card"><h2>Rozdelenie AI skóre</h2>${bars(s.bands || {})}</div>
+    <div class="section card"><h2>Rozdelenie AI skóre</h2>${bars([{k: "90+", v: (s.bands || {}).b90 || 0}, {k: "80–89", v: (s.bands || {}).b80 || 0}, {k: "70–79", v: (s.bands || {}).b70 || 0}, {k: "50–69", v: (s.bands || {}).b50 || 0}, {k: "<50", v: (s.bands || {}).b0 || 0}], "k", "v")}</div>
+    <div class="section card"><h2>💰 Histogram cien</h2>${bars(d.histogram || [], "bucket", "n", r => eur(r.lo) + "–" + eur(r.hi))}</div>
+    <div class="section card"><h2>🏷 Top značky</h2>${bars(d.top_makes || [], "make", "n", r => esc(r.make) + " (" + eur(r.median) + ")")}</div>
+    <div class="section card"><h2>⭐ Skóre vs. cena (medián)</h2>${bars(d.score_vs_price || [], "band", "median_price", r => r.band + " · " + r.n + "×")}</div>
+    <div class="section card"><h2>📈 Nové za 30 dní (${t30.reduce((a, x) => a + x[1], 0)})</h2>${spark(t30.map(x => x[1]))}</div>
+    <div class="section card"><h2>🤖 Tempo hodnotenia (14 dní)</h2>${spark(cov.map(x => x[1]))}<div class="muted">celkom ${cov.reduce((a, x) => a + x[1], 0)} hodnotení</div></div>
+    <div class="section card"><h2>📉 Najväčšie zľavy (30 dní)</h2>${dropsHtml ? `<table>${dropsHtml}</table>` : '<div class="muted">Zatiaľ žiadne.</div>'}</div>
+    <div class="section"><h2>🔄 Pipeline funnel</h2><div class="grid">${funnelHtml}</div></div>
+    <div class="section card"><h2>💵 Cena AI hodnotenia (30 dní)</h2>${costHtml}<div class="muted">Staré hodnotenia bez tokenových dát sa rátajú ako „bez dát“.</div></div>
     <div class="section card"><h2>Ceny</h2>
       <div class="muted">min ${eur(p.mn)} · medián ${eur(p.median)} · max ${eur(p.mx)}</div></div>`;
+}
+
+function renderProfiles(d) {
+  const a = d.active || {};
+  const rows = (d.searches || []).map(s => `
+    <div class="switch"><span>${s.notify_enabled ? "🔔" : "🔕"} <b>${esc(s.name)}</b><br>
+      <span class="muted">${esc((s.criteria || "").slice(0, 80))}${s.min_score != null ? " · ⭐" + s.min_score : ""}</span></span>
+      <span style="white-space:nowrap"><button class="tgl" onclick="useProfile('${esc(s.name.replace(/'/g, "\\'"))}')">▶️</button>
+      <button class="tgl ${s.notify_enabled ? "on" : ""}" onclick="toggleSearch('${esc(s.name.replace(/'/g, "\\'"))}', ${!s.notify_enabled})">${s.notify_enabled ? "🔔" : "🔕"}</button></span>
+    </div>`).join("");
+  content.innerHTML = `
+    <div class="section card"><h2>🎯 Aktívny profil</h2>
+      <div class="kv"><span class="k">kritériá</span><span class="v">${esc(a.criteria || "—")}</span></div>
+      <div class="kv"><span class="k">model</span><span class="v">${esc(a.model || "—")}</span></div>
+      <div class="switch"><span>⭐ Min. skóre (${a.min_score ?? "—"})</span>
+        <span><button class="tgl" onclick="setScore(${(a.min_score ?? 60) - 5})">−5</button>
+        <button class="tgl" onclick="setScore(${(a.min_score ?? 60) + 5})">+5</button></span></div>
+      <div class="switch"><span>📸 Fotky v notifikáciách</span>
+        <button class="tgl ${a.show_photo ? "on" : ""}" onclick="setPhotos(${!a.show_photo})">${a.show_photo ? "zapnuté" : "vypnuté"}</button></div>
+      <div class="switch"><span>🔔 Upozornenia (všetky)</span>
+        <button class="tgl ${a.notify_enabled ? "on" : ""}" onclick="setNotify(${!a.notify_enabled})">${a.notify_enabled ? "zapnuté" : "vypnuté"}</button></div>
+    </div>
+    <div class="section card"><h2>🔎 Uložené hľadania (${(d.searches || []).length})</h2>
+      ${rows || '<div class="muted">Zatiaľ žiadne — ulož si hľadanie v bote cez /search.</div>'}</div>`;
+}
+async function useProfile(name) {
+  const r = await post("use", { name });
+  if (r && r.ok) { buzz("ok"); load("profiles"); }
+}
+async function toggleSearch(name, enabled) {
+  const r = await post("toggle_search", { name, enabled });
+  if (r && r.ok) { buzz("ok"); load("profiles"); }
+}
+async function setNotify(enabled) {
+  const r = await post("notify", { enabled });
+  if (r && r.ok) { buzz("ok"); load("profiles"); }
+}
+async function setScore(min_score) {
+  const r = await post("score", { min_score });
+  if (r && r.ok) { buzz("ok"); load("profiles"); }
+}
+async function setPhotos(enabled) {
+  const r = await post("photos", { enabled });
+  if (r && r.ok) { buzz("ok"); load("profiles"); }
 }
 
 document.querySelectorAll(".tab").forEach(t =>

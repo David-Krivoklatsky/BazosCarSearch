@@ -476,3 +476,48 @@ def test_match_sweep_respects_show_photo(monkeypatch):
     _SweepRepo.rows_by_profile[p_key] = [_match_row(1)]
     assert _run(_notify_unseen_matches([user], enabled=True)) == 1
     assert notifier.sent == [(7, "1")]
+
+
+def test_sweep_profiles_dedupes_active_and_searches():
+    from bazcar.pipeline.runner import _sweep_profiles
+
+    class _S:
+        telegram_min_score = 70
+
+    user = {
+        "criteria": "diesel", "model": "m/1", "min_score": 80,
+        "searches": [
+            {"name": "d", "criteria": "diesel", "min_score": 80},
+            {"name": "b", "criteria": "benzin", "min_score": None},
+        ],
+    }
+    profiles = _sweep_profiles(user, _S(), "m/1")
+    assert profiles[0] == (profile_key("diesel", "m/1"), 80)
+    assert (profile_key("benzin", "m/1"), 70) in profiles
+    assert len(profiles) == 2  # duplicate diesel collapsed
+
+
+def test_match_sweep_skips_notify_disabled_user(monkeypatch):
+    from bazcar.pipeline.runner import _notify_unseen_matches
+
+    notifier = _sweep_settings(monkeypatch)
+    user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
+    user["notify_enabled"] = False
+    p_key = profile_key("diesel", "m/1")
+    _SweepRepo.rows_by_profile[p_key] = [_match_row(1)]
+    assert _run(_notify_unseen_matches([user], enabled=True)) == 0
+    assert notifier.sent == []
+
+
+def test_match_sweep_covers_enabled_searches(monkeypatch):
+    from bazcar.pipeline.runner import _notify_unseen_matches
+
+    notifier = _sweep_settings(monkeypatch)
+    user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
+    user["searches"] = [{"name": "b", "criteria": "benzin", "min_score": 60}]
+    p_active = profile_key("diesel", "m/1")
+    p_search = profile_key("benzin", "m/1")
+    _SweepRepo.rows_by_profile[p_active] = []
+    _SweepRepo.rows_by_profile[p_search] = [_match_row(2)]
+    assert _run(_notify_unseen_matches([user], enabled=True)) == 1
+    assert notifier.sent == [(7, "2")]

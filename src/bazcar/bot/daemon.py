@@ -60,7 +60,8 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "models", "description": "Dostupné AI modely (free/paid)"},
     {"command": "model", "description": "Zmeniť AI model"},
     {"command": "save", "description": "Uložiť inzerát na neskôr (ad_id)"},
-    {"command": "saved", "description": "Moje uložené inzeráty"},
+    {"command": "saved", "description": "Moje uložené inzeráty + zľavy"},
+    {"command": "note", "description": "Poznámka k uloženému: /note id text"},
     {"command": "unsave", "description": "Odstrániť uložený inzerát"},
     {"command": "help", "description": "Nápoveda — /prikaz help pre detaily"},
 ]
@@ -250,6 +251,31 @@ def cars_keyboard(status: str, sort: str, days: int, offset: int, total: int) ->
     return {"inline_keyboard": [buttons] if buttons else []}
 
 
+def stale_line(last_seen_at: str | None, now: datetime | None = None) -> str | None:
+    """Staleness transparency: flag ads not seen in recent scrapes.
+
+    "Not seen recently" is NOT proof of sale — the card says so explicitly.
+    """
+    if not last_seen_at:
+        return None
+    try:
+        seen = last_seen_at if isinstance(last_seen_at, datetime) else datetime.fromisoformat(
+            str(last_seen_at).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    ref = now or datetime.now(UTC)
+    days = max(0, (ref - seen).days)
+    if days <= 7:
+        return None
+    return (
+        f"🕸 Naposledy videné pred {days} dňami — inzerát možno zmizol "
+        "(predané/stiahnuté), nie je to však isté."
+    )
+
+
 def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
     """Render the /car detail card (rich, with price history + benchmark)."""
     lines = [f"<b>{_em(str(row['title']))}</b>"]
@@ -267,6 +293,9 @@ def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
         lines.append(" · ".join(meta))
     if row.get("published_date"):
         lines.append(f"📅 Inzerát z {row['published_date']}")
+    stale = stale_line(row.get("last_seen_at"))
+    if stale:
+        lines.append(stale)
 
     if row.get("score") is not None:
         lines.append("")
@@ -296,14 +325,19 @@ def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
         except (TypeError, ValueError, ZeroDivisionError):
             pass
 
-    if bench and bench.get("n", 0) >= 3 and row.get("price_eur") is not None:
+    if bench and bench.get("n") and row.get("price_eur") is not None:
         median = bench.get("median")
         if median:
             try:
                 diff = round((float(row["price_eur"]) / float(median) - 1) * 100)
                 verdict = "pod mediánom" if diff < 0 else "nad mediánom"
+                tag = f"n={bench['n']}"
+                if bench["n"] < 3:
+                    tag += ", málo dát ⚠️"
+                elif bench.get("trimmed"):
+                    tag += ", bez extrémov"
                 lines.append(
-                    f"📊 Trh (n={bench['n']}, rok ±2): medián {fmt_eur(int(median))} "
+                    f"📊 Trh ({tag}, rok ±2): medián {fmt_eur(int(median))} "
                     f"— toto {abs(diff)} % {verdict}"
                 )
             except (TypeError, ValueError, ZeroDivisionError):
@@ -533,8 +567,16 @@ COMMAND_HELP: dict[str, str] = {
     ),
     "/saved": (
         "<b>/saved</b> — moje uložené inzeráty\n\n"
-        "Zobrazí uložené inzeráty ako odkazy — klik a si na Bazoši.\n"
-        "Odstrániš cez <code>/unsave ad_id</code>."
+        "Zobrazí uložené inzeráty ako odkazy — klik a si na Bazoši. Pri každom "
+        "vidíš aktuálnu cenu, zľavu oproti maximu (🔔 strážim automaticky) "
+        "a tvoju poznámku.\n"
+        "Odstrániš cez <code>/unsave ad_id</code>, poznámku pridáš cez "
+        "<code>/note ad_id text</code>."
+    ),
+    "/note": (
+        "<b>/note</b> — poznámka k uloženému inzerátu\n\n"
+        "<code>/note 195315165 zavolať predajcovi po 18:00</code>\n\n"
+        "Prázdny text poznámku vymaže."
     ),
     "/unsave": (
         "<b>/unsave</b> — odstrániť uložený inzerát\n\n"
@@ -721,7 +763,7 @@ HELP_TEXT = (
     "  /dashboard — webové grafy (Mini App)\n"
     "  /eval — prehodnotiť autá podľa searchu\n\n"
     "<b>💾 Uložené</b>\n"
-    "  /save ad_id · /saved · /unsave ad_id\n\n"
+    "  /save ad_id · /saved · /note ad_id text · /unsave ad_id\n\n"
     "<b>⚙️ AI a nastavenia</b>\n"
     "  /models · /model · /photos · /status · /menu\n\n"
     "💡 Detail každého príkazu: <code>/prikaz help</code> (napr. <code>/cars help</code>)\n"
@@ -793,6 +835,17 @@ class Bot:
             if data.startswith("save:"):
                 await self._save(chat_id, data.split(":", 1)[1])
                 await self.notifier.answer_callback(cb_query_id, "💾 Uložené ✅")
+            elif data.startswith("ntf:"):
+                await self._toggle_search_notify(
+                    chat_id, data.split(":", 1)[1], cb_query_id
+                )
+            elif data.startswith("ntfglobal:"):
+                await self._toggle_global_notify(
+                    chat_id, data.split(":", 1)[1] == "1", cb_query_id
+                )
+            elif data.startswith("use:"):
+                await self._use(chat_id, data.split(":", 1)[1])
+                await self.notifier.answer_callback(cb_query_id, "✅ Profil aktivovaný")
             elif data.startswith("c:"):
                 await self._cars_page(chat_id, message_id, cb_query_id, data)
             elif data.startswith("tpl:"):
@@ -867,6 +920,8 @@ class Bot:
                 return await self._save(chat_id, arg)
             case "/saved":
                 return await self._saved(chat_id)
+            case "/note":
+                return await self._note(chat_id, arg)
             case "/unsave":
                 return await self._unsave(chat_id, arg)
             case "/cars":
@@ -972,16 +1027,58 @@ class Bot:
             f"\n{self._filters_summary(filters)}\nSkóre: {min_score or '—'}"
         )
 
-    async def _searches(self, chat_id: int) -> str:
+    async def _searches(self, chat_id: int) -> tuple[str, dict] | str:
+        prefs = await self.store.get_prefs(chat_id)
         searches = await self.store.list_searches(chat_id)
         if not searches:
             return "Nemáš uložené hľadania. `/search meno: diesel do 200 km`."
-        lines = ["Uložené hľadania:"] + [
-            f"• <b>{_em(s.name)}</b>: {_em(s.criteria)}"
-            + (f" (filtre: {self._filters_summary(s.filters)})" if s.filters else "")
-            for s in searches
-        ]
-        return "\n".join(lines)
+        lines = ["🔎 <b>Uložené hľadania</b> (🔔 = upozornenia zapnuté):"]
+        keyboard: list[list[dict]] = []
+        for s in searches:
+            bell = "🔔" if s.notify_enabled else "🔕"
+            lines.append(
+                f"• {bell} <b>{_em(s.name)}</b>: {_em(s.criteria)}"
+                + (f" (filtre: {self._filters_summary(s.filters)})" if s.filters else "")
+            )
+            keyboard.append(
+                [
+                    {"text": f"▶️ {s.name}", "callback_data": f"use:{s.name}"},
+                    {
+                        "text": f"{'🔕 Vypnúť' if s.notify_enabled else '🔔 Zapnúť'}",
+                        "callback_data": f"ntf:{s.name}",
+                    },
+                ]
+            )
+        global_on = bool(prefs.notify_enabled) if prefs else True
+        keyboard.append(
+            [
+                {
+                    "text": f"{'🔕 Vypnúť všetky' if global_on else '🔔 Zapnúť všetky'}",
+                    "callback_data": f"ntfglobal:{0 if global_on else 1}",
+                }
+            ]
+        )
+        lines.append("\n<i>Tlačidlom prepneš upozornenia, ▶️ aktivuje profil.</i>")
+        return "\n".join(lines), {"inline_keyboard": keyboard}
+
+    async def _toggle_search_notify(
+        self, chat_id: int, name: str, cb_query_id: str
+    ) -> None:
+        searches = await self.store.list_searches(chat_id)
+        match = next((s for s in searches if s.name == name), None)
+        if match is None:
+            await self.notifier.answer_callback(cb_query_id, "Hľadanie som nenašiel")
+            return
+        await self.store.set_search_notify(chat_id, name, not match.notify_enabled)
+        state = "zapnuté 🔔" if not match.notify_enabled else "vypnuté 🔕"
+        await self.notifier.answer_callback(cb_query_id, f"„{name}“: {state}")
+
+    async def _toggle_global_notify(self, chat_id: int, on: bool, cb_query_id: str) -> None:
+        await self.store.ensure_prefs(chat_id)
+        await self.store.update_prefs(chat_id, notify_enabled=on)
+        await self.notifier.answer_callback(
+            cb_query_id, "Upozornenia zapnuté 🔔" if on else "Upozornenia vypnuté 🔕"
+        )
 
     async def _use(self, chat_id: int, name: str) -> str:
         if not name:
@@ -1587,13 +1684,44 @@ class Bot:
         saved = await self.store.list_saved(chat_id)
         if not saved:
             return "Nemáš nič uložené."
-        lines = ["Uložené inzeráty:"] + [
-            f"• <a href=\"{_em_url(item.ad_url)}\">{_em(item.ad_title or f'ad {item.ad_id}')}</a>"
-            if item.ad_url
-            else f"• {_em(item.ad_title or f'ad {item.ad_id}')}"
-            for item in saved
-        ]
+        lines = ["💾 <b>Uložené inzeráty</b> (🔔 = strážim zľavu automaticky):"]
+        for item in saved:
+            title = item.ad_title or f"ad {item.ad_id}"
+            head = (
+                f"• <a href=\"{_em_url(item.ad_url)}\">{_em(title)}</a>"
+                if item.ad_url
+                else f"• {_em(title)}"
+            )
+            bits = []
+            if item.current_price is not None:
+                try:
+                    bits.append(f"💰 {fmt_eur(int(item.current_price))}")
+                except (TypeError, ValueError):
+                    pass
+            if item.max_price and item.current_price is not None:
+                try:
+                    if float(item.max_price) > float(item.current_price) > 0:
+                        pct = round((1 - float(item.current_price) / float(item.max_price)) * 100)
+                        bits.append(f"🔔 −{pct} % z maxima")
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+            if item.note:
+                note = item.note if len(item.note) <= 80 else item.note[:77] + "…"
+                bits.append(f"📝 {_em(note)}")
+            lines.append(head + ("\n  " + " · ".join(bits) if bits else ""))
+        lines.append("\n<i>/note ad_id text — poznámka · /unsave ad_id — odstrániť</i>")
         return "\n".join(lines)
+
+    async def _note(self, chat_id: int, arg: str) -> str:
+        parts = (arg or "").split(maxsplit=1)
+        if not parts or not parts[0].lstrip("-").isdigit():
+            return "Použitie: <code>/note ad_id tvoja poznámka</code>"
+        ad_id = int(parts[0])
+        note = parts[1].strip()[:500] if len(parts) > 1 else ""
+        updated = await self.store.set_saved_note(chat_id, ad_id, note)
+        if not updated:
+            return f"Ad {ad_id} nemáš uložený. Najprv <code>/save {ad_id}</code>."
+        return f"📝 Poznámka k {ad_id} uložená." if note else f"📝 Poznámka k {ad_id} vymazaná."
 
     async def _unsave(self, chat_id: int, arg: str) -> str:
         try:

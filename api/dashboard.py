@@ -58,6 +58,6 @@ def app(environ, start_response):  # noqa: ANN001 — WSGI callable
     start_response(
         f"{HTTPStatus.OK.value} {HTTPStatus.OK.phrase}",
         [("Content-Type", "text/html; charset=utf-8"),
-         ("Cache-Control", "no-cache")],
+         ("Cache-Control", "public, max-age=300")],
     )
     return [body]

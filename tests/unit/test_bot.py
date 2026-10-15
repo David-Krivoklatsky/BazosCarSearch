@@ -203,6 +203,20 @@ class _FakeStore:
     async def save_listing(self, chat_id: int, ad_id: int, title: str | None, url: str | None) -> None:
         self.saved.setdefault(chat_id, []).append(SavedListing(ad_id=ad_id, ad_title=title, ad_url=url))
 
+    async def set_saved_note(self, chat_id: int, ad_id: int, note: str) -> bool:
+        for s in self.saved.get(chat_id, []):
+            if s.ad_id == ad_id:
+                s.note = note
+                return True
+        return False
+
+    async def set_search_notify(self, chat_id: int, name: str, enabled: bool) -> bool:
+        for s in self.searches.get(chat_id, []):
+            if s.name == name:
+                s.notify_enabled = enabled
+                return True
+        return False
+
     async def list_saved(self, chat_id: int) -> list[SavedListing]:
         return self.saved.get(chat_id, [])
 
@@ -859,3 +873,90 @@ def test_menu_dashboard_button_routes_to_dashboard(monkeypatch):
 
     flat = [b["callback_data"] for row in MENU_KEYBOARD["inline_keyboard"] for b in row]
     assert "menu:dashboard" in flat
+
+
+def test_note_command_sets_and_clears():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 111"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/note 111 zavolat po 18:00"}})
+    saved = asyncio.run(bot.store.list_saved(42))
+    assert saved[0].note == "zavolat po 18:00"
+    assert "Poznámka" in bot.notifier.sent[-1][1]
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/note 111"}})
+    saved = asyncio.run(bot.store.list_saved(42))
+    assert saved[0].note == ""
+
+
+def test_note_on_unsaved_ad_explains():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/note 999 ahoj"}})
+    assert "nemáš uložený" in bot.notifier.sent[-1][1]
+
+
+def test_stale_line_flags_old_ads():
+    from bazcar.bot.daemon import stale_line
+
+    assert stale_line(None) is None
+    assert stale_line("2026-10-14T00:00:00+00:00") is None  # fresh
+    old = stale_line("2026-09-01T00:00:00+00:00")
+    assert old is not None and "pred" in old and "nie je to však isté" in old
+    assert stale_line("not-a-date") is None
+
+
+def test_build_car_card_shows_stale_and_small_n_benchmark():
+    from bazcar.bot.daemon import build_car_card
+
+    row = {
+        "ad_id": 5, "title": "Skoda Fabia", "url": "https://x/5",
+        "price_eur": 4000, "last_seen_at": "2026-09-01T00:00:00+00:00",
+    }
+    text = build_car_card(row, [], {"n": 2, "median": 5000})
+    assert "Naposledy videné" in text
+    assert "málo dát" in text
+    fresh = build_car_card(dict(row, last_seen_at="2026-10-14T00:00:00+00:00"), [], None)
+    assert "Naposledy videné" not in fresh
+
+
+def test_searches_lists_notify_state_with_toggle_buttons():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/search praca: diesel do 200t km"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/searches"}})
+    text = bot.notifier.sent[-1][1]
+    markup = bot.notifier.markups[-1]
+    assert "🔔" in text and "praca" in text
+    flat = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert "ntf:praca" in flat and "use:praca" in flat
+
+
+def test_search_notify_toggle_callback_flips_state():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/search praca: diesel"}})
+    _run(
+        bot.handle,
+        {
+            "callback_query": {
+                "id": "cb-n",
+                "message": {"chat": {"id": 42}, "message_id": 3},
+                "data": "ntf:praca",
+            }
+        },
+    )
+    searches = asyncio.run(bot.store.list_searches(42))
+    assert searches[0].notify_enabled is False
+    assert bot.notifier.answered[-1][0] == "cb-n"
+
+
+def test_global_notify_toggle_callback():
+    bot = _bot()
+    _run(
+        bot.handle,
+        {
+            "callback_query": {
+                "id": "cb-g",
+                "message": {"chat": {"id": 42}, "message_id": 4},
+                "data": "ntfglobal:0",
+            }
+        },
+    )
+    prefs = asyncio.run(bot.store.get_prefs(42))
+    assert prefs.notify_enabled is False

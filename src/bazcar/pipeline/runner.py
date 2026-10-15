@@ -197,6 +197,8 @@ def _legacy_prefs(settings) -> dict:
         "min_score": settings.telegram_min_score,
         "show_photo": False,
         "filters": None,  # None = YAML default scrape scope (legacy behavior)
+        "notify_enabled": True,
+        "searches": [],
     }
 
 
@@ -215,17 +217,33 @@ async def _load_all_prefs() -> list[dict]:
         from bazcar.bot.store import UserStore
 
         async with UserStore(settings.database_url) as store:
-            users = [
-                {
-                    "chat_id": p.chat_id,
-                    "criteria": p.criteria,
-                    "model": p.model,
-                    "min_score": p.min_score,
-                    "show_photo": p.show_photo,
-                    "filters": p.filters,
-                }
-                for p in await store.list_all_prefs()
-            ]
+            prefs_rows = await store.list_all_prefs()
+            users = []
+            for p in prefs_rows:
+                try:
+                    searches = [
+                        {
+                            "name": s.name,
+                            "criteria": s.criteria,
+                            "min_score": s.min_score,
+                        }
+                        for s in await store.list_searches(p.chat_id)
+                        if s.notify_enabled
+                    ]
+                except Exception:
+                    searches = []
+                users.append(
+                    {
+                        "chat_id": p.chat_id,
+                        "criteria": p.criteria,
+                        "model": p.model,
+                        "min_score": p.min_score,
+                        "show_photo": p.show_photo,
+                        "filters": p.filters,
+                        "notify_enabled": p.notify_enabled,
+                        "searches": searches,
+                    }
+                )
     except Exception:
         logger.warning("prefs load failed, falling back to legacy chat", exc_info=True)
         users = []
@@ -609,13 +627,37 @@ MAX_EVAL_TASK_RETRIES = 2   # abandon a backfill after this many empty attempts
 EVAL_FLUSH_BATCH = 5        # commit evaluations incrementally during long backfills
 
 
+def _sweep_profiles(user: dict, settings, default_model: str) -> list[tuple[str, int]]:
+    """(profile_key, min_score) pairs to sweep: active profile + enabled searches.
+
+    Duplicates collapse so shared criteria cost one sweep; the active profile
+    always runs first.
+    """
+    model = user.get("model") or default_model
+    profiles: list[tuple[str, int]] = []
+    seen: set[str] = set()
+
+    def _add(criteria: str | None, min_score: int | None) -> None:
+        score = min_score if min_score is not None else (settings.telegram_min_score or 0)
+        key = profile_key(criteria, model)
+        if key not in seen:
+            seen.add(key)
+            profiles.append((key, score))
+
+    _add(user.get("criteria"), user.get("min_score"))
+    for search in user.get("searches") or []:
+        _add(search.get("criteria"), search.get("min_score"))
+    return profiles
+
+
 async def _notify_unseen_matches(users: list[dict] | None, *, enabled: bool | None) -> int:
     """Match-driven deal alerts (DB runs), one sweep per registered user.
 
-    Every run finds listings that match each user's search profile (score >=
+    Every run finds listings that match each user's search profiles (score >=
     their min_score, whole cars) which have NOT yet been pushed to their chat
     under that profile — and pushes them. Each (chat, ad, profile) is sent at
     most once (notifications table). Cap per run keeps chats readable.
+    Users (or searches) with notifications disabled are skipped entirely.
     """
     settings = get_settings()
     if not settings.telegram_bot_token:
@@ -641,30 +683,31 @@ async def _notify_unseen_matches(users: list[dict] | None, *, enabled: bool | No
                 chat_id = user.get("chat_id")
                 if chat_id is None:
                     continue
-                min_score = user.get("min_score")
-                if min_score is None:
-                    min_score = settings.telegram_min_score or 0
-                model = user.get("model") or load_llm_config().model
-                p_key = profile_key(user.get("criteria"), model)
-                matches = await repo.fetch_recent_matches(
-                    p_key, min_score, NOTIFY_WINDOW_DAYS, limit=50
-                )
-                seen = await repo.fetch_notified_ids(
-                    chat_id, p_key, [m["ad_id"] for m in matches]
-                )
-                targets = filter_cars(
-                    [_row_to_notification_listing(m) for m in matches if m["ad_id"] not in seen],
-                    part_markers=part_markers,
-                )[:NOTIFY_CAP_PER_RUN]
-                if not targets:
+                if user.get("notify_enabled") is False:
                     continue
-                if user.get("show_photo"):
-                    sent = await ntf.send_listings_with_photos(targets, chat_id=chat_id)
-                else:
-                    sent = await ntf.send_listings(targets, chat_id=chat_id)
-                if sent:
-                    await repo.record_notifications(chat_id, p_key, [t.ad_id for t in targets])
-                total_sent += sent
+                model = user.get("model") or load_llm_config().model
+                for p_key, min_score in _sweep_profiles(user, settings, model):
+                    if total_sent >= NOTIFY_CAP_PER_RUN:
+                        break
+                    matches = await repo.fetch_recent_matches(
+                        p_key, min_score, NOTIFY_WINDOW_DAYS, limit=50
+                    )
+                    seen = await repo.fetch_notified_ids(
+                        chat_id, p_key, [m["ad_id"] for m in matches]
+                    )
+                    targets = filter_cars(
+                        [_row_to_notification_listing(m) for m in matches if m["ad_id"] not in seen],
+                        part_markers=part_markers,
+                    )[: NOTIFY_CAP_PER_RUN - total_sent]
+                    if not targets:
+                        continue
+                    if user.get("show_photo"):
+                        sent = await ntf.send_listings_with_photos(targets, chat_id=chat_id)
+                    else:
+                        sent = await ntf.send_listings(targets, chat_id=chat_id)
+                    if sent:
+                        await repo.record_notifications(chat_id, p_key, [t.ad_id for t in targets])
+                    total_sent += sent
         return total_sent
     finally:
         await repo.close()

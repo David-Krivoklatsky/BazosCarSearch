@@ -45,33 +45,43 @@ def _process_update(update: dict) -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN / BAZCAR_DATABASE_URL missing in env")
 
     async def run() -> None:
-        # Keep the schema fresh (eval_tasks/evaluations may be created after a
-        # deploy, before the next cron scrape) — idempotent, cheap.
+        import asyncpg
+
+        # One shared connection for schema init + user store (serverless: 1
+        # conn per webhook call instead of 2).
+        try:
+            conn = await asyncpg.connect(settings.database_url)
+        except Exception:
+            logger.exception("webhook db connect failed")
+            raise
         try:
             from bazcar.db import ListingRepository
 
-            repo = ListingRepository(settings.database_url)
-            await repo.connect()
+            # Keep the schema fresh (eval_tasks/evaluations may be created after
+            # a deploy, before the next cron scrape) — idempotent, cheap.
             try:
+                repo = ListingRepository(settings.database_url, conn=conn)
                 await repo.init_schema()
-            finally:
-                await repo.close()
-        except Exception:
-            logger.exception("schema init in webhook failed (continuing)")
+            except Exception:
+                logger.exception("schema init in webhook failed (continuing)")
 
-        store = UserStore(settings.database_url)
-        await store.connect()
-        try:
-            notifier = TelegramNotifier(
-                settings.telegram_bot_token, settings.telegram_chat_id or ""
-            )
+            store = UserStore(settings.database_url, conn=conn)
             try:
-                bot = Bot(store=store, notifier=notifier, export_dir=settings.export_dir)
-                await bot.handle(update)
+                notifier = TelegramNotifier(
+                    settings.telegram_bot_token, settings.telegram_chat_id or ""
+                )
+                try:
+                    bot = Bot(store=store, notifier=notifier, export_dir=settings.export_dir)
+                    await bot.handle(update)
+                finally:
+                    await notifier.close()
             finally:
-                await notifier.close()
+                await store.close()
         finally:
-            await store.close()
+            try:
+                await conn.close()
+            except Exception:
+                pass
 
     asyncio.run(run())
 

@@ -26,6 +26,7 @@ class UserPrefs:
     show_photo: bool = False
     filters: dict = field(default_factory=dict)
     show_limit: int = 5
+    notify_enabled: bool = True
 
 
 @dataclass
@@ -34,6 +35,7 @@ class SearchProfile:
     criteria: str
     filters: dict = field(default_factory=dict)
     min_score: int | None = None
+    notify_enabled: bool = True
 
 
 @dataclass
@@ -41,24 +43,32 @@ class SavedListing:
     ad_id: int
     ad_title: str | None
     ad_url: str | None
+    note: str = ""
+    current_price: int | None = None
+    max_price: int | None = None
+    last_seen_at: str | None = None
 
 
 class UserStore:
     """Owns a single asyncpg connection and provides bot persistence."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, conn: asyncpg.Connection | None = None) -> None:
         self._dsn = dsn
-        self._conn: asyncpg.Connection | None = None
+        self._conn = conn
+        self._owns_conn = conn is None
 
     async def connect(self) -> None:
+        if self._conn is not None:
+            return
         try:
             self._conn = await asyncpg.connect(self._dsn)
         except (OSError, asyncpg.PostgresError) as exc:
             raise DbError(f"cannot connect to database: {exc}") from exc
 
     async def close(self) -> None:
-        if self._conn is not None:
+        if self._conn is not None and self._owns_conn:
             await self._conn.close()
+        if self._owns_conn:
             self._conn = None
 
     async def __aenter__(self) -> UserStore:
@@ -77,7 +87,8 @@ class UserStore:
 
     async def get_prefs(self, chat_id: int) -> UserPrefs | None:
         row = await self._require().fetchrow(
-            "SELECT chat_id, criteria, model, min_score, show_photo, filters, show_limit"
+            "SELECT chat_id, criteria, model, min_score, show_photo, filters,"
+            " show_limit, notify_enabled"
             " FROM user_prefs WHERE chat_id = $1",
             chat_id,
         )
@@ -100,7 +111,8 @@ class UserStore:
     async def list_all_prefs(self) -> list[UserPrefs]:
         """Every registered user's preferences — input for the multi-user sweep."""
         rows = await self._require().fetch(
-            "SELECT chat_id, criteria, model, min_score, show_photo, filters, show_limit"
+            "SELECT chat_id, criteria, model, min_score, show_photo, filters,"
+            " show_limit, notify_enabled"
             " FROM user_prefs ORDER BY chat_id"
         )
         prefs_list = []
@@ -111,7 +123,15 @@ class UserStore:
         return prefs_list
 
     async def update_prefs(self, chat_id: int, **fields) -> None:
-        allowed = {"criteria", "model", "min_score", "show_photo", "filters", "show_limit"}
+        allowed = {
+            "criteria",
+            "model",
+            "min_score",
+            "show_photo",
+            "filters",
+            "show_limit",
+            "notify_enabled",
+        }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return
@@ -160,7 +180,7 @@ class UserStore:
 
     async def list_searches(self, chat_id: int) -> list[SearchProfile]:
         rows = await self._require().fetch(
-            "SELECT name, criteria, filters, min_score FROM user_searches"
+            "SELECT name, criteria, filters, min_score, notify_enabled FROM user_searches"
             " WHERE chat_id = $1 ORDER BY created_at",
             chat_id,
         )
@@ -172,6 +192,9 @@ class UserStore:
                     criteria=row["criteria"],
                     filters=json.loads(row["filters"]) if row["filters"] else {},
                     min_score=row["min_score"],
+                    notify_enabled=bool(row["notify_enabled"])
+                    if row["notify_enabled"] is not None
+                    else True,
                 )
             )
         return profiles
@@ -183,18 +206,49 @@ class UserStore:
         criteria: str,
         filters: dict | None = None,
         min_score: int | None = None,
+        notify_enabled: bool | None = None,
     ) -> None:
+        if notify_enabled is None:
+            await self._require().execute(
+                "INSERT INTO user_searches (chat_id, name, criteria, filters, min_score)"
+                " VALUES ($1, $2, $3, $4::jsonb, $5)"
+                " ON CONFLICT (chat_id, name) DO UPDATE SET criteria = EXCLUDED.criteria,"
+                " filters = EXCLUDED.filters, min_score = EXCLUDED.min_score,"
+                " updated_at = now()",
+                chat_id,
+                name,
+                criteria,
+                json.dumps(filters or {}, ensure_ascii=False),
+                min_score,
+            )
+            return
         await self._require().execute(
-            "INSERT INTO user_searches (chat_id, name, criteria, filters, min_score)"
-            " VALUES ($1, $2, $3, $4::jsonb, $5)"
+            "INSERT INTO user_searches"
+            " (chat_id, name, criteria, filters, min_score, notify_enabled)"
+            " VALUES ($1, $2, $3, $4::jsonb, $5, $6)"
             " ON CONFLICT (chat_id, name) DO UPDATE SET criteria = EXCLUDED.criteria,"
-            " filters = EXCLUDED.filters, min_score = EXCLUDED.min_score, updated_at = now()",
+            " filters = EXCLUDED.filters, min_score = EXCLUDED.min_score,"
+            " notify_enabled = EXCLUDED.notify_enabled, updated_at = now()",
             chat_id,
             name,
             criteria,
             json.dumps(filters or {}, ensure_ascii=False),
             min_score,
+            notify_enabled,
         )
+
+    async def set_search_notify(
+        self, chat_id: int, name: str, enabled: bool
+    ) -> bool:
+        """Toggle deal alerts for one saved search; False = search not found."""
+        result = await self._require().execute(
+            "UPDATE user_searches SET notify_enabled = $3, updated_at = now()"
+            " WHERE chat_id = $1 AND name = $2",
+            chat_id,
+            name,
+            enabled,
+        )
+        return result != "UPDATE 0"
 
     async def delete_search(self, chat_id: int, name: str) -> bool:
         result = await self._require().execute(
@@ -206,23 +260,62 @@ class UserStore:
 
     # ---------------------------------------------------------- saved listings
 
-    async def save_listing(self, chat_id: int, ad_id: int, title: str | None, url: str | None) -> None:
+    async def save_listing(
+        self,
+        chat_id: int,
+        ad_id: int,
+        title: str | None,
+        url: str | None,
+        note: str | None = None,
+    ) -> None:
+        if note is None:
+            await self._require().execute(
+                "INSERT INTO saved_listings (chat_id, ad_id, ad_title, ad_url)"
+                " VALUES ($1, $2, $3, $4) ON CONFLICT (chat_id, ad_id) DO NOTHING",
+                chat_id,
+                ad_id,
+                title,
+                url,
+            )
+            return
         await self._require().execute(
-            "INSERT INTO saved_listings (chat_id, ad_id, ad_title, ad_url)"
-            " VALUES ($1, $2, $3, $4) ON CONFLICT (chat_id, ad_id) DO NOTHING",
+            "INSERT INTO saved_listings (chat_id, ad_id, ad_title, ad_url, note)"
+            " VALUES ($1, $2, $3, $4, $5)"
+            " ON CONFLICT (chat_id, ad_id) DO UPDATE SET note = EXCLUDED.note",
             chat_id,
             ad_id,
             title,
             url,
+            note,
         )
+
+    async def set_saved_note(self, chat_id: int, ad_id: int, note: str) -> bool:
+        """Attach a note to a saved ad; False = ad not in this chat's saved list."""
+        result = await self._require().execute(
+            "UPDATE saved_listings SET note = $3 WHERE chat_id = $1 AND ad_id = $2",
+            chat_id,
+            ad_id,
+            note,
+        )
+        return result != "UPDATE 0"
 
     async def list_saved(self, chat_id: int) -> list[SavedListing]:
         rows = await self._require().fetch(
-            "SELECT ad_id, ad_title, ad_url FROM saved_listings"
-            " WHERE chat_id = $1 ORDER BY saved_at DESC",
+            "SELECT s.ad_id, s.ad_title, s.ad_url, s.note,"
+            " l.price_eur AS current_price, l.last_seen_at,"
+            " (SELECT max(h.price_eur) FROM price_history h WHERE h.ad_id = s.ad_id)"
+            " AS max_price"
+            " FROM saved_listings s LEFT JOIN listings l ON l.ad_id = s.ad_id"
+            " WHERE s.chat_id = $1 ORDER BY s.saved_at DESC",
             chat_id,
         )
-        return [SavedListing(ad_id=r["ad_id"], ad_title=r["ad_title"], ad_url=r["ad_url"]) for r in rows]
+        out = []
+        for r in rows:
+            record = dict(r)
+            if record.get("last_seen_at") is not None:
+                record["last_seen_at"] = str(record["last_seen_at"])
+            out.append(SavedListing(**record))
+        return out
 
     async def remove_saved(self, chat_id: int, ad_id: int) -> bool:
         result = await self._require().execute(
