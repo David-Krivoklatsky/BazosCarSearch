@@ -292,7 +292,7 @@ def test_inline_save_button_stores_ad_and_answers(monkeypatch):
     )
     saved = asyncio.run(bot.store.list_saved(42))
     assert [s.ad_id for s in saved] == [987654]
-    assert bot.notifier.answered == [("cb-1", "💾 Uložené ✅")]
+    assert bot.notifier.answered == [("cb-1", "💾 Saved ✅")]
     assert bot.notifier.sent == []  # toast only, no extra messages
 
 
@@ -394,11 +394,11 @@ def test_time_ago():
 
     from bazcar.bot.daemon import time_ago
 
-    assert time_ago(None) == "nikdy"
-    assert time_ago(datetime.now(UTC)) == "práve teraz"
-    assert time_ago(datetime.now(UTC) - timedelta(minutes=12)) == "pred 12 min"
-    assert time_ago(datetime.now(UTC) - timedelta(hours=3)) == "pred 3 h"
-    assert time_ago(datetime.now(UTC) - timedelta(days=2)) == "pred 2 d"
+    assert time_ago(None) == "never"
+    assert time_ago(datetime.now(UTC)) == "just now"
+    assert time_ago(datetime.now(UTC) - timedelta(minutes=12)) == "12 min ago"
+    assert time_ago(datetime.now(UTC) - timedelta(hours=3)) == "3 h ago"
+    assert time_ago(datetime.now(UTC) - timedelta(days=2)) == "2 d ago"
 
 
 def test_build_cars_page_badges():
@@ -416,7 +416,7 @@ def test_build_cars_page_badges():
     assert "⏳" in text  # unevaluated badge
     assert "⭐82" in text
     assert "🛠" in text  # part badge
-    assert "1–3 z 3" in text
+    assert "1–3 of 3" in text
     assert "/car &lt;id&gt;" in text
 
 
@@ -440,8 +440,8 @@ def test_build_car_card_sections():
     assert "85/100" in text
     assert "zachovalé" in text
     assert "7 300 €" in text
-    assert "📉 Vývoj ceny" in text and "-11 %" in text
-    assert "n=12" in text and "pod mediánom" in text
+    assert "📉 Price trend" in text and "-11 %" in text
+    assert "n=12" in text and "below median" in text
     assert "195" not in text  # no leakage of unrelated ids
 
 
@@ -454,8 +454,8 @@ def test_build_car_card_unevaluated():
         "published_date": None, "score": None,
     }
     text = build_car_card(row, [], None)
-    assert "⏳" in text and "Zatiaľ bez AI hodnotenia" in text
-    assert "Vývoj ceny" not in text  # needs >= 2 points
+    assert "⏳" in text and "No AI score yet" in text
+    assert "Price trend" not in text  # needs >= 2 points
 
 
 def test_build_stats_text_renders():
@@ -494,10 +494,10 @@ def test_build_queue_text_states():
     }]
     text = build_queue_text(pending, finished)
     assert "10/50" in text
-    assert "pokus 1" in text
+    assert "attempt 1" in text
     assert "✅" in text and "20/20" in text
     assert "⚠️" in text and "zlyhal" in text
-    assert "prázdna" in build_queue_text([], [])
+    assert "empty" in build_queue_text([], [])
 
 
 def test_menu_command_returns_keyboard():
@@ -505,13 +505,13 @@ def test_menu_command_returns_keyboard():
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/menu"}})
     assert bot.notifier.sent
     # /menu result is a tuple (text, markup) — sent via reply with markup
-    assert any("Hlavné menu" in text for _, text in bot.notifier.sent)
+    assert any("Main menu" in text for _, text in bot.notifier.sent)
 
 
 def test_templates_command_lists_presets():
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/templates"}})
-    assert any("Rodinné" in text and "Príležitosť" in text for _, text in bot.notifier.sent)
+    assert any("Family" in text and "Bargain" in text for _, text in bot.notifier.sent)
 
 
 def test_apply_template_updates_prefs():
@@ -527,10 +527,10 @@ def test_apply_template_updates_prefs():
         },
     )
     prefs = asyncio.run(bot.store.get_prefs(42))
-    assert "mesta" in prefs.criteria
+    assert "city" in prefs.criteria
     assert prefs.filters == {"min_price": 1000, "max_price": 5000}
     assert prefs.min_score == 60
-    assert bot.notifier.answered == [("cb-t", "🏙️ Aktivované!")]
+    assert bot.notifier.answered == [("cb-t", "🏙️ Activated!")]
 
 
 class _NoDbSettings:
@@ -554,7 +554,7 @@ def test_cars_without_db_degrades(monkeypatch):
     )
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/cars"}})
-    assert any("databázu" in text for _, text in bot.notifier.sent)
+    assert any("database" in text for _, text in bot.notifier.sent)
 
 
 def test_allowlist_blocks_strangers(monkeypatch):
@@ -702,14 +702,14 @@ def test_cars_lists_catalog_with_pager(fake_repo):
     bot = _bot_with_prefs()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/cars"}})
     text = bot.notifier.sent[0][1]
-    assert "1–8 z 20" in text  # CARS_PAGE_SIZE = 8
+    assert "1–8 of 20" in text  # CARS_PAGE_SIZE = 8
     assert "⭐80" in text
     # first page: counted, then fetched with the default window/sort/status
     assert fake_repo.calls[0][0] == "count_catalog"
     assert fake_repo.calls[1] == ("fetch_catalog", fake_repo.calls[1][1], 7, 8, 0, "newest", "all")
     # only a "next" button on the first page
     buttons = bot.notifier.markups[0]["inline_keyboard"][0]
-    assert [b["text"] for b in buttons] == ["Ďalšie ▶️"]
+    assert [b["text"] for b in buttons] == ["Next ▶️"]
     assert buttons[0]["callback_data"] == "c:a:n:7:8"
 
 
@@ -737,7 +737,7 @@ def test_cars_page_callback_edits_message(fake_repo):
     assert bot.notifier.edited, "pager must edit the existing message"
     _chat, message_id, text = bot.notifier.edited[0]
     assert message_id == 55
-    assert "9–16 z 20" in text
+    assert "9–16 of 20" in text
     assert bot.notifier.answered == [("cb-page", "")]
 
 
@@ -754,7 +754,7 @@ def test_cars_page_callback_rejects_garbage():
         },
     )
     assert bot.notifier.edited == []
-    assert bot.notifier.answered == [("cb-bad", "Neplatná stránka")]
+    assert bot.notifier.answered == [("cb-bad", "Invalid page")]
 
 
 def test_car_detail_card_with_history_and_benchmark(fake_repo):
@@ -769,7 +769,7 @@ def test_car_detail_card_with_history_and_benchmark(fake_repo):
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/car 9"}})
     text = bot.notifier.sent[0][1]
     assert "5 009 €" in text
-    assert "Vývoj ceny" in text
+    assert "Price trend" in text
     assert "n=30" in text
     # offer a one-tap save + deep link back to the ad
     buttons = bot.notifier.markups[0]["inline_keyboard"][0]
@@ -780,13 +780,13 @@ def test_car_detail_card_with_history_and_benchmark(fake_repo):
 def test_car_detail_unknown_id(fake_repo):
     bot = _bot_with_prefs()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/car 123"}})
-    assert "nemám v databáze" in bot.notifier.sent[0][1]
+    assert "not in my database" in bot.notifier.sent[0][1]
 
 
 def test_car_bad_usage(fake_repo):
     bot = _bot_with_prefs()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/car abc"}})
-    assert "Použitie:" in bot.notifier.sent[0][1]
+    assert "Usage:" in bot.notifier.sent[0][1]
 
 
 def test_stats_command_renders(fake_repo):
@@ -797,7 +797,7 @@ def test_stats_command_renders(fake_repo):
     bot = _bot_with_prefs()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/stats"}})
     text = bot.notifier.sent[0][1]
-    assert "📊 Štatistiky katalógu" in text
+    assert "📊 Catalog stats" in text
     assert "5 000 €" in text
     assert "40 %" in text
 
@@ -806,21 +806,21 @@ def test_queue_command_renders(fake_repo):
     bot = _bot_with_prefs()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/queue"}})
     text = bot.notifier.sent[0][1]
-    assert "Fronta je prázdna" in text
+    assert "Queue is empty" in text
 
 
 def test_health_command_reports_no_runs(fake_repo):
     bot = _bot_with_prefs()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/health"}})
     text = bot.notifier.sent[0][1]
-    assert "Databáza: ✅" in text
-    assert "žiadny zaznamenaný" in text
+    assert "Database: ✅" in text
+    assert "none recorded" in text
 
 
 def test_export_without_rows(fake_repo):
     bot = _bot_with_prefs()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/export"}})
-    assert "Nič na export" in bot.notifier.sent[0][1]
+    assert "Nothing to export" in bot.notifier.sent[0][1]
 
 
 def test_export_sends_csv_document(fake_repo):
@@ -852,7 +852,7 @@ def test_dashboard_without_url_explains(monkeypatch):
     monkeypatch.setattr("bazcar.bot.daemon.get_settings", lambda: _DashSettings(None))
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/dashboard"}})
-    assert "nie je nasadený" in bot.notifier.sent[0][1]
+    assert "not deployed" in bot.notifier.sent[0][1]
 
 
 def test_dashboard_with_url_offers_web_app_button(monkeypatch):
@@ -929,7 +929,7 @@ def test_save_survives_db_errors(fake_repo, monkeypatch):
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 999999998"}})
     saved = asyncio.run(bot.store.list_saved(42))
     assert [s.ad_id for s in saved] == [999999998]
-    assert "Uložené" in bot.notifier.sent[-1][1]
+    assert "Saved" in bot.notifier.sent[-1][1]
 
 
 def test_note_command_sets_and_clears(monkeypatch):
@@ -939,7 +939,7 @@ def test_note_command_sets_and_clears(monkeypatch):
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/note 111 zavolat po 18:00"}})
     saved = asyncio.run(bot.store.list_saved(42))
     assert saved[0].note == "zavolat po 18:00"
-    assert "Poznámka" in bot.notifier.sent[-1][1]
+    assert "Note for" in bot.notifier.sent[-1][1]
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/note 111"}})
     saved = asyncio.run(bot.store.list_saved(42))
     assert saved[0].note == ""
@@ -948,7 +948,7 @@ def test_note_command_sets_and_clears(monkeypatch):
 def test_note_on_unsaved_ad_explains():
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/note 999 ahoj"}})
-    assert "nemáš uložený" in bot.notifier.sent[-1][1]
+    assert "not in your saved list" in bot.notifier.sent[-1][1]
 
 
 def test_stale_line_flags_old_ads():
@@ -957,7 +957,7 @@ def test_stale_line_flags_old_ads():
     assert stale_line(None) is None
     assert stale_line("2026-10-14T00:00:00+00:00") is None  # fresh
     old = stale_line("2026-09-01T00:00:00+00:00")
-    assert old is not None and "pred" in old and "nie je to však isté" in old
+    assert old is not None and "days ago" in old and "not certain" in old
     assert stale_line("not-a-date") is None
 
 
@@ -969,10 +969,10 @@ def test_build_car_card_shows_stale_and_small_n_benchmark():
         "price_eur": 4000, "last_seen_at": "2026-09-01T00:00:00+00:00",
     }
     text = build_car_card(row, [], {"n": 2, "median": 5000})
-    assert "Naposledy videné" in text
-    assert "málo dát" in text
+    assert "Last seen" in text
+    assert "low data" in text
     fresh = build_car_card(dict(row, last_seen_at="2026-10-14T00:00:00+00:00"), [], None)
-    assert "Naposledy videné" not in fresh
+    assert "Last seen" not in fresh
 
 
 def test_searches_lists_notify_state_with_toggle_buttons():
@@ -1029,7 +1029,7 @@ def test_alert_sets_shows_and_clears_threshold(monkeypatch):
     assert saved[0].alert_below == 3000
     assert "3 000" in bot.notifier.sent[-1][1]
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 111"}})
-    assert "strážim pod" in bot.notifier.sent[-1][1]
+    assert "watching below" in bot.notifier.sent[-1][1]
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 111 off"}})
     saved = asyncio.run(bot.store.list_saved(42))
     assert saved[0].alert_below is None
@@ -1039,16 +1039,16 @@ def test_alert_requires_saved_and_valid_price(monkeypatch):
     monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 999 3000"}})
-    assert "nemáš uložený" in bot.notifier.sent[-1][1]
+    assert "not in your saved list" in bot.notifier.sent[-1][1]
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert"}})
-    assert "Použitie" in bot.notifier.sent[-1][1]
+    assert "Usage" in bot.notifier.sent[-1][1]
 
 
 def test_digest_renders_week(fake_repo):
     bot = _bot_with_prefs()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/digest"}})
     text = bot.notifier.sent[-1][1]
-    assert "Týždenný súhrn" in text
+    assert "Weekly digest" in text
     assert "16.7" in text
     assert "90/100" in text
 
@@ -1057,7 +1057,7 @@ def test_status_shows_notify_state():
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/photos on"}})
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/status"}})
-    assert "Upozornenia: 🔔 zapnuté" in bot.notifier.sent[-1][1]
+    assert "Alerts: 🔔 on" in bot.notifier.sent[-1][1]
 
 
 def test_saved_shows_alert_threshold(monkeypatch):
@@ -1066,4 +1066,4 @@ def test_saved_shows_alert_threshold(monkeypatch):
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 111"}})
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 111 2500"}})
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/saved"}})
-    assert "strážim pod 2 500" in bot.notifier.sent[-1][1]
+    assert "watching below 2 500" in bot.notifier.sent[-1][1]

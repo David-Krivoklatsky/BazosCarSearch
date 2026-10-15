@@ -37,36 +37,37 @@ TELEGRAM_API = "https://api.telegram.org"
 
 # Registered via Telegram setMyCommands -> typing "/" shows an autocomplete
 # menu with these descriptions in every Telegram client.
+#
+# Visible set (22): the daily-driver commands. The rest still work as hidden
+# aliases for backward compatibility (old messages, muscle memory, tests):
+# /score, /photos, /models, /note, /alert, /digest, /status.
 BOT_COMMANDS: list[dict[str, str]] = [
-    {"command": "menu", "description": "🏠 Hlavné menu — tlačidlá na všetko"},
-    {"command": "cars", "description": "🚗 Všetky autá (aj bez AI hodnotenia)"},
-    {"command": "car", "description": "🔍 Detail inzerátu: /car ad_id"},
-    {"command": "show", "description": "⭐ Najlepšie ohodnotené ponuky"},
-    {"command": "criteria", "description": "Čo hľadám — AI boduje inzeráty podľa toho"},
-    {"command": "templates", "description": "📦 Hotové hľadania (rodinné, mesto, diaľnica…)"},
-    {"command": "search", "description": "Uložiť hľadanie: /search meno: kritériá"},
-    {"command": "searches", "description": "Moje uložené hľadania"},
-    {"command": "use", "description": "Aktivovať uložené hľadanie"},
-    {"command": "filter", "description": "Bazoš filtre: query, price, dist, psc"},
-    {"command": "score", "description": "Min. hodnotenie inzerátov (0–100)"},
-    {"command": "eval", "description": "Prehodnotiť autá podľa aktívneho searchu"},
-    {"command": "queue", "description": "⏳ Fronta AI vyhodnocovania"},
-    {"command": "stats", "description": "📊 Štatistiky katalógu a trhu"},
-    {"command": "health", "description": "🩺 Zdravie pipeline (posledný beh)"},
-    {"command": "dashboard", "description": "📱 Otvoriť webový dashboard"},
-    {"command": "export", "description": "📄 Stiahnuť inzeráty ako CSV"},
-    {"command": "status", "description": "Aktuálne nastavenia a stavy"},
-    {"command": "photos", "description": "Fotky pri inzerátoch on/off"},
-    {"command": "models", "description": "Dostupné AI modely (free/paid)"},
-    {"command": "model", "description": "Zmeniť AI model"},
-    {"command": "save", "description": "Uložiť inzerát na neskôr (ad_id)"},
-    {"command": "saved", "description": "Moje uložené inzeráty + zľavy"},
-    {"command": "note", "description": "Poznámka k uloženému: /note id text"},
-    {"command": "alert", "description": "Strážiť cenu: /alert id [cena|off]"},
-    {"command": "digest", "description": "📬 Týždenný súhrn noviniek"},
-    {"command": "unsave", "description": "Odstrániť uložený inzerát"},
-    {"command": "help", "description": "Nápoveda — /prikaz help pre detaily"},
+    {"command": "menu", "description": "🏠 Main menu — buttons for everything"},
+    {"command": "cars", "description": "🚗 All cars (even without AI score)"},
+    {"command": "car", "description": "🔍 Listing detail: /car ad_id"},
+    {"command": "show", "description": "⭐ Top-rated deals"},
+    {"command": "criteria", "description": "What I'm looking for — AI scores by this"},
+    {"command": "templates", "description": "📦 Ready-made searches (family, city…)"},
+    {"command": "search", "description": "Save a search: /search name: criteria"},
+    {"command": "searches", "description": "My saved searches"},
+    {"command": "use", "description": "Activate a saved search"},
+    {"command": "filter", "description": "Bazoš filters: query, price, dist, psc"},
+    {"command": "settings", "description": "⚙️ Settings & status"},
+    {"command": "eval", "description": "Re-score cars for the active search"},
+    {"command": "queue", "description": "⏳ AI evaluation queue"},
+    {"command": "stats", "description": "📊 Catalog and market stats"},
+    {"command": "health", "description": "🩺 Pipeline health (last run)"},
+    {"command": "dashboard", "description": "📱 Open the web dashboard"},
+    {"command": "export", "description": "📄 Download listings as CSV"},
+    {"command": "save", "description": "Save a listing for later (ad_id)"},
+    {"command": "saved", "description": "My saved listings + discounts"},
+    {"command": "unsave", "description": "Remove a saved listing"},
+    {"command": "model", "description": "AI model (list / switch)"},
+    {"command": "help", "description": "Help — /command help for details"},
 ]
+
+# Hidden aliases: accepted by _command but not advertised in the menu.
+_HIDDEN_COMMANDS = {"score", "photos", "models", "note", "alert", "digest", "status"}
 
 
 # ---------------------------------------------------------------------------
@@ -79,12 +80,12 @@ CARS_PAGE_SIZE = 8
 _CAR_STATUS = {"a": "all", "u": "unevaluated", "r": "rated"}
 _CAR_SORT = {"n": "newest", "c": "price_asc", "e": "price_desc", "s": "score"}
 
-_STATUS_LABELS = {"all": "všetky", "unevaluated": "bez AI", "rated": "s AI"}
+_STATUS_LABELS = {"all": "all", "unevaluated": "unscored", "rated": "scored"}
 _SORT_LABELS = {
-    "newest": "najnovšie",
-    "price_asc": "najlacnejšie",
-    "price_desc": "najdrahšie",
-    "score": "najlepšie skóre",
+    "newest": "newest",
+    "price_asc": "cheapest",
+    "price_desc": "priciest",
+    "score": "top score",
 }
 
 _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
@@ -125,9 +126,9 @@ def fmt_km(value: Any) -> str:
 
 
 def time_ago(dt: Any) -> str:
-    """Human age of a timestamp ('pred 12 min') — accepts datetime or str."""
+    """Human age of a timestamp ('12 min ago') — accepts datetime or str."""
     if dt is None:
-        return "nikdy"
+        return "never"
     if isinstance(dt, str):
         try:
             dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
@@ -137,14 +138,14 @@ def time_ago(dt: Any) -> str:
         dt = dt.replace(tzinfo=UTC)
     seconds = max(0, (datetime.now(UTC) - dt).total_seconds())
     if seconds < 120:
-        return "práve teraz"
+        return "just now"
     minutes = int(seconds // 60)
     if minutes < 60:
-        return f"pred {minutes} min"
+        return f"{minutes} min ago"
     hours = minutes // 60
     if hours < 24:
-        return f"pred {hours} h"
-    return f"pred {hours // 24} d"
+        return f"{hours} h ago"
+    return f"{hours // 24} d ago"
 
 
 def extract_make(title: str) -> str | None:
@@ -208,8 +209,8 @@ def build_cars_page(
 ) -> str:
     """Render one page of the /cars catalog (compact, one line per ad)."""
     head = (
-        f"<b>🚗 Autá {offset + 1}–{offset + len(rows)} z {total}</b> "
-        f"<i>({_STATUS_LABELS[status]}, {_SORT_LABELS[sort]}, {days} dní)</i>\n"
+        f"<b>🚗 Cars {offset + 1}–{offset + len(rows)} of {total}</b> "
+        f"<i>({_STATUS_LABELS[status]}, {_SORT_LABELS[sort]}, {days} days)</i>\n"
     )
     lines = []
     for row in rows:
@@ -233,7 +234,7 @@ def build_cars_page(
             f"{badge} <a href=\"{_em_url(row['url'])}\">{title}</a>\n"
             f"    {' · '.join(bits)} · 🆔 {row['ad_id']}"
         )
-    tail = "\n<i>/car &lt;id&gt; — detail · /export — CSV · /dashboard — grafy</i>"
+    tail = "\n<i>/car &lt;id&gt; — detail · /export — CSV · /dashboard — charts</i>"
     return head + "\n".join(lines) + tail
 
 
@@ -243,12 +244,12 @@ def cars_keyboard(status: str, sort: str, days: int, offset: int, total: int) ->
     if offset > 0:
         prev_offset = max(0, offset - CARS_PAGE_SIZE)
         buttons.append(
-            {"text": "◀️ Predošlé", "callback_data": cars_callback_encode(status, sort, days, prev_offset)}
+            {"text": "◀️ Previous", "callback_data": cars_callback_encode(status, sort, days, prev_offset)}
         )
     if offset + CARS_PAGE_SIZE < total:
         next_offset = offset + CARS_PAGE_SIZE
         buttons.append(
-            {"text": "Ďalšie ▶️", "callback_data": cars_callback_encode(status, sort, days, next_offset)}
+            {"text": "Next ▶️", "callback_data": cars_callback_encode(status, sort, days, next_offset)}
         )
     return {"inline_keyboard": [buttons] if buttons else []}
 
@@ -273,8 +274,8 @@ def stale_line(last_seen_at: str | None, now: datetime | None = None) -> str | N
     if days <= 7:
         return None
     return (
-        f"🕸 Naposledy videné pred {days} dňami — inzerát možno zmizol "
-        "(predané/stiahnuté), nie je to však isté."
+        f"🕸 Last seen {days} days ago — the ad may be gone "
+        "(sold/removed), but that's not certain."
     )
 
 
@@ -294,7 +295,7 @@ def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
     if meta:
         lines.append(" · ".join(meta))
     if row.get("published_date"):
-        lines.append(f"📅 Inzerát z {row['published_date']}")
+        lines.append(f"📅 Listed {row['published_date']}")
     stale = stale_line(row.get("last_seen_at"))
     if stale:
         lines.append(stale)
@@ -303,16 +304,16 @@ def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
         lines.append("")
         lines.append(f"⭐ <b>{row['score']}/100</b> — {_em(row.get('why') or '')}")
         if row.get("risk"):
-            lines.append(f"⚠️ <i>Riziko:</i> {_em(row['risk'])}")
+            lines.append(f"⚠️ <i>Risk:</i> {_em(row['risk'])}")
         if row.get("condition"):
-            lines.append(f"🔧 <i>Stav:</i> {_em(row['condition'])}")
+            lines.append(f"🔧 <i>Condition:</i> {_em(row['condition'])}")
         if row.get("target_offer"):
-            lines.append(f"🤝 <i>Prvá ponuka:</i> {fmt_eur(row['target_offer'])}")
+            lines.append(f"🤝 <i>First offer:</i> {fmt_eur(row['target_offer'])}")
         if row.get("eval_model"):
             lines.append(f"<i>model: {_em(str(row['eval_model']))}</i>")
     else:
         lines.append("")
-        lines.append("⏳ <i>Zatiaľ bez AI hodnotenia — zaradím cez /eval</i>")
+        lines.append("⏳ <i>No AI score yet — queue it with /eval</i>")
 
     points = [h for h in history if h.get("price_eur") is not None]
     if len(points) >= 2:
@@ -321,7 +322,7 @@ def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
             change = round((float(last["price_eur"]) / float(first["price_eur"]) - 1) * 100)
             arrow = "📉" if change < 0 else "📈"
             lines.append(
-                f"{arrow} Vývoj ceny: {fmt_eur(first['price_eur'])} → "
+                f"{arrow} Price trend: {fmt_eur(first['price_eur'])} → "
                 f"{fmt_eur(last['price_eur'])} ({change:+d} %)"
             )
         except (TypeError, ValueError, ZeroDivisionError):
@@ -332,20 +333,20 @@ def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
         if median:
             try:
                 diff = round((float(row["price_eur"]) / float(median) - 1) * 100)
-                verdict = "pod mediánom" if diff < 0 else "nad mediánom"
+                verdict = "below median" if diff < 0 else "above median"
                 tag = f"n={bench['n']}"
                 if bench["n"] < 3:
-                    tag += ", málo dát ⚠️"
+                    tag += ", low data ⚠️"
                 elif bench.get("trimmed"):
-                    tag += ", bez extrémov"
+                    tag += ", outliers removed"
                 lines.append(
-                    f"📊 Trh ({tag}, rok ±2): medián {fmt_eur(int(median))} "
-                    f"— toto {abs(diff)} % {verdict}"
+                    f"📊 Market ({tag}, year ±2): median {fmt_eur(int(median))} "
+                    f"— this one {abs(diff)} % {verdict}"
                 )
             except (TypeError, ValueError, ZeroDivisionError):
                 pass
     lines.append(f"🆔 {row['ad_id']}")
-    lines.append(f"<a href=\"{_em_url(row['url'])}\">🔗 Otvoriť inzerát</a>")
+    lines.append(f"<a href=\"{_em_url(row['url'])}\">🔗 Open listing</a>")
     return "\n".join(lines)
 
 
@@ -354,313 +355,292 @@ def build_stats_text(stats: dict, p_key: str) -> str:
     total = stats["total"]
     evaluated = stats["evaluated"]
     coverage = round(evaluated / total * 100) if total else 0
-    lines = ["<b>📊 Štatistiky katalógu</b>", ""]
-    lines.append(f"📦 Inzerátov v databáze: <b>{total}</b>")
+    lines = ["<b>📊 Catalog stats</b>", ""]
+    lines.append(f"📦 Listings in database: <b>{total}</b>")
     lines.append(
-        f"🤖 Ohodnotené (tvoj profil): <b>{evaluated}</b> "
+        f"🤖 Scored (your profile): <b>{evaluated}</b> "
         f"{bar(evaluated, total)} {coverage} %"
     )
     price = stats.get("price") or {}
     if price.get("median") is not None:
         lines.append(
-            f"💰 Ceny: medián <b>{fmt_eur(int(price['median']))}</b>, "
+            f"💰 Prices: median <b>{fmt_eur(int(price['median']))}</b>, "
             f"min {fmt_eur(price.get('mn'))}, max {fmt_eur(price.get('mx'))}"
         )
     new_by_day = stats.get("new_by_day") or []
     if new_by_day:
         counts = [n for _, n in new_by_day]
         lines.append(
-            f"🆕 Nové za 7 dní: <b>{sum(counts)}</b>  {sparkline(counts)} "
+            f"🆕 New in 7 days: <b>{sum(counts)}</b>  {sparkline(counts)} "
             f"<i>({new_by_day[0][0][5:]} – {new_by_day[-1][0][5:]})</i>"
         )
-    lines.append(f"📉 Zľavy za 7 dní: <b>{stats.get('drops_7d', 0)}</b>")
+    lines.append(f"📉 Discounts in 7 days: <b>{stats.get('drops_7d', 0)}</b>")
     bands = stats.get("bands") or {}
     band_total = sum(bands.values())
     if band_total:
         lines.append("")
-        lines.append("<b>Skóre (tvoj profil)</b>")
+        lines.append("<b>Score (your profile)</b>")
         for label, key in (("90+", "b90"), ("80–89", "b80"), ("70–79", "b70"),
                            ("50–69", "b50"), ("<50", "b0")):
             value = bands.get(key, 0)
             lines.append(f"  {label:>6} {bar(value, band_total, 12)} {value}")
     lines.append("")
-    lines.append(f"<i>profil: {p_key} · /cars — prehľad · /dashboard — grafy</i>")
+    lines.append(f"<i>profile: {p_key} · /cars — browse · /dashboard — charts</i>")
     return "\n".join(lines)
 
 
 def build_queue_text(pending: list[dict], finished: list[dict]) -> str:
     """Render the /queue message: running/queued tasks + recent outcomes."""
-    lines = ["<b>⏳ Fronta AI vyhodnocovania</b>", ""]
+    lines = ["<b>⏳ AI evaluation queue</b>", ""]
     if not pending and not finished:
-        lines.append("Fronta je prázdna — všetko je ohodnotené. ✅")
+        lines.append("Queue is empty — everything is scored. ✅")
     for task in pending:
-        criteria = (task.get("criteria") or "bez kritérií").strip()
+        criteria = (task.get("criteria") or "no criteria").strip()
         label = criteria if len(criteria) <= 40 else criteria[:37] + "…"
         total = task.get("total") or 0
         done = task.get("done") or 0
         if task.get("started_at"):
             progress = f"{bar(done, total)} {done}/{total}"
         else:
-            progress = "čaká v rade"
+            progress = "waiting in line"
         age = time_ago(task.get("created_at"))
         attempts = task.get("attempts") or 0
-        retry = f", pokus {attempts}" if attempts else ""
+        retry = f", attempt {attempts}" if attempts else ""
         lines.append(f"⏳ <i>{_em(label)}</i>\n    {progress} · {age}{retry}")
         lines.append(f"    <code>{_em(task.get('model') or '?')}</code>")
     if finished:
         lines.append("")
-        lines.append("<b>Posledné dokončené</b>")
+        lines.append("<b>Recently finished</b>")
         for task in finished:
-            criteria = (task.get("criteria") or "bez kritérií").strip()
+            criteria = (task.get("criteria") or "no criteria").strip()
             label = criteria if len(criteria) <= 40 else criteria[:37] + "…"
             age = time_ago(task.get("done_at"))
             if task.get("error"):
                 lines.append(f"⚠️ <i>{_em(label)}</i> — {_em(task['error'])} ({age})")
             else:
                 lines.append(
-                    f"✅ <i>{_em(label)}</i> — {task.get('done') or 0}/{task.get('total') or 0} áut ({age})"
+                    f"✅ <i>{_em(label)}</i> — {task.get('done') or 0}/{task.get('total') or 0} cars ({age})"
                 )
     lines.append("")
-    lines.append("<i>Frontu spracúva cron každých ~15 min. Zrýchli: tlačidlo nižšie.</i>")
+    lines.append("<i>The cron processes the queue every ~15 min. Speed up: button below.</i>")
     return "\n".join(lines)
 
 
 MENU_KEYBOARD: dict = {
     "inline_keyboard": [
         [
-            {"text": "🚗 Všetky autá", "callback_data": "menu:cars"},
-            {"text": "⭐ Top ponuky", "callback_data": "menu:show"},
+            {"text": "🚗 Browse cars", "callback_data": "menu:cars"},
+            {"text": "⭐ Top deals", "callback_data": "menu:show"},
         ],
         [
-            {"text": "📊 Štatistiky", "callback_data": "menu:stats"},
-            {"text": "⏳ Fronta AI", "callback_data": "menu:queue"},
+            {"text": "📊 Stats", "callback_data": "menu:stats"},
+            {"text": "⏳ AI queue", "callback_data": "menu:queue"},
         ],
         [
-            {"text": "📦 Šablóny", "callback_data": "menu:templates"},
-            {"text": "💾 Uložené", "callback_data": "menu:saved"},
+            {"text": "📦 Templates", "callback_data": "menu:templates"},
+            {"text": "💾 Saved", "callback_data": "menu:saved"},
         ],
         [
             {"text": "📱 Dashboard", "callback_data": "menu:dashboard"},
         ],
         [
-            {"text": "⚙️ Stav", "callback_data": "menu:status"},
-            {"text": "❓ Nápoveda", "callback_data": "menu:help"},
+            {"text": "⚙️ Settings", "callback_data": "menu:settings"},
+            {"text": "❓ Help", "callback_data": "menu:help"},
         ],
     ]
 }
 
 COMMAND_HELP: dict[str, str] = {
     "/criteria": (
-        "<b>/criteria</b> — čo hľadám\n\n"
-        "AI (LLM) hodnotí každý inzerát 0–100 presne podľa tvojich kritérií — "
-        "čím viac špecifikuješ, tým presnejšie skóre.\n\n"
-        "<b>Použitie:</b> <code>/criteria + text</code>\n"
-        "<b>Príklad:</b> <code>/criteria diesel, do 200 000 km, nad 80 kW</code>\n\n"
-        "➡️ Zmena automaticky spustí prehodnotenie áut z posledných 3 dní "
-        "(príde ti 🧮 hlásenie, keď bude hotové). Nové inzeráty sa scrapujú "
-        "podľa aktívnych filtrov každých ~15 min."
+        "<b>/criteria</b> — what I'm looking for\n\n"
+        "The AI scores every listing 0–100 against your criteria — "
+        "the more specific you are, the sharper the score.\n\n"
+        "<b>Usage:</b> <code>/criteria + text</code>\n"
+        "<b>Example:</b> <code>/criteria diesel, under 200,000 km, over 80 kW</code>\n\n"
+        "➡️ Changing it auto-queues a re-score of the last 3 days of cars "
+        "(you'll get a 🧮 report when it's done). New listings are scraped "
+        "under the active filters every ~15 min."
     ),
     "/search": (
-        "<b>/search</b> — uložiť pomenované hľadanie\n\n"
-        "Uloží kompletný profil: kritériá + aktuálne Bazoš filtre + min. skóre.\n"
-        "Môžeš mať viac searchov (diaľnica, mesto, rodinné auto…) a prepínať medzi nimi.\n\n"
-        "<b>Použitie:</b> <code>/search meno: kritériá</code>\n"
-        "<b>Príklad:</b> <code>/search diaľnica: diesel do 200t km</code>\n\n"
-        "💡 Najprv si nastav <code>/filter</code> a <code>/score</code>, potom ulož — "
-        "všetko sa zachová do profilu."
+        "<b>/search</b> — save a named search\n\n"
+        "Saves the full profile: criteria + current Bazoš filters + min score.\n"
+        "Keep several searches (highway, city, family car…) and switch between them.\n\n"
+        "<b>Usage:</b> <code>/search name: criteria</code>\n"
+        "<b>Example:</b> <code>/search highway: diesel under 200k km</code>\n\n"
+        "💡 Set <code>/filter</code> and your score first, then save — "
+        "everything is kept in the profile."
     ),
     "/searches": (
-        "<b>/searches</b> — zoznam uložených hľadaní\n\n"
-        "Ukáže všetky uložené profily (kritériá + filtre + skóre) aj so stavom "
-        "upozornení. Tlačidlami 🔔/🔕 prepneš upozornenia pre každý profil, "
-        "▶️ ho aktivuješ (to isté ako <code>/use meno</code>)."
+        "<b>/searches</b> — your saved searches\n\n"
+        "Shows all saved profiles (criteria + filters + score) with their "
+        "alert state. The 🔔/🔕 buttons toggle alerts per profile, "
+        "▶️ activates it (same as <code>/use name</code>)."
     ),
     "/alert": (
-        "<b>/alert</b> — strážiť cenu uloženého inzerátu\n\n"
-        "<code>/alert 195315165 3000</code> — upozorním, až cena klesne pod 3 000 €\n"
-        "<code>/alert 195315165 off</code> — späť na upozornenie pri každej zľave\n"
-        "<code>/alert 195315165</code> — ukáže aktuálny prah\n\n"
-        "Bez prahu upozorním na každú zľavu automaticky."
+        "<b>/alert</b> — watch a saved listing's price\n\n"
+        "<code>/alert 195315165 3000</code> — alert me once the price drops below €3,000\n"
+        "<code>/alert 195315165 off</code> — back to alerting on every discount\n"
+        "<code>/alert 195315165</code> — show the current threshold\n\n"
+        "Without a threshold I alert on every discount automatically."
     ),
     "/digest": (
-        "<b>/digest</b> — týždenný súhrn\n\n"
-        "Nové inzeráty, najväčšie zľavy, top zhody s tvojím profilom a stav "
-        "AI fronty za posledných 7 dní. Na vyžiadanie, kedykoľvek."
+        "<b>/digest</b> — weekly summary\n\n"
+        "New listings, biggest discounts, top matches for your profile and the "
+        "AI queue state for the last 7 days. On demand, anytime."
     ),
     "/use": (
-        "<b>/use</b> — aktivovať uložené hľadanie\n\n"
-        "Nastaví kritériá, filtre aj min. skóre z uloženého profilu a "
-        "automaticky spustí prehodnotenie áut z posledných dní podľa neho.\n\n"
-        "<b>Použitie:</b> <code>/use meno</code>\n"
-        "<b>Príklad:</b> <code>/use dialnica</code>"
+        "<b>/use</b> — activate a saved search\n\n"
+        "Sets criteria, filters and min score from the saved profile and "
+        "auto-queues a re-score of recent cars under it.\n\n"
+        "<b>Usage:</b> <code>/use name</code>\n"
+        "<b>Example:</b> <code>/use highway</code>"
     ),
-    "/status": (
-        "<b>/status</b> — čo práve platí\n\n"
-        "Ukáže aktívne kritériá, model, min. skóre, filtre, počet ohodnotených "
-        "áut za posledné 3 dni, najlepšie skóre a či práve beží prehodnotenie."
+    "/settings": (
+        "<b>/settings</b> — settings & status\n\n"
+        "Shows your active criteria, model, min score, filters, scored-car "
+        "count, best score and whether a re-score is running — with buttons "
+        "to change score (±5), photos and alerts inline.\n\n"
+        "Replaces the old <code>/status</code>, <code>/score</code> and "
+        "<code>/photos</code> commands (they still work as aliases)."
     ),
     "/filter": (
-        "<b>/filter</b> — Bazoš filtre (čo sa scrapuje)\n\n"
-        "Filtrujú výsledky už na Bazoši — ovplyvňujú, ktoré inzeráty sa načítajú.\n"
-        "  <code>/filter query skoda octavia</code> — hľadaný text\n"
-        "  <code>/filter price 1500-4000</code> — rozsah ceny v € (aj 1500- alebo -4000)\n"
-        "  <code>/filter dist 100</code> — okruh okolo PSČ v km (najprv /filter psc)\n"
-        "  <code>/filter psc 81101</code> — lokalita\n"
-        "  <code>/filter clear</code> — späť na default\n"
-        "  <code>/filter</code> — ukáže aktívne filtre\n\n"
-        "💡 Najazdené km nie je Bazoš filter — zohľadná ho AI cez kritériá."
-    ),
-    "/score": (
-        "<b>/score</b> — min. hodnotenie pre zobrazenie\n\n"
-        "Inzeráty s AI skóre pod touto hranicou ti neprídu ako notifikácie "
-        "a nezobrazia sa v /show (0–100).\n\n"
-        "<b>Použitie:</b> <code>/score 75</code>\n\n"
-        "💡 Zmena platí okamžite na už ohodnotené autá — skús hneď /show."
+        "<b>/filter</b> — Bazoš filters (what gets scraped)\n\n"
+        "They filter results on Bazoš itself — controlling which listings load.\n"
+        "  <code>/filter query skoda octavia</code> — search text\n"
+        "  <code>/filter price 1500-4000</code> — price range in € (also 1500- or -4000)\n"
+        "  <code>/filter dist 100</code> — radius around the ZIP in km (set /filter psc first)\n"
+        "  <code>/filter psc 81101</code> — location\n"
+        "  <code>/filter clear</code> — back to defaults\n"
+        "  <code>/filter</code> — show active filters\n\n"
+        "💡 Mileage is not a Bazoš filter — the AI weighs it via criteria."
     ),
     "/show": (
-        "<b>/show</b> — vyhovujúce inzeráty z posledného obdobia\n\n"
-        "Pošle ti najlepšie ohodnotené inzeráty (podľa aktívneho searchu a /score) "
-        "ako správy s fotkou a tlačidlami. Každá správa obsahuje aj 📅 dátum inzerátu.\n\n"
-        "<b>Použitie:</b>\n"
-        "  <code>/show</code> — tvoj predvolený počet, okno 3 dni\n"
-        "  <code>/show 20</code> — 20 áut (uloží ako nový default)\n"
-        "  <code>/show days 7</code> — okno 7 dní\n"
-        "  <code>/show 20 days 100</code> — kombinácia\n\n"
-        "⚠️ Počet výsledkov limituje hlavne <b>/score</b> — šírka okna pridá len "
-        "staršie inzeráty. Bot ti vždy vypíše, koľko vyhovujúcich celkovo našiel.\n\n"
-        "💡 Ak je výsledok prázdny, bot poradí najlepšie dosiahnuté skóre."
+        "<b>/show</b> — matching listings from the recent window\n\n"
+        "Sends your top-rated listings (active search + score threshold) "
+        "as photo messages with buttons. Each message also carries the 📅 listing date.\n\n"
+        "<b>Usage:</b>\n"
+        "  <code>/show</code> — your default count, 3-day window\n"
+        "  <code>/show 20</code> — 20 cars (saved as the new default)\n"
+        "  <code>/show days 7</code> — 7-day window\n"
+        "  <code>/show 20 days 100</code> — combined\n\n"
+        "⚠️ The result count is driven mostly by the <b>score threshold</b> — a wider "
+        "window only adds older listings. The bot always prints how many matches exist in total.\n\n"
+        "💡 If the result is empty, the bot suggests the best score achieved."
     ),
     "/eval": (
-        "<b>/eval</b> — prehodnotiť autá podľa aktívneho searchu\n\n"
-        "Zaradí prehodnotenie podľa aktívnych kritérií a modelu. Už ohodnotené "
-        "(rovnaký search + model) sa preskočia — nič sa nepreplatí zbytočne.\n\n"
-        "<b>Použitie:</b> (rovnaké parametre ako /show)\n"
-        "  <code>/eval</code> — posledných 100 áut z 3 dní\n"
-        "  <code>/eval 30</code> — 30 najnovších\n"
-        "  <code>/eval days 7</code> — okno 7 dní\n"
-        "  <code>/eval 50 days 7</code> — kombinácia\n"
-        "  <code>/eval all</code> — všetko v DB (do 500)\n\n"
-        "Bot ti hneď vypíše, koľko áut sa bude vyhodnocovať a odhad času. "
-        "Keď bude hotovo, príde ti ✅ hlásenie."
-    ),
-    "/photos": (
-        "<b>/photos</b> — fotky pri inzerátoch\n\n"
-        "<code>/photos on</code> — inzeráty prichádzajú ako fotka + popis + tlačidlá\n"
-        "<code>/photos off</code> — len textový popis\n\n"
-        "Pri každom inzeráte máš vždy tlačidlá 💾 Uložiť a 🔗 Otvoriť."
-    ),
-    "/models": (
-        "<b>/models</b> — AI modely (len tie s JSON výstupom)\n\n"
-        "Zoznam rozdelený na 🆓 Free a 💰 Paid. Pre každý model:\n"
-        "  • 💰 <b>cena</b> za 1M tokenov ($/M; free = 0)\n"
-        "  • ⚡ <b>Rychlosť</b> = <i>requests za minútu</i> — TOTO rozhoduje, či model stíha: "
-        "∞ = bez limitu (backfill rýchly), nízke číslo = pomalý backfill (429)\n"
-        "  • 🔡 kontext (veľkosť okna)\n\n"
-        "<b>Použitie:</b>\n"
-        "  <code>/models</code> — zoznam\n"
-        "  <code>/models deepseek</code> — filtrovanie podľa textu\n"
-        "  <code>/model info ID</code> — detail jedného modelu\n"
-        "  <code>/model ID</code> — zmeniť model\n\n"
-        "💡 Ak backfill hádže 429, prejdi na model s ⚡∞."
+        "<b>/eval</b> — re-score cars for the active search\n\n"
+        "Queues a re-score under the active criteria and model. Already scored "
+        "cars (same search + model) are skipped — nothing is paid for twice.\n\n"
+        "<b>Usage:</b> (same parameters as /show)\n"
+        "  <code>/eval</code> — last 100 cars from 3 days\n"
+        "  <code>/eval 30</code> — 30 newest\n"
+        "  <code>/eval days 7</code> — 7-day window\n"
+        "  <code>/eval 50 days 7</code> — combined\n"
+        "  <code>/eval all</code> — everything in the DB (up to 500)\n\n"
+        "The bot immediately prints how many cars will be scored and a time "
+        "estimate. When done, you'll get a ✅ report."
     ),
     "/model": (
-        "<b>/model</b> — zmeniť AI model\n\n"
-        "<b>Použitie:</b>\n"
-        "  <code>/model</code> — ukáže aktuálny model + detail\n"
-        "  <code>/model ID</code> — nastaví model a spustí prehodnotenie\n"
-        "  <code>/model info ID</code> — detail konkrétneho modelu\n\n"
-        "<b>Príklad:</b>\n"
+        "<b>/model</b> — AI model (list / switch)\n\n"
+        "<b>Usage:</b>\n"
+        "  <code>/model</code> — current model + detail\n"
+        "  <code>/model ID</code> — set the model and start a re-score\n"
+        "  <code>/model info ID</code> — detail of one model\n"
+        "  <code>/models</code> — list all JSON-capable models (alias)\n\n"
+        "<b>Example:</b>\n"
         "  <code>/model ~deepseek/deepseek-v4-flash-latest</code>\n\n"
-        "Key parametre (pri /model info): 💰 cena za 1M tokenov, "
-        "⚡ requests/min (∞ = bez limitu), 🔡 kontext.\n"
-        "Zoznam všetkých: <code>/models</code>."
+        "Key parameters (in /model info): 💰 price per 1M tokens, "
+        "⚡ requests/min (∞ = no limit), 🔡 context.\n\n"
+        "💡 If backfills throw 429s, switch to a model with ⚡∞."
     ),
     "/save": (
-        "<b>/save</b> — uložiť inzerát na neskôr\n\n"
-        "<code>/save 195315165</code> (ad_id z notifikácie — riadok 🆔)\n\n"
-        "💡 Rýchlejšie: tlačidlo <b>💾 Uložiť</b> priamo pri inzeráte."
+        "<b>/save</b> — save a listing for later\n\n"
+        "<code>/save 195315165</code> (ad_id from a notification — the 🆔 line)\n\n"
+        "💡 Faster: the <b>💾 Save</b> button right on the listing. "
+        "Add a note with <code>/note id text</code>, watch the price with "
+        "<code>/alert id price</code>."
     ),
     "/saved": (
-        "<b>/saved</b> — moje uložené inzeráty\n\n"
-        "Zobrazí uložené inzeráty ako odkazy — klik a si na Bazoši. Pri každom "
-        "vidíš aktuálnu cenu, zľavu oproti maximu (🔔 strážim automaticky) "
-        "a tvoju poznámku.\n"
-        "Odstrániš cez <code>/unsave ad_id</code>, poznámku pridáš cez "
-        "<code>/note ad_id text</code>."
+        "<b>/saved</b> — my saved listings\n\n"
+        "Shows saved listings as links — tap and you're on Bazoš. Each shows "
+        "the current price, the drop from its max (🔔 watched automatically) "
+        "and your note.\n"
+        "Remove with <code>/unsave ad_id</code>, note with "
+        "<code>/note ad_id text</code>, price-watch with <code>/alert ad_id price</code>."
     ),
     "/note": (
-        "<b>/note</b> — poznámka k uloženému inzerátu\n\n"
-        "<code>/note 195315165 zavolať predajcovi po 18:00</code>\n\n"
-        "Prázdny text poznámku vymaže."
+        "<b>/note</b> — note on a saved listing\n\n"
+        "<code>/note 195315165 call the seller after 6pm</code>\n\n"
+        "Empty text clears the note."
     ),
     "/unsave": (
-        "<b>/unsave</b> — odstrániť uložený inzerát\n\n"
-        "<code>/unsave 195315165</code> (ad_id z /saved)"
+        "<b>/unsave</b> — remove a saved listing\n\n"
+        "<code>/unsave 195315165</code> (ad_id from /saved)"
     ),
     "/help": (
         "<b>/help</b>\n\n"
-        "Prehľad všetkých príkazov. Detailné vysvetlenie každého: "
-        "<code>/prikaz help</code> — napr. <code>/filter help</code>."
+        "Overview of all commands. Per-command details: "
+        "<code>/command help</code> — e.g. <code>/filter help</code>."
     ),
     "/cars": (
-        "<b>/cars</b> — VŠETKY autá v databáze (aj bez AI hodnotenia)\n\n"
-        "Prehľad celého nazbieraného katalógu — na rozdiel od /show nepotrebuje "
-        "AI skóre ani /score limit. Každý riadok má stav: ⏳ bez hodnotenia, "
-        "⭐n s AI skóre, 🛠 pravdepodobne náhradný diel.\n\n"
-        "<b>Použitie:</b>\n"
-        "  <code>/cars</code> — najnovšie, 7 dní\n"
-        "  <code>/cars unevaluated</code> — len bez AI hodnotenia\n"
-        "  <code>/cars rated</code> — len ohodnotené\n"
-        "  <code>/cars cheap</code> / <code>expensive</code> / <code>score</code> — zoradenie\n"
-        "  <code>/cars days 30</code> — okno 30 dní\n\n"
-        "Stránkuješ tlačidlami ◀️ ▶️. Detail: <code>/car id</code>."
+        "<b>/cars</b> — ALL cars in the database (even unscored)\n\n"
+        "Browse the whole collected catalog — unlike /show it needs no "
+        "AI score or score limit. Each row has a state: ⏳ unscored, "
+        "⭐n with AI score, 🛠 probably a spare part.\n\n"
+        "<b>Usage:</b>\n"
+        "  <code>/cars</code> — newest, 7 days\n"
+        "  <code>/cars unevaluated</code> — only unscored\n"
+        "  <code>/cars rated</code> — only scored\n"
+        "  <code>/cars cheap</code> / <code>expensive</code> / <code>score</code> — sort\n"
+        "  <code>/cars days 30</code> — 30-day window\n\n"
+        "Page with ◀️ ▶️. Detail: <code>/car id</code>."
     ),
     "/car": (
-        "<b>/car</b> — detail jedného inzerátu\n\n"
-        "<code>/car 195357798</code> (ad_id nájdeš v /cars alebo notifikácii)\n\n"
-        "Ukáže: cenu, rok, km, mesto, dátum, AI hodnotenie (skóre, dôvod, "
-        "riziko, stav, prvú ponuku), vývoj ceny a porovnanie s trhom "
-        "(medián podobných áut s veľkosťou vzorky)."
+        "<b>/car</b> — one listing's detail\n\n"
+        "<code>/car 195357798</code> (find ad_id in /cars or a notification)\n\n"
+        "Shows: price, year, mileage, city, date, AI review (score, reason, "
+        "risk, condition, first offer), price trend and the market comparison "
+        "(median of similar cars with sample size)."
     ),
     "/queue": (
-        "<b>/queue</b> — fronta AI vyhodnocovania\n\n"
-        "Čo práve čaká/beží: pre každú úlohu profil, model, progres "
-        "(x/y áut), vek a počet pokusov. Pod tým posledné dokončené a zlyhané "
-        "úlohy. Frontu spracúva cron každých ~15 min."
+        "<b>/queue</b> — AI evaluation queue\n\n"
+        "What's waiting/running: per task the profile, model, progress "
+        "(x/y cars), age and attempt count. Below: recently finished and "
+        "failed tasks. The cron processes the queue every ~15 min."
     ),
     "/stats": (
-        "<b>/stats</b> — štatistiky katalógu\n\n"
-        "Počet inzerátov, pokrytie AI hodnotením (tvoj profil), cenový medián/"
-        "min/max, nové inzeráty za 7 dní (sparkline), počet zliav a rozdelenie "
-        "skóre. Interaktívne grafy: /dashboard."
+        "<b>/stats</b> — catalog stats\n\n"
+        "Listing count, AI coverage (your profile), price median/min/max, "
+        "new listings in 7 days (sparkline), discount count and score "
+        "distribution. Interactive charts: /dashboard."
     ),
     "/health": (
-        "<b>/health</b> — zdravie pipeline\n\n"
-        "Posledný beh scraperu (kedy, koľko strán/nových/zliav/hodnotení/"
-        "notifikácií), stav fronty a databázy. Ak posledný beh chýba dlho, "
-        "niečo je pokazené."
+        "<b>/health</b> — pipeline health\n\n"
+        "Last scraper run (when, how many pages/new/discounts/scored/ "
+        "notifications), queue and database state, plus 30-day AI spend vs "
+        "budget. If the last run is long overdue, something is broken."
     ),
     "/templates": (
-        "<b>/templates</b> — hotové hľadania\n\n"
-        "Vyber šablónu (rodinné, do mesta, na diaľnicu, prvé auto, príležitosť) "
-        "— nastaví kritériá, filtre a min. skóre a spustí prehodnotenie. "
-        "Potom si všetko doladíš cez /criteria a /filter."
+        "<b>/templates</b> — ready-made searches\n\n"
+        "Pick a template (family, city, highway, first car, bargain) "
+        "— sets criteria, filters and min score and starts a re-score. "
+        "Then fine-tune everything via /criteria and /filter."
     ),
     "/export": (
-        "<b>/export</b> — stiahni inzeráty ako CSV\n\n"
-        "<code>/export</code> — posledných 30 dní (max 200)\n"
-        "<code>/export 90</code> — posledných 90 dní\n\n"
-        "CSV obsahuje aj AI skóre tvojho profilu (ak existuje)."
+        "<b>/export</b> — download listings as CSV\n\n"
+        "<code>/export</code> — last 30 days (max 200)\n"
+        "<code>/export 90</code> — last 90 days\n\n"
+        "The CSV includes your profile's AI score (when present)."
     ),
     "/dashboard": (
-        "<b>/dashboard</b> — webový dashboard (Mini App)\n\n"
-        "Otvorí grafické rozhranie priamo v Telegrame: prehľad, inventár, "
-        "fronta a štatistiky s grafmi. Funguje len po nasadení na Vercel."
+        "<b>/dashboard</b> — web dashboard (Mini App)\n\n"
+        "Opens the graphical UI right inside Telegram: overview, inventory, "
+        "queue and stats with charts. Works once deployed on Vercel."
     ),
     "/menu": (
-        "<b>/menu</b> — hlavné menu\n\n"
-        "Tlačidlá na najčastejšie akcie: autá, top ponuky, štatistiky, fronta, "
-        "šablóny, uložené, stav a nápoveda."
+        "<b>/menu</b> — main menu\n\n"
+        "Buttons for the most common actions: cars, top deals, stats, queue, "
+        "templates, saved, settings and help."
     ),
 }
 
@@ -754,35 +734,36 @@ async def _dispatch_scrape() -> bool:
         return False
 
 HELP_TEXT = (
-    "<b>🤖 Bazcar — tvoj lovec ojazdených áut</b>\n\n"
-    "Napíš mi voľne, čo hľadáš (napr. <i>\"diesel do 200t km, nad 80 kW\"</i>) "
-    "a každý nový inzerát ti príde s AI skóre 0–100, dôvodom a rizikom.\n\n"
-    "<b>🚗 Katalóg</b>\n"
-    "  /cars — všetky autá (aj bez AI), stránkovanie\n"
-    "  /car id — detail: vývoj ceny + trhový medián\n"
-    "  /show — najlepšie ohodnotené ponuky\n"
-    "  /export — stiahni CSV\n\n"
-    "<b>🔎 Čo hľadám</b>\n"
-    "  /criteria — moje požiadavky pre AI bodovanie\n"
-    "  /templates — hotové hľadania (rodinné, mesto…)\n"
-    "  /filter — Bazoš filtre (query, cena, okruh, PSČ)\n"
-    "  /score — min. hodnotenie pre notifikácie\n\n"
-    "<b>⭐ Search profily</b>\n"
-    "  /search meno: kritériá — uložiť profil\n"
-    "  /searches — zoznam profilov\n"
-    "  /use meno — aktivovať profil\n\n"
-    "<b>📊 Prehľady</b>\n"
-    "  /stats — štatistiky katalógu a trhu\n"
-    "  /queue — fronta AI vyhodnocovania\n"
-    "  /health — zdravie pipeline\n"
-    "  /dashboard — webové grafy (Mini App)\n"
-    "  /eval — prehodnotiť autá podľa searchu\n\n"
-    "<b>💾 Uložené</b>\n"
-    "  /save ad_id · /saved · /note ad_id text · /alert ad_id cena · /digest · /unsave ad_id\n\n"
-    "<b>⚙️ AI a nastavenia</b>\n"
-    "  /models · /model · /photos · /status · /menu\n\n"
-    "💡 Detail každého príkazu: <code>/prikaz help</code> (napr. <code>/cars help</code>)\n"
-    "💡 Napíš <code>/</code> a Telegram ti sám doplní príkazy."
+    "<b>🤖 Bazcar — your used-car hunter</b>\n\n"
+    "Just tell me what you're looking for (e.g. <i>\"diesel under 200k km, over 80 kW\"</i>) "
+    "and every new listing arrives with an AI score of 0–100, a reason and a risk note.\n\n"
+    "<b>🚗 Catalog</b>\n"
+    "  /cars — all cars (even unscored), paged\n"
+    "  /car id — detail: price trend + market median\n"
+    "  /show — top-rated deals\n"
+    "  /export — download CSV\n\n"
+    "<b>🔎 What I want</b>\n"
+    "  /criteria — my requirements for AI scoring\n"
+    "  /templates — ready-made searches (family, city…)\n"
+    "  /filter — Bazoš filters (query, price, radius, ZIP)\n"
+    "  /settings — score threshold, photos, alerts\n\n"
+    "<b>⭐ Search profiles</b>\n"
+    "  /search name: criteria — save a profile\n"
+    "  /searches — list profiles\n"
+    "  /use name — activate a profile\n\n"
+    "<b>📊 Insights</b>\n"
+    "  /stats — catalog and market stats\n"
+    "  /queue — AI evaluation queue\n"
+    "  /health — pipeline health\n"
+    "  /dashboard — web charts (Mini App)\n"
+    "  /eval — re-score cars for a search\n\n"
+    "<b>💾 Saved</b>\n"
+    "  /save ad_id · /saved · /unsave ad_id\n"
+    "  (notes and price-watch live on the detail card and in /saved)\n\n"
+    "<b>⚙️ AI & settings</b>\n"
+    "  /model · /settings · /menu\n\n"
+    "💡 Details for each command: <code>/command help</code> (e.g. <code>/cars help</code>)\n"
+    "💡 Type <code>/</code> and Telegram autocompletes the commands."
 )
 
 
@@ -849,7 +830,7 @@ class Bot:
             data = callback["data"]
             if data.startswith("save:"):
                 await self._save(chat_id, data.split(":", 1)[1])
-                await self.notifier.answer_callback(cb_query_id, "💾 Uložené ✅")
+                await self.notifier.answer_callback(cb_query_id, "💾 Saved ✅")
             elif data.startswith("ntf:"):
                 await self._toggle_search_notify(
                     chat_id, data.split(":", 1)[1], cb_query_id
@@ -859,8 +840,14 @@ class Bot:
                     chat_id, data.split(":", 1)[1] == "1", cb_query_id
                 )
             elif data.startswith("use:"):
-                await self._use(chat_id, data.split(":", 1)[1])
-                await self.notifier.answer_callback(cb_query_id, "✅ Profil aktivovaný")
+                name = data.split(":", 1)[1]
+                reply = await self._use(chat_id, name)
+                await self.notifier.answer_callback(cb_query_id, "✅ Profile activated")
+                await self.reply(chat_id, reply)
+            elif data.startswith("set:"):
+                await self._settings_action(
+                    chat_id, message_id, cb_query_id, data.split(":", 1)[1]
+                )
             elif data.startswith("c:"):
                 await self._cars_page(chat_id, message_id, cb_query_id, data)
             elif data.startswith("tpl:"):
@@ -868,7 +855,7 @@ class Bot:
             elif data.startswith("menu:"):
                 await self._menu_action(chat_id, data.split(":", 1)[1], cb_query_id)
             else:
-                await self.notifier.answer_callback(cb_query_id, "Neznáma akcia")
+                await self.notifier.answer_callback(cb_query_id, "Unknown action")
             return
 
         text = (message.get("text") or "").strip()
@@ -899,16 +886,18 @@ class Bot:
         match cmd:
             case "/start":
                 return (
-                    "Ahoj! Som Bazcar 🚗. Napíš mi, aké auto hľadáš — a nechám ti "
-                    "prísť nové inzeráty s AI skóre.\n\n" + HELP_TEXT,
+                    "Hi! I'm Bazcar 🚗. Tell me what car you're looking for — "
+                    "and new listings will arrive with an AI score.\n\n" + HELP_TEXT,
                     MENU_KEYBOARD,
                 )
             case "/help":
                 return HELP_TEXT, MENU_KEYBOARD
             case "/menu":
-                return "🏠 <b>Hlavné menu</b> — vyber akciu:", MENU_KEYBOARD
-            case "/status":
-                return await self._status(chat_id)
+                return "🏠 <b>Main menu</b> — pick an action:", MENU_KEYBOARD
+            case "/status":  # hidden alias of /settings
+                return await self._settings(chat_id)
+            case "/settings":
+                return await self._settings(chat_id)
             case "/criteria":
                 return await self._set_criteria(chat_id, arg)
             case "/search":
@@ -919,9 +908,9 @@ class Bot:
                 return await self._use(chat_id, arg)
             case "/model":
                 return await self._model(chat_id, arg)
-            case "/score":
+            case "/score":  # hidden alias of /settings (score section)
                 return await self._score(chat_id, arg)
-            case "/photos":
+            case "/photos":  # hidden alias of /settings (photos section)
                 return await self._photos(chat_id, arg)
             case "/filter":
                 return await self._filter(chat_id, arg)
@@ -929,17 +918,17 @@ class Bot:
                 return await self._eval(chat_id, arg)
             case "/show":
                 return await self._show(chat_id, arg)
-            case "/models":
+            case "/models":  # hidden alias of /model (list)
                 return await self._models(chat_id, arg)
             case "/save":
                 return await self._save(chat_id, arg)
             case "/saved":
                 return await self._saved(chat_id)
-            case "/note":
+            case "/note":  # hidden alias (also on the detail card)
                 return await self._note(chat_id, arg)
-            case "/alert":
+            case "/alert":  # hidden alias (also on the detail card)
                 return await self._alert(chat_id, arg)
-            case "/digest":
+            case "/digest":  # hidden alias (folded into /stats)
                 return await self._digest(chat_id)
             case "/unsave":
                 return await self._unsave(chat_id, arg)
@@ -960,18 +949,18 @@ class Bot:
             case "/dashboard":
                 return self._dashboard()
             case _:
-                return "Neznámy príkaz. /help"
+                return "Unknown command. /help"
 
     async def _set_criteria(self, chat_id: int, text: str) -> str:
         text = text.strip()
         if not text:
-            return 'Pošli, čo hľadáš, napr.: "diesel, do 200 000 km, nad 80kW".'
+            return 'Tell me what you\'re looking for, e.g.: "diesel, under 200,000 km, over 80 kW".'
         await self.store.update_prefs(chat_id, criteria=text)
         try:
             await self._queue_rehodnotenie(chat_id)
         except Exception:
             logger.warning("rehodnotenie queue failed", exc_info=True)
-        return f"✅ Kritériá uložené:\n<i>{_em(text)}</i>"
+        return f"✅ Criteria saved:\n<i>{_em(text)}</i>"
 
     async def _filter(self, chat_id: int, arg: str) -> str:
         """Manage Bazoš scrape filters (/filter query|price|km|psc|clear)."""
@@ -983,7 +972,7 @@ class Bot:
 
         if key == "clear":
             await self.store.update_prefs(chat_id, filters={})
-            return "✅ Filtre vynulované (scrapuje sa podľa config/scraper.yaml)."
+            return "✅ Filters reset (scraping per config/scraper.yaml)."
         if not value:
             return "/filter query skoda | /filter price 1500-4000 | /filter dist 100 | /filter psc 81101 | /filter clear"
 
@@ -993,37 +982,37 @@ class Bot:
         elif key == "price":
             match = re.fullmatch(r"(\d*)\s*-\s*(\d*)", value)
             if not match or (not match.group(1) and not match.group(2)):
-                return "Formát: `/filter price 1500-4000` (alebo `1500-` / `-4000`)."
+                return "Format: `/filter price 1500-4000` (or `1500-` / `-4000`)."
             patch["min_price"] = int(match.group(1)) if match.group(1) else None
             patch["max_price"] = int(match.group(2)) if match.group(2) else None
         elif key == "dist":
             if not value.isdigit():
-                return "Formát: `/filter dist 100` — okruh okolo PSČ v km."
+                return "Format: `/filter dist 100` — radius around the ZIP in km."
             patch["distance_km"] = int(value)
         elif key == "psc":
             patch["psc"] = value
         else:
-            return "Neznámy filter. Použi query / price / dist / psc / clear."
+            return "Unknown filter. Use query / price / dist / psc / clear."
 
         filters = await self.store.update_filters(chat_id, patch)
         await _dispatch_scrape()
-        return f"✅ Uložené.\n{self._filters_summary(filters)}"
+        return f"✅ Saved.\n{self._filters_summary(filters)}"
 
     @staticmethod
     def _filters_summary(filters: dict) -> str:
         if not filters:
-            return "Filtre: žiadne (default z config/scraper.yaml)"
+            return "Filters: none (defaults from config/scraper.yaml)"
         bits = []
         if filters.get("query"):
-            bits.append(f"hľadať: „{_em(str(filters['query']))}“")
+            bits.append(f"search: “{_em(str(filters['query']))}”")
         lo, hi = filters.get("min_price"), filters.get("max_price")
         if lo is not None or hi is not None:
-            bits.append(f"cena: {lo or 0}–{hi or '∞'} €")
+            bits.append(f"price: {lo or 0}–{hi or '∞'} €")
         if filters.get("distance_km") is not None:
-            bits.append(f"okruh {filters['distance_km']} km od PSČ")
+            bits.append(f"within {filters['distance_km']} km of ZIP")
         if filters.get("psc"):
-            bits.append(f"PSČ {_em(str(filters['psc']))}")
-        return "🔎 Filtre: " + " | ".join(bits)
+            bits.append(f"ZIP {_em(str(filters['psc']))}")
+        return "🔎 Filters: " + " | ".join(bits)
 
     async def _filters_status(self, chat_id: int) -> str:
         prefs = await self.store.get_prefs(chat_id)
@@ -1031,39 +1020,39 @@ class Bot:
 
     async def _search(self, chat_id: int, arg: str) -> str:
         if not arg:
-            return "/search meno: kriteriá — napr. `/search diaľnica: diesel do 200t km`"
+            return "/search name: criteria — e.g. `/search highway: diesel under 200k km`"
         name_part, sep, criteria = arg.partition(":")
         name = name_part.strip()
         criteria = criteria.strip()
         if not name or not criteria:
-            return "Potrebujem `meno: kritériá` — napr. `/search diaľnica: diesel do 200t km`."
+            return "I need `name: criteria` — e.g. `/search highway: diesel under 200k km`."
         prefs = await self.store.get_prefs(chat_id)
         filters = prefs.filters if prefs else {}
         min_score = prefs.min_score if prefs else None
         await self.store.save_search(chat_id, name, criteria, filters=filters, min_score=min_score)
         return (
-            f"✅ Uložené hľadanie „{_em(name)}“: <i>{_em(criteria)}</i>"
-            f"\n{self._filters_summary(filters)}\nSkóre: {min_score or '—'}"
+            f"✅ Saved search “{_em(name)}”: <i>{_em(criteria)}</i>"
+            f"\n{self._filters_summary(filters)}\nScore: {min_score or '—'}"
         )
 
     async def _searches(self, chat_id: int) -> tuple[str, dict] | str:
         prefs = await self.store.get_prefs(chat_id)
         searches = await self.store.list_searches(chat_id)
         if not searches:
-            return "Nemáš uložené hľadania. `/search meno: diesel do 200 km`."
-        lines = ["🔎 <b>Uložené hľadania</b> (🔔 = upozornenia zapnuté):"]
+            return "You have no saved searches. `/search name: diesel under 200 km`."
+        lines = ["🔎 <b>Saved searches</b> (🔔 = alerts on):"]
         keyboard: list[list[dict]] = []
         for s in searches:
             bell = "🔔" if s.notify_enabled else "🔕"
             lines.append(
                 f"• {bell} <b>{_em(s.name)}</b>: {_em(s.criteria)}"
-                + (f" (filtre: {self._filters_summary(s.filters)})" if s.filters else "")
+                + (f" (filters: {self._filters_summary(s.filters)})" if s.filters else "")
             )
             keyboard.append(
                 [
                     {"text": f"▶️ {s.name}", "callback_data": f"use:{s.name}"},
                     {
-                        "text": f"{'🔕 Vypnúť' if s.notify_enabled else '🔔 Zapnúť'}",
+                        "text": f"{'🔕 Mute' if s.notify_enabled else '🔔 Unmute'}",
                         "callback_data": f"ntf:{s.name}",
                     },
                 ]
@@ -1072,12 +1061,12 @@ class Bot:
         keyboard.append(
             [
                 {
-                    "text": f"{'🔕 Vypnúť všetky' if global_on else '🔔 Zapnúť všetky'}",
+                    "text": f"{'🔕 Mute all' if global_on else '🔔 Unmute all'}",
                     "callback_data": f"ntfglobal:{0 if global_on else 1}",
                 }
             ]
         )
-        lines.append("\n<i>Tlačidlom prepneš upozornenia, ▶️ aktivuje profil.</i>")
+        lines.append("\n<i>Buttons toggle alerts, ▶️ activates the profile.</i>")
         return "\n".join(lines), {"inline_keyboard": keyboard}
 
     async def _toggle_search_notify(
@@ -1086,22 +1075,22 @@ class Bot:
         searches = await self.store.list_searches(chat_id)
         match = next((s for s in searches if s.name == name), None)
         if match is None:
-            await self.notifier.answer_callback(cb_query_id, "Hľadanie som nenašiel")
+            await self.notifier.answer_callback(cb_query_id, "Search not found")
             return
         await self.store.set_search_notify(chat_id, name, not match.notify_enabled)
-        state = "zapnuté 🔔" if not match.notify_enabled else "vypnuté 🔕"
-        await self.notifier.answer_callback(cb_query_id, f"„{name}“: {state}")
+        state = "on 🔔" if not match.notify_enabled else "off 🔕"
+        await self.notifier.answer_callback(cb_query_id, f"“{name}”: {state}")
 
     async def _toggle_global_notify(self, chat_id: int, on: bool, cb_query_id: str) -> None:
         await self.store.ensure_prefs(chat_id)
         await self.store.update_prefs(chat_id, notify_enabled=on)
         await self.notifier.answer_callback(
-            cb_query_id, "Upozornenia zapnuté 🔔" if on else "Upozornenia vypnuté 🔕"
+            cb_query_id, "Alerts on 🔔" if on else "Alerts off 🔕"
         )
 
     async def _use(self, chat_id: int, name: str) -> str:
         if not name:
-            return "/use meno"
+            return "/use name"
         searches = await self.store.list_searches(chat_id)
         for s in searches:
             if s.name.lower() == name.lower():
@@ -1109,17 +1098,17 @@ class Bot:
                 if s.min_score is not None:
                     updates["min_score"] = s.min_score
                 await self.store.update_prefs(chat_id, **updates)
-                reply = f"✅ Aktivované „{_em(s.name)}“: <i>{_em(s.criteria)}</i>"
+                reply = f"✅ Activated “{_em(s.name)}”: <i>{_em(s.criteria)}</i>"
                 if s.filters:
                     reply += "\n" + self._filters_summary(s.filters)
                 if s.min_score is not None:
-                    reply += f"\n⭐ Skóre: {s.min_score}/100"
+                    reply += f"\n⭐ Score: {s.min_score}/100"
                 try:
                     await self._queue_rehodnotenie(chat_id)
                 except Exception:
                     logger.warning("rehodnotenie queue failed", exc_info=True)
                 return reply
-        return f"Nenašiel som „{_em(name)}“. /searches"
+        return f"Couldn't find “{_em(name)}”. /searches"
 
     async def _model(self, chat_id: int, model: str) -> str:
         """/model — show current, /model info ID — detail, /model ID — set."""
@@ -1133,7 +1122,7 @@ class Bot:
             target = arg.split(maxsplit=1)[1].strip()
             return self._model_detail(models, target, is_current=False)
         if arg.startswith("info") and len(arg.split()) == 1:
-            return "Použitie: <code>/model info ID</code> — napr. <code>/model info ~deepseek/deepseek-v4-flash-latest</code>"
+            return "Usage: <code>/model info ID</code> — e.g. <code>/model info ~deepseek/deepseek-v4-flash-latest</code>"
 
         prefs = await self.store.get_prefs(chat_id)
         current = prefs.model or load_llm_config().model if prefs else load_llm_config().model
@@ -1142,8 +1131,8 @@ class Bot:
         if arg:
             if arg not in models:
                 return (
-                    f"Nenájdený model <code>{_em(arg)}</code> (musí podporovať JSON).\n"
-                    "Zoznam: <code>/models</code>, filtruj: <code>/models deepseek</code>"
+                    f"Unknown model <code>{_em(arg)}</code> (must support JSON).\n"
+                    "List: <code>/models</code>, filter: <code>/models deepseek</code>"
                 )
             await self.store.update_prefs(chat_id, model=arg)
             self._schedule_recheck(chat_id)  # silent: re-evaluate under new model
@@ -1159,27 +1148,27 @@ class Bot:
     def _model_detail(models: dict, model_id: str, *, is_current: bool) -> str:
         m = models.get(model_id)
         if m is None:
-            return f"Model <code>{_em(model_id)}</code> nie je v JSON-capable zozname (môže byť vypnutý)."
-        rpm = m["rpm"] if m["rpm"] else "∞ (bez limitu) ✅"
+            return f"Model <code>{_em(model_id)}</code> is not in the JSON-capable list (may be disabled)."
+        rpm = m["rpm"] if m["rpm"] else "∞ (no limit) ✅"
         ctx = f"{m['ctx']:,}".replace(",", " ") if m["ctx"] else "?"
-        price = "0 (zadarmo)" if m["free"] else f"{m['price_in']} $ / 1M tokenov vstupu, {m['price_out']} $ / 1M výstupu"
-        head = "<b>⬆️ Aktuálny model</b>\n\n" if is_current else "<b>Detail modelu</b>\n\n"
+        price = "0 (free)" if m["free"] else f"${m['price_in']} / 1M input tokens, ${m['price_out']} / 1M output"
+        head = "<b>⬆️ Current model</b>\n\n" if is_current else "<b>Model detail</b>\n\n"
         flags = []
         if m["rpm"] is None:
-            flags.append("⚡ žiadny rate limit (vhodné na dávku)")
+            flags.append("⚡ no rate limit (good for batches)")
         elif m["rpm"] and m["rpm"] < 60:
-            flags.append("⚠️ pomalý rate limit — backfill môže trvať")
+            flags.append("⚠️ slow rate limit — backfill may take a while")
         if m["free"]:
-            flags.append("🆓 zadarmo")
+            flags.append("🆓 free")
         return (
             head
             + f"<b>{_em(m['name'])}</b>\n"
             f"<code>{_em(m['id'])}</code>\n\n"
             f"💰 {price}\n"
-            f"⚡ Rychlosť: {rpm}\n"
-            f"🔡 Kontext: {ctx}\n\n"
+            f"⚡ Speed: {rpm}\n"
+            f"🔡 Context: {ctx}\n\n"
             + ("".join(f"{f}\n" for f in flags) if flags else "")
-            + ("\nZmeniť: <code>/model ID</code>, zoznam: <code>/models</code>" if is_current else "")
+            + ("\nSwitch: <code>/model ID</code>, list: <code>/models</code>" if is_current else "")
         )
 
     def _schedule_recheck(self, chat_id: int) -> None:
@@ -1195,16 +1184,16 @@ class Bot:
     async def _score(self, chat_id: int, arg: str) -> str:
         if not arg:
             prefs = await self.store.get_prefs(chat_id)
-            return f"Min. hodnotenie: <b>{prefs.min_score if prefs else None}</b>"
+            return f"Min. score: <b>{prefs.min_score if prefs else None}</b>"
         try:
             value = int(arg)
             if not 0 <= value <= 100:
                 raise ValueError
         except ValueError:
-            return "Hodnota 0–100, napr. `/score 75`."
+            return "Value 0–100, e.g. `/score 75`."
         await self.store.update_prefs(chat_id, min_score=value)
         await _dispatch_scrape()
-        return f"✅ Odteraz ukazujem inzeráty od <b>{value}/100</b>. Pre prehľad pošli /show."
+        return f"✅ From now on I'll show listings from <b>{value}/100</b>. Send /show for an overview."
 
     async def _photos(self, chat_id: int, arg: str) -> str:
         arg = arg.strip().lower()
@@ -1212,7 +1201,7 @@ class Bot:
             return "/photos on|off"
         on = arg == "on"
         await self.store.update_prefs(chat_id, show_photo=on)
-        return "✅ Fotky pri inzerátoch: " + ("zapnuté" if on else "vypnuté")
+        return "✅ Photos with listings: " + ("on" if on else "off")
 
     async def _queue_rehodnotenie(
         self, chat_id: int, max_listings: int = 100, days: int = 3
@@ -1262,17 +1251,17 @@ class Bot:
 
         created = await self._queue_rehodnotenie(chat_id, max_listings=limit, days=days)
         if not created:
-            return "⏳ Toto vyhľadanie už prehodnocujem — pošli /show o pár minút."
+            return "⏳ Already re-scoring this search — send /show in a few minutes."
 
         if to_eval == 0:
-            return "✅ Všetky autá v rozsahu už majú hodnotenie pre tento search+model — nič sa nevyhodnocuje. /show"
+            return "✅ All cars in range are already scored for this search+model — nothing to score. /show"
         minutes = max(1, round(to_eval * EST_SECONDS_PER_EVAL / 60))
         return (
-            f"🔁 <b>Prehodnotenie zaradené</b>\n"
-            f"Rozsah: {total} áut (posledných {days} dní), z toho "
-            f"<b>{to_eval}</b> bez hodnotenia pre tento search+model.\n"
-            f"⏱️ Odhad: <b>~{minutes} min</b> (~{EST_SECONDS_PER_EVAL}s/auto)\n"
-            f"➡️ Keď bude hotovo, príde ti ✅ hlásenie a <code>/show</code> ukáže výsledky."
+            f"🔁 <b>Re-score queued</b>\n"
+            f"Range: {total} cars (last {days} days), "
+            f"<b>{to_eval}</b> of them unscored for this search+model.\n"
+            f"⏱️ Estimate: <b>~{minutes} min</b> (~{EST_SECONDS_PER_EVAL}s/car)\n"
+            f"➡️ When done you'll get a ✅ report and <code>/show</code> shows the results."
         )
 
     async def _show(self, chat_id: int, arg: str) -> str:
@@ -1284,10 +1273,10 @@ class Bot:
         """
         settings = get_settings()
         if not settings.database_url or not settings.telegram_bot_token:
-            return "⚠️ Chýba databáza alebo Telegram token — /show nedostupné."
+            return "⚠️ Missing database or Telegram token — /show unavailable."
         prefs = await self.store.get_prefs(chat_id)
         if prefs is None:
-            return "Žiadne nastavenia. /help"
+            return "No settings yet. /help"
         arg_limit, days = parse_show_args(arg)
         limit = arg_limit or max(1, min(prefs.show_limit, 20))
         if arg_limit is not None and arg_limit != prefs.show_limit:
@@ -1312,19 +1301,19 @@ class Bot:
         if not rows:
             hint = ""
             if best is not None:
-                hint = f"\nNajlepšie dosiahnuté skóre: {best}/100 — skús /score {max(best - 10, 0)}."
+                hint = f"\nBest score reached: {best}/100 — try /score {max(best - 10, 0)}."
             return (
-                f"Nič vyhovujúce (skóre >= {min_score}) za posledných {days} dní.{hint}\n"
-                "Zmeň /criteria alebo /score, alebo rozšír okno: /show 20 days 7."
+                f"No matches (score >= {min_score}) in the last {days} days.{hint}\n"
+                "Change /criteria or /score, or widen the window: /show 20 days 7."
             )
         listings = [_row_to_listing(row) for row in rows]
         async with TelegramNotifier(settings.telegram_bot_token, str(chat_id)) as notifier:
             await notifier.send_listings_with_photos(listings, chat_id=chat_id)
         extra = total - len(listings)
-        tail = f" (ďalších {extra} vyhovujúcich — zvýš limit: /show 20)" if extra > 0 else ""
+        tail = f" ({extra} more matches — raise the limit: /show 20)" if extra > 0 else ""
         return (
-            f"📤 Poslal som {len(listings)} z {total} vyhovujúcich "
-            f"(skóre >= {min_score}, okno {days} dní){tail}:"
+            f"📤 Sent {len(listings)} of {total} matches "
+            f"(score >= {min_score}, last {days} days){tail}:"
         )
 
     # ------------------------------------------------------------ new commands
@@ -1340,7 +1329,7 @@ class Bot:
         """Browse the whole collected catalog — evaluated or not (/cars)."""
         settings = get_settings()
         if not settings.database_url:
-            return "⚠️ /cars potrebuje databázu (BAZCAR_DATABASE_URL)."
+            return "⚠️ /cars needs a database (BAZCAR_DATABASE_URL)."
         status, sort, days = parse_cars_args(arg)
         p_key, _ = await self._profile_key_for(chat_id)
         repo = ListingRepository(settings.database_url)
@@ -1352,8 +1341,8 @@ class Bot:
             await repo.close()
         if not rows:
             return (
-                f"📭 V katalógu nič nie je ({_STATUS_LABELS[status]}, {days} dní).\n"
-                "Skús širšie okno (<code>/cars days 30</code>) alebo počkaj na ďalší scrape."
+                f"📭 Catalog is empty ({_STATUS_LABELS[status]}, {days} days).\n"
+                "Try a wider window (<code>/cars days 30</code>) or wait for the next scrape."
             )
         text = build_cars_page(rows, total=total, offset=0, days=days, status=status, sort=sort)
         return text, cars_keyboard(status, sort, days, 0, total)
@@ -1364,12 +1353,12 @@ class Bot:
         """Pager callback: re-render the catalog page by editing the message."""
         parsed = parse_cars_callback(data)
         if parsed is None or message_id is None:
-            await self.notifier.answer_callback(cb_query_id, "Neplatná stránka")
+            await self.notifier.answer_callback(cb_query_id, "Invalid page")
             return
         status, sort, days, offset = parsed
         settings = get_settings()
         if not settings.database_url:
-            await self.notifier.answer_callback(cb_query_id, "Bez databázy")
+            await self.notifier.answer_callback(cb_query_id, "No database")
             return
         p_key, _ = await self._profile_key_for(chat_id)
         repo = ListingRepository(settings.database_url)
@@ -1382,7 +1371,7 @@ class Bot:
         finally:
             await repo.close()
         if not rows:
-            await self.notifier.answer_callback(cb_query_id, "Žiadne ďalšie")
+            await self.notifier.answer_callback(cb_query_id, "No more pages")
             return
         text = build_cars_page(
             rows, total=total, offset=offset, days=days, status=status, sort=sort
@@ -1399,18 +1388,18 @@ class Bot:
         """Rich detail card for one ad: /car <ad_id>."""
         settings = get_settings()
         if not settings.database_url:
-            return "⚠️ /car potrebuje databázu."
+            return "⚠️ /car needs a database."
         try:
             ad_id = int(arg.strip())
         except ValueError:
-            return "Použitie: <code>/car 195357798</code> (ad_id z /cars alebo notifikácie)"
+            return "Usage: <code>/car 195357798</code> (ad_id from /cars or a notification)"
         p_key, prefs = await self._profile_key_for(chat_id)
         repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
             row = await repo.fetch_listing_by_id(ad_id, p_key)
             if row is None:
-                return f"Inzerát <code>{ad_id}</code> nemám v databáze. Skús /cars."
+                return f"Listing <code>{ad_id}</code> is not in my database. Try /cars."
             history = await repo.fetch_price_history(ad_id)
             make = extract_make(str(row["title"]))
             bench = await repo.price_benchmark(make, row.get("year")) if make else None
@@ -1420,8 +1409,8 @@ class Bot:
         keyboard = {
             "inline_keyboard": [
                 [
-                    {"text": "💾 Uložiť", "callback_data": f"save:{ad_id}"},
-                    {"text": "🔗 Otvoriť inzerát", "url": row["url"]},
+                    {"text": "💾 Save", "callback_data": f"save:{ad_id}"},
+                    {"text": "🔗 Open listing", "url": row["url"]},
                 ]
             ]
         }
@@ -1440,7 +1429,7 @@ class Bot:
         """Live view of the AI evaluation queue (/queue)."""
         settings = get_settings()
         if not settings.database_url:
-            return "⚠️ /queue potrebuje databázu."
+            return "⚠️ /queue needs a database."
         repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
@@ -1451,7 +1440,7 @@ class Bot:
         text = build_queue_text(pending, finished)
         keyboard = {
             "inline_keyboard": [
-                [{"text": "🔄 Spracovať teraz", "callback_data": "menu:rescrape"}]
+                [{"text": "🔄 Process now", "callback_data": "menu:rescrape"}]
             ]
         }
         return text, keyboard
@@ -1460,7 +1449,7 @@ class Bot:
         """Catalog + market statistics with sparkline and score bands (/stats)."""
         settings = get_settings()
         if not settings.database_url:
-            return "⚠️ /stats potrebuje databázu."
+            return "⚠️ /stats needs a database."
         p_key, _ = await self._profile_key_for(chat_id)
         repo = ListingRepository(settings.database_url)
         await repo.connect()
@@ -1474,7 +1463,7 @@ class Bot:
         """Pipeline health: last scrape run, queue, database (/health)."""
         settings = get_settings()
         if not settings.database_url:
-            return "⚠️ /health potrebuje databázu."
+            return "⚠️ /health needs a database."
         repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
@@ -1488,43 +1477,43 @@ class Bot:
                 spend = None
         finally:
             await repo.close()
-        lines = ["<b>🩺 Zdravie pipeline</b>", ""]
-        lines.append("🗄 Databáza: ✅ spojená")
+        lines = ["<b>🩺 Pipeline health</b>", ""]
+        lines.append("🗄 Database: ✅ connected")
         budget = getattr(settings, "monthly_budget_usd", None)
         if spend is not None:
             if budget is not None:
-                state = "⏸️ stopnuté (rozpočet)" if spend >= budget else "✅"
+                state = "⏸️ paused (budget)" if spend >= budget else "✅"
                 lines.append(
-                    f"💵 AI za 30 dní: <b>{spend:.4f} $</b> / {budget} $ {state}"
+                    f"💵 AI last 30 days: <b>{spend:.4f} $</b> / {budget} $ {state}"
                 )
             else:
-                lines.append(f"💵 AI za 30 dní: <b>{spend:.4f} $</b> (bez limitu)")
+                lines.append(f"💵 AI last 30 days: <b>{spend:.4f} $</b> (no cap)")
         if run:
             age = time_ago(run.get("finished_at") or run.get("started_at"))
-            lines.append(f"🔄 Posledný beh: <b>{age}</b>")
+            lines.append(f"🔄 Last run: <b>{age}</b>")
             lines.append(
-                f"   strán {run.get('pages', 0)}, nájdených {run.get('total', 0)}, "
-                f"nových {run.get('inserted', 0)}, zliav {run.get('price_drops', 0)}"
+                f"   {run.get('pages', 0)} pages, {run.get('total', 0)} found, "
+                f"{run.get('inserted', 0)} new, {run.get('price_drops', 0)} discounts"
             )
             lines.append(
-                f"   ohodnotených {run.get('evaluated', 0)}, "
-                f"notifikácií {run.get('notified', 0)}"
+                f"   {run.get('evaluated', 0)} scored, "
+                f"{run.get('notified', 0)} notifications"
             )
             if run.get("error"):
-                lines.append(f"   ⚠️ chyba: {_em(run['error'])}")
+                lines.append(f"   ⚠️ error: {_em(run['error'])}")
         else:
-            lines.append("🔄 Posledný beh: <b>žiadny zaznamenaný</b> — cron ešte nebežal?")
+            lines.append("🔄 Last run: <b>none recorded</b> — cron hasn't run yet?")
         running = sum(1 for t in pending if t.get("started_at"))
         lines.append(
-            f"⏳ Fronta AI: {len(pending)} čakajúcich ({running} bežiacich) — /queue"
+            f"⏳ AI queue: {len(pending)} waiting ({running} running) — /queue"
         )
         lines.append("")
-        lines.append("<i>Cron: každých ~15 min (GitHub Actions).</i>")
+        lines.append("<i>Cron: every ~15 min (GitHub Actions).</i>")
         return "\n".join(lines)
 
     def _templates(self) -> tuple[str, dict]:
         """Preset search profiles with one-tap apply (/templates)."""
-        lines = ["<b>📦 Hotové hľadania</b> — ťukni a hneď hľadáš:", ""]
+        lines = ["<b>📦 Ready-made searches</b> — tap and start hunting:", ""]
         buttons = []
         for template in TEMPLATES:
             lines.append(f"{template.emoji} <b>{_em(template.name)}</b> — {_em(template.description)}")
@@ -1532,14 +1521,14 @@ class Bot:
                 [{"text": f"{template.emoji} {template.name}", "callback_data": f"tpl:{template.key}"}]
             )
         lines.append("")
-        lines.append("<i>Nastaví kritériá + filtre + skóre a spustí prehodnotenie.</i>")
+        lines.append("<i>Sets criteria + filters + score and starts a re-score.</i>")
         return "\n".join(lines), {"inline_keyboard": buttons}
 
     async def _apply_template(self, chat_id: int, key: str, cb_query_id: str) -> None:
         """Template button: set criteria+filters+score, then queue a re-eval."""
         template = get_template(key)
         if template is None:
-            await self.notifier.answer_callback(cb_query_id, "Neznáma šablóna")
+            await self.notifier.answer_callback(cb_query_id, "Unknown template")
             return
         await self.store.update_prefs(
             chat_id,
@@ -1551,14 +1540,14 @@ class Bot:
             await self._queue_rehodnotenie(chat_id)
         except Exception:
             logger.warning("template re-eval queue failed", exc_info=True)
-        await self.notifier.answer_callback(cb_query_id, f"{template.emoji} Aktivované!")
+        await self.notifier.answer_callback(cb_query_id, f"{template.emoji} Activated!")
         await self.reply(
             chat_id,
-            f"{template.emoji} <b>{_em(template.name)}</b> aktívne:\n"
+            f"{template.emoji} <b>{_em(template.name)}</b> active:\n"
             f"<i>{_em(template.criteria)}</i>\n"
             f"{self._filters_summary(template.filters)}\n"
-            f"⭐ Min. skóre: {template.min_score}\n\n"
-            "➡️ Prehodnotenie beží — výsledky: /show, prehľad: /cars",
+            f"⭐ Min. score: {template.min_score}\n\n"
+            "➡️ Re-scoring is running — results: /show, browse: /cars",
         )
 
     async def _menu_action(self, chat_id: int, action: str, cb_query_id: str) -> None:
@@ -1568,8 +1557,8 @@ class Bot:
             ok = await _dispatch_scrape()
             await self.reply(
                 chat_id,
-                "🔄 Spustil som spracovanie fronty." if ok
-                else "⚠️ Nedá sa spustiť (chýba GITHUB_WORKFLOW_TOKEN) — počkaj na cron.",
+                "🔄 Started processing the queue." if ok
+                else "⚠️ Can't start (missing GITHUB_WORKFLOW_TOKEN) — wait for the cron.",
             )
             return
         result: str | tuple | None
@@ -1585,10 +1574,12 @@ class Bot:
             result = self._templates()
         elif action == "saved":
             result = await self._saved(chat_id)
-        elif action == "status":
-            result = await self._status(chat_id)
+        elif action in {"settings", "status"}:
+            result = await self._settings(chat_id)
         elif action == "dashboard":
             result = self._dashboard()
+        elif action == "help":
+            result = HELP_TEXT, MENU_KEYBOARD
         else:
             result = HELP_TEXT, MENU_KEYBOARD
         if isinstance(result, tuple):
@@ -1601,7 +1592,7 @@ class Bot:
         """CSV export of the catalog (active profile's scores) via sendDocument."""
         settings = get_settings()
         if not settings.database_url:
-            return "⚠️ /export potrebuje databázu."
+            return "⚠️ /export needs a database."
         days = 30
         if arg.strip().isdigit():
             days = max(1, min(int(arg.strip()), 365))
@@ -1613,7 +1604,7 @@ class Bot:
         finally:
             await repo.close()
         if not rows:
-            return f"📭 Nič na export za posledných {days} dní."
+            return f"📭 Nothing to export for the last {days} days."
         buffer = io.StringIO()
         writer = csv.writer(buffer, delimiter=";")
         writer.writerow(
@@ -1638,9 +1629,9 @@ class Bot:
             filename,
             content,
             chat_id=chat_id,
-            caption=f"📄 Export: {len(rows)} inzerátov za {days} dní",
+            caption=f"📄 Export: {len(rows)} listings from {days} days",
         )
-        return None if ok else "⚠️ Export sa nepodarilo odoslať."
+        return None if ok else "⚠️ Couldn't send the export."
 
     def _dashboard(self) -> tuple[str, dict] | str:
         """Mini App button (/dashboard) — web_app opens inside Telegram."""
@@ -1652,15 +1643,15 @@ class Bot:
                 url = f"https://{vercel}/api/dashboard"
         if not url:
             return (
-                "📱 Dashboard nie je nasadený. Nasaď projekt na Vercel a nastav "
-                "<code>BAZCAR_WEBAPP_URL</code> (alebo VERCEL_URL sa použije automaticky)."
+                "📱 Dashboard is not deployed. Deploy the project to Vercel and set "
+                "<code>BAZCAR_WEBAPP_URL</code> (or VERCEL_URL is used automatically)."
             )
         keyboard = {
             "inline_keyboard": [
-                [{"text": "📱 Otvoriť dashboard", "web_app": {"url": url}}]
+                [{"text": "📱 Open dashboard", "web_app": {"url": url}}]
             ]
         }
-        return "📱 <b>Bazcar dashboard</b> — grafy, inventár, fronta a štatistiky:", keyboard
+        return "📱 <b>Bazcar dashboard</b> — charts, inventory, queue and stats:", keyboard
 
     async def _models(self, chat_id: int, arg: str = "") -> str:
         from bazcar.llm.provider import list_models
@@ -1690,17 +1681,17 @@ class Bot:
             return [f"<b>{title}</b>", *shown]
 
         cap = 8 if query else 6
-        lines: list[str] = ["<b>🤖 Modely (JSON-capable)</b>", ""]
+        lines: list[str] = ["<b>🤖 Models (JSON-capable)</b>", ""]
         if not models:
-            lines.append("Žiadny model nevyhovuje filtru.")
-            lines.append("Skús: /models gemini · /models deepseek · /models llama · /models flash")
+            lines.append("No model matches the filter.")
+            lines.append("Try: /models gemini · /models deepseek · /models llama · /models flash")
             return "\n".join(lines)
         lines += _block("🆓 Free", free[:cap], cap)
         lines.append("")
         lines += _block("💰 Paid", paid[:cap], cap)
         lines.append("")
-        lines.append("<i>⚡ = rýchlosť (requests/min, ∞ = bez limitu), 🔡 = kontext, $/M = cena za 1M tokenov vstupu</i>")
-        lines.append("Nastav: <code>/model ID</code> · filtruj: <code>/models text</code> · detail: <code>/model info ID</code>")
+        lines.append("<i>⚡ = speed (requests/min, ∞ = no limit), 🔡 = context, $/M = price per 1M input tokens</i>")
+        lines.append("Set: <code>/model ID</code> · filter: <code>/models text</code> · detail: <code>/model info ID</code>")
         return "\n".join(lines)
 
     async def _save(self, chat_id: int, arg: str) -> str:
@@ -1710,7 +1701,7 @@ class Bot:
             return "/save ad_id"
         title, url = await self._resolve_listing_meta(ad_id)
         await self.store.save_listing(chat_id, ad_id, title, url)
-        return f"💾 Uložené ad {ad_id}."
+        return f"💾 Saved ad {ad_id}."
 
     async def _resolve_listing_meta(self, ad_id: int) -> tuple[str | None, str | None]:
         """Title/url for a saved ad: live DB first, export file as fallback.
@@ -1739,8 +1730,8 @@ class Bot:
     async def _saved(self, chat_id: int) -> str:
         saved = await self.store.list_saved(chat_id)
         if not saved:
-            return "Nemáš nič uložené."
-        lines = ["💾 <b>Uložené inzeráty</b> (🔔 = strážim zľavu automaticky):"]
+            return "You have nothing saved."
+        lines = ["💾 <b>Saved listings</b> (🔔 = watching discounts automatically):"]
         for item in saved:
             title = item.ad_title or f"ad {item.ad_id}"
             head = (
@@ -1763,26 +1754,26 @@ class Bot:
                     pass
             if item.alert_below:
                 try:
-                    bits.append(f"🎯 strážim pod {fmt_eur(int(item.alert_below))}")
+                    bits.append(f"🎯 watching below {fmt_eur(int(item.alert_below))}")
                 except (TypeError, ValueError):
                     pass
             if item.note:
                 note = item.note if len(item.note) <= 80 else item.note[:77] + "…"
                 bits.append(f"📝 {_em(note)}")
             lines.append(head + ("\n  " + " · ".join(bits) if bits else ""))
-        lines.append("\n<i>/note ad_id text — poznámka · /alert ad_id cena — strážiť cenu · /unsave ad_id — odstrániť</i>")
+        lines.append("\n<i>/note ad_id text — note · /alert ad_id price — watch price · /unsave ad_id — remove</i>")
         return "\n".join(lines)
 
     async def _note(self, chat_id: int, arg: str) -> str:
         parts = (arg or "").split(maxsplit=1)
         if not parts or not parts[0].lstrip("-").isdigit():
-            return "Použitie: <code>/note ad_id tvoja poznámka</code>"
+            return "Usage: <code>/note ad_id your note</code>"
         ad_id = int(parts[0])
         note = parts[1].strip()[:500] if len(parts) > 1 else ""
         updated = await self.store.set_saved_note(chat_id, ad_id, note)
         if not updated:
-            return f"Ad {ad_id} nemáš uložený. Najprv <code>/save {ad_id}</code>."
-        return f"📝 Poznámka k {ad_id} uložená." if note else f"📝 Poznámka k {ad_id} vymazaná."
+            return f"Ad {ad_id} is not in your saved list. First <code>/save {ad_id}</code>."
+        return f"📝 Note for {ad_id} saved." if note else f"📝 Note for {ad_id} cleared."
 
     async def _unsave(self, chat_id: int, arg: str) -> str:
         try:
@@ -1790,42 +1781,42 @@ class Bot:
         except ValueError:
             return "/unsave ad_id"
         removed = await self.store.remove_saved(chat_id, ad_id)
-        return "Odstránené ✅" if removed else f"Ad {ad_id} nemáš uložený."
+        return "Removed ✅" if removed else f"Ad {ad_id} is not in your saved list."
 
     async def _alert(self, chat_id: int, arg: str) -> str:
-        """Per-ad price watch: /alert <ad_id> [cena|off] (empty = show)."""
+        """Per-ad price watch: /alert <ad_id> [price|off] (empty = show)."""
         parts = (arg or "").split(maxsplit=1)
         if not parts or not parts[0].lstrip("-").isdigit():
-            return "Použitie: <code>/alert ad_id [cena|off]</code> — napr. <code>/alert 195315165 3000</code>"
+            return "Usage: <code>/alert ad_id [price|off]</code> — e.g. <code>/alert 195315165 3000</code>"
         ad_id = int(parts[0])
         saved = await self.store.list_saved(chat_id)
         if all(s.ad_id != ad_id for s in saved):
-            return f"Ad {ad_id} nemáš uložený. Najprv <code>/save {ad_id}</code>."
+            return f"Ad {ad_id} is not in your saved list. First <code>/save {ad_id}</code>."
         if len(parts) == 1:
             current = next(s.alert_below for s in saved if s.ad_id == ad_id)
             return (
-                f"🔔 Ad {ad_id}: strážim pod <b>{fmt_eur(current)}</b>."
+                f"🔔 Ad {ad_id}: watching below <b>{fmt_eur(current)}</b>."
                 if current
-                else f"🔔 Ad {ad_id}: upozorním na každú zľavu. Prah nastavíš: <code>/alert {ad_id} cena</code>"
+                else f"🔔 Ad {ad_id}: I'll report every discount. Set a threshold: <code>/alert {ad_id} price</code>"
             )
         raw = parts[1].strip().lower()
-        if raw in {"off", "0", "vyp", "vypnúť"}:
+        if raw in {"off", "0"}:
             await self.store.set_saved_alert(chat_id, ad_id, None)
-            return f"🔔 Ad {ad_id}: prah zrušený — upozorním na každú zľavu."
+            return f"🔔 Ad {ad_id}: threshold cleared — I'll report every discount."
         try:
             below = int(raw.replace(" ", "").replace("€", ""))
         except ValueError:
-            return "Cena musí byť číslo — napr. <code>/alert 195315165 3000</code>"
+            return "Price must be a number — e.g. <code>/alert 195315165 3000</code>"
         if below <= 0:
-            return "Cena musí byť kladná."
+            return "Price must be positive."
         await self.store.set_saved_alert(chat_id, ad_id, below)
-        return f"🔔 Ad {ad_id}: upozorním, až cena klesne pod <b>{fmt_eur(below)}</b>."
+        return f"🔔 Ad {ad_id}: I'll alert once the price drops below <b>{fmt_eur(below)}</b>."
 
     async def _digest(self, chat_id: int) -> str:
         """On-demand weekly summary: new ads, drops, top matches, queue."""
         settings = get_settings()
         if not settings.database_url:
-            return "⚠️ /digest potrebuje databázu."
+            return "⚠️ /digest needs a database."
         p_key, prefs = await self._profile_key_for(chat_id)
         min_score = (prefs.min_score if prefs and prefs.min_score is not None else None)
         if min_score is None:
@@ -1840,61 +1831,133 @@ class Bot:
             pending = await repo.pending_eval_tasks()
         finally:
             await repo.close()
-        lines = ["<b>📬 Týždenný súhrn</b>"]
-        lines.append(f"🆕 Nových inzerátov za 7 dní: <b>{sum(n for _, n in week)}</b>")
-        lines.append(f"📉 Zliav za 7 dní: <b>{len(drops)}</b>")
+        lines = ["<b>📬 Weekly digest</b>"]
+        lines.append(f"🆕 New listings in 7 days: <b>{sum(n for _, n in week)}</b>")
+        lines.append(f"📉 Discounts in 7 days: <b>{len(drops)}</b>")
         for d in drops:
             lines.append(
                 f"  −{d['pct']} % <a href=\"{_em_url(d['url'])}\">{_em(d['title'])}</a> "
                 f"({fmt_eur(d['prev'])} → {fmt_eur(d['now_price'])})"
             )
-        lines.append(f"⭐ Zhoduje sa s tvojím profilom (7 dní): <b>{total_matches}</b>")
+        lines.append(f"⭐ Matching your profile (7 days): <b>{total_matches}</b>")
         for m in top:
             lines.append(
                 f"  {m.get('score', '?')}/100 <a href=\"{_em_url(m['url'])}\">{_em(m['title'])}</a>"
             )
         lines.append(
-            f"⏳ Vo fronte AI: <b>{len(pending)}</b>"
-            + (" — spracuje cron." if pending else " ✅")
+            f"⏳ In the AI queue: <b>{len(pending)}</b>"
+            + (" — the cron will process it." if pending else " ✅")
         )
         return "\n".join(lines)
 
-    async def _status(self, chat_id: int) -> str:
+    @staticmethod
+    def _settings_keyboard(prefs) -> dict:
+        """Inline controls for the /settings hub (score ±5, photos, alerts)."""
+        score = prefs.min_score if prefs and prefs.min_score is not None else 60
+        photos_on = bool(prefs.show_photo) if prefs else False
+        notify_on = bool(prefs.notify_enabled) if prefs else True
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "⭐ −5", "callback_data": "set:score:-5"},
+                    {"text": f"⭐ Score: {score}", "callback_data": "set:noop"},
+                    {"text": "⭐ +5", "callback_data": "set:score:+5"},
+                ],
+                [
+                    {
+                        "text": f"📸 Photos: {'on' if photos_on else 'off'}",
+                        "callback_data": "set:photos",
+                    },
+                    {
+                        "text": f"🔔 Alerts: {'on' if notify_on else 'off'}",
+                        "callback_data": "set:notify",
+                    },
+                ],
+                [
+                    {"text": "🔍 My searches", "callback_data": "set:searches"},
+                ],
+            ]
+        }
+
+    async def _settings_text(self, chat_id: int) -> str:
         prefs = await self.store.get_prefs(chat_id)
         if prefs is None:
-            return "Žiadne nastavenia. /help"
+            return "No settings yet. /help"
         model = prefs.model or load_llm_config().model
         p_key = profile_key(prefs.criteria, model)
         lines = [
-            "<b>Stav</b>",
-            f"Kritériá: {_em(prefs.criteria or '—')}",
+            "<b>⚙️ Settings & status</b>",
+            f"Criteria: {_em(prefs.criteria or '—')}",
             f"Model: {_em(model)}",
-            f"Min. hodnotenie: {_em(str(prefs.min_score or '—'))}",
-            f"Fotky: {'áno' if prefs.show_photo else 'nie'}",
-            f"Upozornenia: {'🔔 zapnuté' if prefs.notify_enabled else '🔕 vypnuté'}",
+            f"Min. score: {_em(str(prefs.min_score if prefs.min_score is not None else '—'))}",
+            f"Photos: {'on' if prefs.show_photo else 'off'}",
+            f"Alerts: {'🔔 on' if prefs.notify_enabled else '🔕 off'}",
             self._filters_summary(prefs.filters),
- f"Profil: <code>{p_key}</code>",
+            f"Profile: <code>{p_key}</code>",
         ]
         budget = getattr(get_settings(), "monthly_budget_usd", None)
         if budget is not None:
-            lines.append(f"💵 Mesačný AI rozpočet: <b>{budget} $</b>")
+            lines.append(f"💵 Monthly AI budget: <b>{budget} $</b>")
         if get_settings().database_url:
             try:
                 repo = ListingRepository(get_settings().database_url)
                 await repo.connect()
                 try:
                     if await repo.pending_eval_task_for(p_key):
-                        lines.append("⏳ Prehodnotenie tohto searchu beží (o pár minút /show).")
+                        lines.append("⏳ Re-scoring this search is running (try /show in a few).")
                     else:
                         best = await repo.fetch_evaluations_max_score(p_key)
                         n = await repo.count_evaluations(p_key, days=3)
-                        tail = f", najlepšie skóre {best}/100" if best is not None else ""
-                        lines.append(f"✅ Ohodnotených áut (3 dni): {n}" + tail)
+                        tail = f", best score {best}/100" if best is not None else ""
+                        lines.append(f"✅ Cars scored (3 days): {n}" + tail)
                 finally:
                     await repo.close()
             except Exception:
-                lines.append("⚠️ Databáza nedostupná")
+                lines.append("⚠️ Database unavailable")
         return "\n".join(lines)
+
+    async def _settings(self, chat_id: int) -> tuple[str, dict]:
+        prefs = await self.store.ensure_prefs(chat_id)
+        return await self._settings_text(chat_id), self._settings_keyboard(prefs)
+
+    async def _settings_action(
+        self, chat_id: int, message_id: int | None, cb_query_id: str, payload: str
+    ) -> None:
+        """Handle /settings hub button presses (edit the message in place)."""
+        prefs = await self.store.ensure_prefs(chat_id)
+        toast = ""
+        if payload == "score:-5" or payload == "score:+5":
+            current = prefs.min_score if prefs.min_score is not None else 60
+            value = max(0, min(100, current + (5 if payload.endswith("+5") else -5)))
+            await self.store.update_prefs(chat_id, min_score=value)
+            toast = f"Min. score: {value}/100"
+        elif payload == "photos":
+            await self.store.update_prefs(chat_id, show_photo=not prefs.show_photo)
+            toast = f"Photos {'on' if not prefs.show_photo else 'off'}"
+        elif payload == "notify":
+            await self.store.update_prefs(chat_id, notify_enabled=not prefs.notify_enabled)
+            toast = "Alerts on 🔔" if not prefs.notify_enabled else "Alerts off 🔕"
+        elif payload == "searches":
+            text, markup = await self._searches(chat_id)
+            await self.notifier.edit_message_text(
+                text, message_id, chat_id=chat_id, reply_markup=markup
+            )
+            await self.notifier.answer_callback(cb_query_id)
+            return
+        elif payload == "noop":
+            await self.notifier.answer_callback(cb_query_id)
+            return
+        else:
+            await self.notifier.answer_callback(cb_query_id, "Unknown action")
+            return
+        text = await self._settings_text(chat_id)
+        prefs = await self.store.get_prefs(chat_id)
+        if message_id is not None:
+            await self.notifier.edit_message_text(
+                text, message_id, chat_id=chat_id,
+                reply_markup=self._settings_keyboard(prefs),
+            )
+        await self.notifier.answer_callback(cb_query_id, toast)
 
     async def _find_listing(self, ad_id: int) -> Listing | None:
         """Best-effort: resolve a saved ad title/url from the latest export."""

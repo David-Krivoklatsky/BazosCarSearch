@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from bazcar.config.settings import ScraperConfig, load_scraper_config
 
+from bazcar.config.settings import ScraperConfig, load_scraper_config
 from bazcar.scrapers.bazos import BazosScraper
 
 FIXTURES = Path(__file__).parent / "fixtures"

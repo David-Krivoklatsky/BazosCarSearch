@@ -418,7 +418,7 @@ async def _report_eval_task_done(settings, task: dict, count: int, listings: lis
     try:
         from bazcar.notify import TelegramNotifier
 
-        criteria_short = (task.get("criteria") or "bez kritérií").strip()
+        criteria_short = (task.get("criteria") or "no criteria").strip()
         label = criteria_short if len(criteria_short) <= 60 else criteria_short[:57] + "…"
         scored_now = sum(
             1
@@ -427,10 +427,10 @@ async def _report_eval_task_done(settings, task: dict, count: int, listings: lis
         )
         async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as ntf:
             await ntf.send_message(
-                f"✅ <b>Prehodnotenie hotové</b>\n"
+                f"✅ <b>Re-score finished</b>\n"
                 f"Search: <i>{_tg_escape(label)}</i>\n"
-                f"Skórovaných: <b>{scored_now}</b> áut (celkom v rozsahu {count})\n"
-                f"➡️ <code>/show</code> ukáže výsledky podľa <code>/score</code>"
+                f"Scored: <b>{scored_now}</b> cars ({count} total in range)\n"
+                f"➡️ <code>/show</code> shows the results"
             )
     except Exception:
         logger.warning("eval task report failed", exc_info=True)
@@ -442,14 +442,14 @@ async def _report_eval_task_abandoned(settings, task: dict) -> None:
     try:
         from bazcar.notify import TelegramNotifier
 
-        criteria_short = (task.get("criteria") or "bez kritérií").strip()
+        criteria_short = (task.get("criteria") or "no criteria").strip()
         label = criteria_short if len(criteria_short) <= 60 else criteria_short[:57] + "…"
         async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as ntf:
             await ntf.send_message(
-                f"⚠️ <b>Prehodnotenie zrušené</b>\n"
+                f"⚠️ <b>Re-score cancelled</b>\n"
                 f"Search: <i>{_tg_escape(label)}</i>\n"
-                f"Model <code>{_tg_escape(task.get('model') or '?')}</code> opakovane zlyháva "
-                f"(napr. 429 rate-limit). Má dobiehajúci backend — skús /models a /model iný."
+                f"Model <code>{_tg_escape(task.get('model') or '?')}</code> keeps failing "
+                f"(e.g. 429 rate-limit). Its backend is catching up — try /models and another /model."
             )
     except Exception:
         logger.warning("eval task abandon report failed", exc_info=True)
@@ -554,11 +554,11 @@ async def _notify_price_drops(
             old_fmt = f"{old_price:,.0f}".replace(",", " ")
             new_fmt = f"{new_price:,.0f}".replace(",", " ")
             text = (
-                f"📉 <b>Zľava o {pct} %!</b>\n"
+                f"📉 <b>Price drop {pct}%!</b>\n"
                 f"<b>{_em(clean_title(listing.title))}</b>\n"
-                f"Cena: <s>{old_fmt} €</s> → <b>{new_fmt} €</b>\n"
+                f"Price: <s>{old_fmt} €</s> → <b>{new_fmt} €</b>\n"
                 f"🆔 {ad_id}\n"
-                f"<a href=\"{_em_url(listing.url)}\">🔗 Otvoriť inzerát</a>"
+                f"<a href=\"{_em_url(listing.url)}\">🔗 Open listing</a>"
             )
             for chat_id in targets:
                 if await ntf.send_message(

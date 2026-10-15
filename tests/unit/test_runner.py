@@ -277,7 +277,7 @@ def test_price_drops_notify_savers_with_delta(monkeypatch):
     assert sent == 2
     assert [chat for chat, _ in notifier.sent] == [7, 8]
     text = notifier.sent[0][1]
-    assert "Zľava o 17 %" in text  # 6000 -> 5000
+    assert "Price drop 17%" in text  # 6000 -> 5000
     assert "6 000 €" in text and "5 000 €" in text
 
 

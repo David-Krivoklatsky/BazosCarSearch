@@ -25,7 +25,7 @@ def clean_title(title: str) -> str:
     return title.replace("/", "").strip()
 
 
-def _link(url: str, label: str = "🔗 Otvoriť inzerát") -> str:
+def _link(url: str, label: str = "🔗 Open listing") -> str:
     """Render the listing URL as a tidy hyperlink instead of a bare URL."""
     return f"<a href=\"{_em_url(url)}\">{label}</a>"
 
@@ -38,7 +38,7 @@ def format_listing(listing: Listing) -> str:
     price_text = (
         f"{price:,.0f} €".replace(",", " ")
         if price is not None
-        else (listing.price_raw or "Dohodou")
+        else (listing.price_raw or "Ask")
     )
     lines.append(f"💰 {_em(str(price_text))}")
 
@@ -55,12 +55,12 @@ def format_listing(listing: Listing) -> str:
     if listing.evaluation is not None:
         lines.append(f"⭐ {listing.evaluation.score}/100 — {_em(listing.evaluation.why)}")
         if listing.evaluation.risk:
-            lines.append(f"⚠️ <i>Riziko:</i> {_em(listing.evaluation.risk)}")
+            lines.append(f"⚠️ <i>Risk:</i> {_em(listing.evaluation.risk)}")
         if listing.evaluation.condition:
-            lines.append(f"🔧 <i>Stav:</i> {_em(listing.evaluation.condition)}")
+            lines.append(f"🔧 <i>Condition:</i> {_em(listing.evaluation.condition)}")
         if listing.evaluation.target_offer:
             offer = f"{listing.evaluation.target_offer:,}".replace(",", " ")
-            lines.append(f"🤝 <i>Prvá ponuka:</i> {offer} €")
+            lines.append(f"🤝 <i>First offer:</i> {offer} €")
 
     # Age transparency: when the ad was published / first seen by us.
     stamp = listing.published_date or getattr(listing, "first_seen_at", None)
@@ -85,14 +85,14 @@ def format_photo_caption(listing: Listing) -> str:
 def listing_keyboard(listing: Listing) -> dict:
     """Inline keyboard for one deal notification (InlineKeyboardMarkup).
 
-    * "💾 Uložiť" — inline button posting ``save:<ad_id>`` as callback_data.
-    * "🔗 Otvoriť inzerát" — native URL button (opens the ad in Telegram).
+    * "💾 Save" — inline button posting ``save:<ad_id>`` as callback_data.
+    * "🔗 Open listing" — native URL button (opens the ad in Telegram).
     """
     return {
         "inline_keyboard": [
             [
-                {"text": "💾 Uložiť", "callback_data": f"save:{listing.ad_id}"},
-                {"text": "🔗 Otvoriť inzerát", "url": listing.url},
+                {"text": "💾 Save", "callback_data": f"save:{listing.ad_id}"},
+                {"text": "🔗 Open listing", "url": listing.url},
             ]
         ]
     }

@@ -1,115 +1,124 @@
 # Bazcar
 
-Autonómny vyhľadávač výhodných ojazdených áut na [Bazoš.sk](https://auto.bazos.sk/).
-6-fázový projekt: **scrape → dedupe → LLM eval → notifikácia → kontakt → prevádzka 24/7**.
+Autonomous deal finder for used cars on [Bazoš.sk](https://auto.bazos.sk/).
+Pipeline: **scrape → dedupe → LLM eval → notify → (seller contact) → 24/7 ops**,
+plus multi-user profiles and a Telegram Mini App dashboard.
 
-## Architektúra (6 fáz)
+## Architecture (phases)
 
-| Fáza | Cieľ | Test akceptácie | Stav |
-|------|------|-----------------|------|
-| 1 | Modulárny scraper Bazoš (osobné autá, celé SK) | Export 50 najnovších inzerátov do JSON | hotové |
-| 2 | Perzistencia (Neon Postgres) + dedupe | 2. spustenie bez duplicit; sledovanie zmien ceny | hotové |
-| 3 | Vyhodnotenie obchodov cez OpenRouter (LLMProvider) | AI ohodnotí inzeráty + `why` | hotové (live overenie s kľúčom) |
-| 4 | Telegram notifikácie, prepínanie modelu cez bot | Príchod notifikácie k novému inzerátu; zmena kritérií/modelu cez bot | hotové (live overené) |
-| 5 | Samostatné spustenie na GitHub Actions (cron ~15 min) | Automatický beh na GHA + logy | hotové (`scrape.yml`, secrets) |
-| 6 | Autonómny kontakt predajcov (čakanie, zľava, kúpa) | Bot úspešne ponúkne kúpu predajcovi | — |
-| 7 | Multi-user profily + Telegram Mini App dashboard | Každý chat má vlastný profil; `/dashboard` otvorí web s dátami | hotové |
+| Phase | Goal | Acceptance test | State |
+|-------|------|-----------------|-------|
+| 1 | Modular Bazoš scraper (passenger cars, whole SK) | Export 50 newest listings to JSON | done |
+| 2 | Persistence (Neon Postgres) + dedupe | 2nd run without duplicates; price-change tracking | done |
+| 3 | Deal scoring via OpenRouter (LLMProvider) | AI scores listings + `why` | done (live, with key) |
+| 4 | Telegram notifications, model switching via bot | Notification arrives for a new listing; criteria/model change via bot | done (live) |
+| 5 | Standalone runs on GitHub Actions (cron ~15 min) | Automatic GHA runs + logs | done (`scrape.yml`, secrets) |
+| 6 | Autonomous seller contact (wait, discount, buy) | Bot successfully makes an offer to a seller | — |
+| 7 | Multi-user profiles + Telegram Mini App dashboard | Every chat has its own profile; `/dashboard` opens the data web UI | done |
+| 8 | Stats v2, price-watch alerts, settings hub, English UI | Histogram/top-makes/funnel/cost; `/alert`; `/settings` | done |
 
-## Technický stack
+## Tech stack
 Python 3.11+ / `uv`, `httpx` (async) + BeautifulSoup4 + lxml, Pydantic v2, Typer,
-`asyncpg` + [Neon](https://neon.tech) Postgres (storage + dedupe, Fáza 2),
-[OpenRouter](https://openrouter.ai) Chat Completions API (LLM eval, Fáza 3).
-Žiadny Playwright — Bazoš nevyžaduje JS.
+`asyncpg` + [Neon](https://neon.tech) Postgres (storage + dedupe, Phase 2),
+[OpenRouter](https://openrouter.ai) Chat Completions API (LLM eval, Phase 3).
+No Playwright — Bazoš needs no JS.
 
-## Rýchly štart
+## Quick start
 ```bash
 uv sync --extra dev
 uv run bazcar version
-# scrape 1 stránka a nahrať do Postgres (automaticky, keď je nastavená BAZCAR_DATABASE_URL)
+# scrape 1 page into Postgres (automatic when BAZCAR_DATABASE_URL is set)
 uv run bazcar scrape --pages 1 --db
-# LLM ohodnotenie inzerátov cez OpenRouter (automaticky, keď je nastavená OPENROUTER_API_KEY)
+# LLM scoring via OpenRouter (automatic when OPENROUTER_API_KEY is set)
 uv run bazcar scrape --pages 1 --db --eval
-# + Telegram notifikácie iba nových inzerátov (keď je nastavený TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID;
-#   s BAZCAR_TELEGRAM_MIN_SCORE iba vysoko skórované obchody)
+# + Telegram alerts for new listings only (when TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
+#   are set; with BAZCAR_TELEGRAM_MIN_SCORE only highly scored deals)
 uv run bazcar scrape --pages 1 --db --eval --notify
-# bez databázy len export do JSON
+# no database: JSON export only
 uv run bazcar scrape --pages 3 --limit 50 --no-db --no-eval
 ```
 
-Výstup: JSON v `data/exports/`, suma v CLI, inzeráty dedupované v Postgres
-(`ad_id` = primárny kľúč; zmeny cien v `price_history`).
-Druhé spustenie `--db` vráti `0 new ... N unchanged` (žiadne duplicity).
+Output: JSON in `data/exports/`, a CLI summary, listings deduped in Postgres
+(`ad_id` = primary key; price changes in `price_history`).
+A second `--db` run returns `0 new ... N unchanged` (no duplicates).
 
-Testy:
+Tests:
 ```bash
 uv run pytest            # unit (offline, mocked)
-uv run pytest -m live    # live: scrape proti skutočnému Bazoš + Neon DB (pozor, sieť)
+uv run pytest -m live    # live: scrape against real Bazoš + Neon DB (network)
 ```
 
-Live DB test (`tests/integration/test_live_db.py`) overí dedupe a sledovanie cien
-proti reálnemu Neon pomocou `BAZCAR_DATABASE_URL` z `.env`.
+The live DB test (`tests/integration/test_live_db.py`) verifies dedupe and price
+tracking against real Neon using `BAZCAR_DATABASE_URL` from `.env`.
 
-LLM eval (`--eval`) je unit-testovaný s mocknutým OpenRouter (`tests/unit/test_llm.py`).
-Live overenie: nastav `OPENROUTER_API_KEY` v `.env` a spusti `bazcar scrape --pages 1 --eval`.
+LLM eval (`--eval`) is unit-tested with a mocked OpenRouter (`tests/unit/test_llm.py`).
+Live check: set `OPENROUTER_API_KEY` in `.env` and run `bazcar scrape --pages 1 --eval`.
 
-Telegram notifikácie (Fáza 4): unit-testované s mocknutou Telegram API (`tests/unit/test_notify.py`).
-Live overenie: nastav `TELEGRAM_BOT_TOKEN` a `TELEGRAM_CHAT_ID` v `.env` a spusti
-`bazcar scrape --pages 1 --notify` — nové inzeráty prídu na Telegram.
+Telegram notifications (Phase 4): unit-tested with a mocked Telegram API (`tests/unit/test_notify.py`).
+Live check: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` and run
+`bazcar scrape --pages 1 --notify` — new listings arrive on Telegram.
 
-Bot (Fáza 4): `bazcar bot` — dlhopolling, ukladá kritériá, model, min. skóre,
-fotky a uložené inzeráty do Neon (`tests/unit/test_bot.py`). Potrebuje
-`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` a `BAZCAR_DATABASE_URL`.
-Otestuj číslo jedným behom: `uv run bazcar bot --once`.
+Bot (Phase 4): `bazcar bot` — long-polling; stores criteria, model, min score,
+photos and saved listings in Neon (`tests/unit/test_bot.py`). Needs
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and `BAZCAR_DATABASE_URL`.
 
-**Multi-user**: každý chat má vlastný profil (kritériá, filtre, model, skóre) —
-stačí, keď používateľ napíše `/start`. Bez `BAZCAR_ALLOWED_CHAT_IDS` je bot
-otvorený (onboarding); s ním je to whitelist (napr. len ty).
+**Multi-user**: every chat has its own profile (criteria, filters, model, score) —
+a user just sends `/start`. Without `BAZCAR_ALLOWED_CHAT_IDS` the bot is open
+(onboarding); with it, it's a whitelist (e.g. only you).
 
-Príkazy:
-- Základ: `/start`, `/help`, `/menu`, `/status`, `/criteria`, `/model`, `/models`,
-  `/score 0-100`, `/photos on|off`.
-- Hľadania: `/search meno: kritériá`, `/searches`, `/use meno`,
-  `/filter query|price|km|psc`, `/filter clear`.
-- **Katalóg**: `/cars [status] [sort] [days N]` (status `all|unevaluated|rated`,
-  sort `cheap|expensive|score|newest`) — prehliadaj VŠETKY inzeráty, aj tie bez
-  AI skóre; stránkovanie tlačidlami. `/car <ad_id>` — detail s vývojom ceny a
-  trhovým benchmarkom.
-- **Prehľady**: `/stats` (pokrytie AI, sparkline, pásma skóre), `/queue`
-  (fronta AI, priebeh), `/health` (posledný beh, DB), `/export [dni]` (CSV),
-  `/templates` (hotové profily), `/dashboard` (Mini App).
-- Uložené: `/save ad_id`, `/saved`, `/unsave ad_id`.
+Commands (22 in the `/` menu; `/score`, `/photos`, `/models`, `/note`, `/alert`,
+`/digest`, `/status` still work as hidden aliases):
+- Basics: `/start`, `/help`, `/menu`, `/settings`, `/criteria`, `/model`.
+- Searches: `/search name: criteria`, `/searches`, `/use name`,
+  `/filter query|price|dist|psc`, `/filter clear`.
+- **Catalog**: `/cars [status] [sort] [days N]` (status `all|unevaluated|rated`,
+  sort `cheap|expensive|score|newest`) — browse ALL listings, even unscored ones;
+  button paging. `/car <ad_id>` — detail with price trend and market benchmark.
+- **Insights**: `/stats` (AI coverage, sparkline, score bands), `/queue`
+  (AI queue, progress), `/health` (last run, DB, AI spend), `/export [days]` (CSV),
+  `/templates` (ready-made profiles), `/dashboard` (Mini App), `/eval`, `/show`.
+- Saved: `/save ad_id`, `/saved`, `/unsave ad_id` (+ `/note`, `/alert` via card/buttons).
 
 ## Dashboard (Telegram Mini App)
-`/dashboard` otvorí v Telegrame webový dashboard (inventár, fronta AI,
-štatistiky) — žije vo Verceli ako dve serverless funkcie:
-- `api/dashboard.py` — servíruje `dashboard/index.html` (statická SPA),
+`/dashboard` opens the web dashboard inside Telegram (overview, inventory,
+saved, AI queue, stats, profiles) — it lives on Vercel as one Python function
+with a path dispatcher:
+- `api/index.py` — single entrypoint routing to the three surfaces below,
+- `api/dashboard.py` — serves `dashboard/index.html` (static SPA),
 - `api/webapp.py` — JSON API
-  (`?view=overview|inventory|listing&id=<ad_id>|queue|stats`).
+  (`?view=overview|inventory|saved|listing&id=<ad_id>|compare&ids=…|queue|stats|profiles`,
+  plus POST actions: save/unsave/note/use/toggles/score/photos).
 
-V inventári klik na 🔎 otvorí detail inzerátu (vývoj ceny + trhový
-benchmark, teda aj market-value signál, ktorý vidíš v bote cez `/car`).
+Clicking 🔎 in the inventory opens the listing detail (price trend + market
+benchmark — the same market-value signal the bot shows via `/car`), now with a
+photo gallery, full description, save button and a 3-way compare view.
 
-Autentifikácia: každý request nesie podpísané Telegram `initData` (HMAC-SHA256),
-overené proti bot tokenu → používateľ vidí len dáta svojho profilu. Bez podpisu
-API vráti 401, takže stránka môže byť verejná bez úniku dát.
+Auth: every request carries signed Telegram `initData` (HMAC-SHA256), verified
+against the bot token → each user only sees their own profile's data. Unsigned
+requests get 401, so the page can stay public without leaking data.
 
-Nastav `BAZCAR_WEBAPP_URL=https://<projekt>.vercel.app/api/dashboard`
-(ak nie je, odvodí sa z `VERCEL_URL` za behu). Vercel automaticky namapuje
-súbory v `api/` na `/api/<meno>`.
+Set `BAZCAR_WEBAPP_URL=https://<project>.vercel.app/api/dashboard`
+(otherwise derived from `VERCEL_URL` at runtime). One Python function serves
+all `/api/*` paths via the `api/index.py` dispatcher (see `[tool.vercel]`
+in `pyproject.toml`).
 
-## Konfigurácia
-- `.env` (z `.env.example`) — runtime premenné (vrát. `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`), žiadne tajomstvá v repo.
+Optional AI guardrail: `BAZCAR_MONTHLY_BUDGET_USD` pauses fresh scoring once the
+trailing-30-day evaluation spend is reached (cached scores keep serving).
 
-## Automatizácia (Fáza 5)
-Dva workfowy (public repo = neobmedzené Actions minúty):
-- `scrape.yml` — každých ~15 min: scrape → dedupe → LLM eval → Telegram.
-- `bot.yml` — každé ~2 min: spracovanie bot správ (`bazcar bot --once`),
-  takže bot odpovedá bez lokálneho daemonu.
+## Configuration
+- `.env` (from `.env.example`) — runtime variables (incl. `BAZCAR_DATABASE_URL`,
+  `OPENROUTER_API_KEY`), no secrets in the repo.
+
+## Automation (Phase 5)
+Two workflows (public repo = unlimited Actions minutes):
+- `scrape.yml` — every ~15 min: scrape → dedupe → LLM eval → Telegram.
+- `bot.yml` — every ~2 min: process bot messages (`bazcar bot --once`),
+  so the bot answers without a local daemon.
 
 Secrets: `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_CHAT_ID`. Manuálne spustenie: `gh workflow run scrape|bot`.
+`TELEGRAM_CHAT_ID`. Manual run: `gh workflow run scrape|bot`.
 
-Alternatíva pre okamžité odpovede: nasaď `api/telegram.py` na Vercel a nastav
-webhook (`bazcar webhook --url https://<projekt>.vercel.app/api/telegram`) —
-Telegram potom doručuje updaty priamo funkcii (viď `.env.example`,
-`TELEGRAM_WEBHOOK_SECRET`). GitHub Actions ostáva plánovač scrape/backfill.
+Alternative for instant replies: deploy `api/` to Vercel and set the
+webhook (`bazcar webhook --url https://<project>.vercel.app/api/telegram`) —
+Telegram then delivers updates straight to the function (see `.env.example`,
+`TELEGRAM_WEBHOOK_SECRET`). GitHub Actions stays the scrape/backfill scheduler.

@@ -106,16 +106,16 @@
 </head>
 <body>
 <h1>🚗 Bazcar dashboard</h1>
-<div class="sub">Živé dáta z Neon · tvoj aktívny profil</div>
+<div class="sub">Live data from Neon · your active profile</div>
 <div class="tabs">
-  <button class="tab active" data-view="overview">Prehľad</button>
-  <button class="tab" data-view="inventory">Inzeráty</button>
-  <button class="tab" data-view="saved">Uložené</button>
-  <button class="tab" data-view="queue">Fronta AI</button>
-  <button class="tab" data-view="stats">Štatistiky</button>
-  <button class="tab" data-view="profiles">Profily</button>
+  <button class="tab active" data-view="overview">Overview</button>
+  <button class="tab" data-view="inventory">Listings</button>
+  <button class="tab" data-view="saved">Saved</button>
+  <button class="tab" data-view="queue">AI queue</button>
+  <button class="tab" data-view="stats">Stats</button>
+  <button class="tab" data-view="profiles">Profiles</button>
 </div>
-<div id="loading">Načítavam…</div>
+<div id="loading">Loading…</div>
 <div id="content"></div>
 
 <script>
@@ -197,25 +197,25 @@ function esc(s) {
     c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 }
 function eur(v) {
-  if (v == null || v === "") return "dohodou";
+  if (v == null || v === "") return "Ask";
   return Number(v).toLocaleString("sk-SK").replace(/,/g, " ") + " €";
 }
 function km(v) { return v == null ? "? km" : Number(v).toLocaleString("sk-SK") + " km"; }
 function ago(iso) {
-  if (!iso) return "nikdy";
+  if (!iso) return "never";
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 120) return "práve teraz";
-  if (s < 3600) return "pred " + Math.floor(s/60) + " min";
-  if (s < 86400) return "pred " + Math.floor(s/3600) + " h";
-  return "pred " + Math.floor(s/86400) + " d";
+  if (s < 120) return "just now";
+  if (s < 3600) return Math.floor(s/60) + " min ago";
+  if (s < 86400) return Math.floor(s/3600) + " h ago";
+  return Math.floor(s/86400) + " d ago";
 }
 function staleBadge(iso) {
   if (!iso) return "";
   const d = Math.floor(Math.max(0, Date.now() - new Date(iso).getTime()) / 86400000);
-  return d > 7 ? ` <span class="badge b-warn">🕸 ${d} d bez videnia</span>` : "";
+  return d > 7 ? ` <span class="badge b-warn">🕸 ${d} d unseen</span>` : "";
 }
 function spark(counts) {
-  if (!counts.length) return '<div class="muted">žiadne dáta</div>';
+  if (!counts.length) return '<div class="muted">no data</div>';
   const max = Math.max(...counts, 1);
   return '<div class="spark">' + counts.map(c =>
     `<div style="height:${Math.max(5, Math.round(c / max * 100))}%"></div>`).join("") + "</div>";
@@ -231,8 +231,8 @@ function bars(rows, labKey, valKey, fmtVal) {
   }).join("") + "</div>";
 }
 function badge(row) {
-  if (row.score == null) return '<span class="badge b-wait">⏳ bez AI</span>';
-  if (row.is_car === false) return '<span class="badge b-part">🛠 diel</span>';
+  if (row.score == null) return '<span class="badge b-wait">⏳ unscored</span>';
+  if (row.is_car === false) return '<span class="badge b-part">🛠 part</span>';
   return `<span class="badge b-score">⭐ ${row.score}</span>`;
 }
 function skeleton(n) {
@@ -243,7 +243,7 @@ function showErr(html, retry) {
   loading.style.display = "none";
   if (retry) lastRetry = retry;
   content.innerHTML = '<div class="err">' + html + "</div>" +
-    '<div class="rowbtn"><button class="mini" onclick="lastRetry()">🔄 Skúsiť znova</button></div>';
+    '<div class="rowbtn"><button class="mini" onclick="lastRetry()">🔄 Try again</button></div>';
   buzz("err");
 }
 
@@ -253,13 +253,13 @@ async function get(params) {
       headers: { "X-Telegram-Init-Data": initData }
     });
     if (resp.status === 401) {
-      showErr("🔒 Otvor dashboard cez tlačidlo /dashboard v bote — " +
-        "priamy prístup cez prehliadač nie je povolený.");
+      showErr("🔒 Open the dashboard via the /dashboard button in the bot — " +
+        "direct browser access is not allowed.");
       return null;
     }
     return await resp.json();
   } catch (e) {
-    showErr("⚠️ Chyba načítania: " + esc(e.message));
+    showErr("⚠️ Load failed: " + esc(e.message));
     return null;
   }
 }
@@ -274,12 +274,12 @@ async function post(action, fields) {
       body: JSON.stringify(Object.assign({ action }, fields || {}))
     });
     if (resp.status === 401) {
-      showErr("🔒 Relácia vypršala — otvor dashboard znova cez /dashboard v bote.");
+      showErr("🔒 Session expired — reopen the dashboard via /dashboard in the bot.");
       return null;
     }
     return await resp.json();
   } catch (e) {
-    showErr("⚠️ Chyba ukladania: " + esc(e.message));
+    showErr("⚠️ Save failed: " + esc(e.message));
     return null;
   }
 }
@@ -369,8 +369,8 @@ function toggleCompare(id, btn) {
 }
 function cmpBar(from) {
   return `<div class="rowbtn" id="cmpbar" style="display:${compareIds.length >= 2 ? "block" : "none"}">` +
-    `<button class="mini on" onclick="openCompare(compareIds, '${from}')">⚖️ Porovnať (<span id="cmpn">${compareIds.length}</span>)</button>` +
-    `<button class="mini" onclick="compareIds=[];load('${from}')">✖️ Zrušiť výber</button></div>`;
+    `<button class="mini on" onclick="openCompare(compareIds, '${from}')">⚖️ Compare (<span id="cmpn">${compareIds.length}</span>)</button>` +
+    `<button class="mini" onclick="compareIds=[];load('${from}')">✖️ Clear selection</button></div>`;
 }
 
 function gallery(images) {
@@ -392,41 +392,41 @@ function renderOverview(d) {
   const counts = (s.new_by_day || []).map(x => x[1]);
   content.innerHTML = `
     <div class="grid">
-      <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 inzerátov v DB</div></div>
-      <div class="card kpi"><div class="num">${cov} %</div><div class="lbl">🤖 AI pokrytie</div></div>
-      <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 zliav za 7 dní</div></div>
-      <div class="card kpi"><div class="num">${d.queue_pending ?? 0}</div><div class="lbl">⏳ vo fronte</div></div>
+      <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 listings in DB</div></div>
+      <div class="card kpi"><div class="num">${cov} %</div><div class="lbl">🤖 AI coverage</div></div>
+      <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 discounts / 7 days</div></div>
+      <div class="card kpi"><div class="num">${d.queue_pending ?? 0}</div><div class="lbl">⏳ in queue</div></div>
     </div>
     <div class="section card">
-      <h2>Nové inzeráty za 7 dní (${counts.reduce((a,b)=>a+b,0)})</h2>${spark(counts)}
+      <h2>New listings in 7 days (${counts.reduce((a,b)=>a+b,0)})</h2>${spark(counts)}
     </div>
     <div class="section card">
-      <h2>Posledný beh</h2>
-      <div class="muted">${run.finished_at ? ago(run.finished_at) : "žiadny zaznamenaný"} ·
-        nových ${run.inserted ?? "?"} · ohodnotených ${run.evaluated ?? "?"} ·
-        notifikácií ${run.notified ?? "?"}</div>
+      <h2>Last run</h2>
+      <div class="muted">${run.finished_at ? ago(run.finished_at) : "none recorded"} ·
+        ${run.inserted ?? "?"} new · ${run.evaluated ?? "?"} scored ·
+        ${run.notified ?? "?"} notifications</div>
     </div>`;
 }
 
 function toolbar() {
   return `<div class="toolbar">
-    <input type="search" id="fq" placeholder="🔎 Hľadať v titulkoch…" value="${esc(inv.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
+    <input type="search" id="fq" placeholder="🔎 Search titles…" value="${esc(inv.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
     <select id="fsort" onchange="applyFilters()">
-      <option value="newest" ${inv.sort === "newest" ? "selected" : ""}>Najnovšie</option>
-      <option value="score" ${inv.sort === "score" ? "selected" : ""}>Podľa AI skóre</option>
-      <option value="price_asc" ${inv.sort === "price_asc" ? "selected" : ""}>Od najlacnejšieho</option>
-      <option value="price_desc" ${inv.sort === "price_desc" ? "selected" : ""}>Od najdrahšieho</option>
+      <option value="newest" ${inv.sort === "newest" ? "selected" : ""}>Newest</option>
+      <option value="score" ${inv.sort === "score" ? "selected" : ""}>By AI score</option>
+      <option value="price_asc" ${inv.sort === "price_asc" ? "selected" : ""}>Cheapest first</option>
+      <option value="price_desc" ${inv.sort === "price_desc" ? "selected" : ""}>Priciest first</option>
     </select>
     <select id="fstatus" onchange="applyFilters()">
-      <option value="all" ${inv.status === "all" ? "selected" : ""}>Všetky</option>
-      <option value="rated" ${inv.status === "rated" ? "selected" : ""}>Len s AI</option>
-      <option value="unevaluated" ${inv.status === "unevaluated" ? "selected" : ""}>Len bez AI</option>
+      <option value="all" ${inv.status === "all" ? "selected" : ""}>All</option>
+      <option value="rated" ${inv.status === "rated" ? "selected" : ""}>Scored only</option>
+      <option value="unevaluated" ${inv.status === "unevaluated" ? "selected" : ""}>Unscored only</option>
     </select>
-    <input class="num" id="fminp" inputmode="numeric" placeholder="€ od" value="${esc(inv.min_price)}">
-    <input class="num" id="fmaxp" inputmode="numeric" placeholder="€ do" value="${esc(inv.max_price)}">
-    <input class="num" id="fminy" inputmode="numeric" placeholder="rok od" value="${esc(inv.min_year)}">
-    <input class="num" id="fmaxy" inputmode="numeric" placeholder="rok do" value="${esc(inv.max_year)}">
-    <button class="mini on" onclick="applyFilters()">Filtrovať</button>
+    <input class="num" id="fminp" inputmode="numeric" placeholder="€ from" value="${esc(inv.min_price)}">
+    <input class="num" id="fmaxp" inputmode="numeric" placeholder="€ to" value="${esc(inv.max_price)}">
+    <input class="num" id="fminy" inputmode="numeric" placeholder="year from" value="${esc(inv.min_year)}">
+    <input class="num" id="fmaxy" inputmode="numeric" placeholder="year to" value="${esc(inv.max_year)}">
+    <button class="mini on" onclick="applyFilters()">Filter</button>
     <button class="mini" onclick="resetFilters()">✖️</button>
   </div>`;
 }
@@ -466,12 +466,12 @@ function renderInventory(d) {
     </tr>`).join("");
   content.innerHTML = toolbar() + `
     <div class="section card">
-      <h2>Inzeráty ${items.length ? from + "–" + to : 0} z ${d.total} (posledných ${invDays} dní)</h2>
-      ${items.length ? `<table><tr><th>AI</th><th>Inzerát</th><th>Dátum</th><th></th></tr>${rows}</table>` : '<div class="muted">Na tieto filtre nič nesedí — skús ich uvoľniť.</div>'}
+      <h2>Listings ${items.length ? from + "–" + to : 0} of ${d.total} (last ${invDays} days)</h2>
+      ${items.length ? `<table><tr><th>AI</th><th>Listing</th><th>Date</th><th></th></tr>${rows}</table>` : '<div class="muted">Nothing matches these filters — try loosening them.</div>'}
       <div class="pager">
         <button ${d.page === 0 ? "disabled" : ""} onclick="invPage--;load('inventory')">◀️</button>
         <button ${to >= d.total ? "disabled" : ""} onclick="invPage++;load('inventory')">▶️</button>
-        <button onclick="invDays = invDays === 30 ? 90 : (invDays === 90 ? 7 : 30); invPage = 0; load('inventory')">okno: ${invDays} d</button>
+        <button onclick="invDays = invDays === 30 ? 90 : (invDays === 90 ? 7 : 30); invPage = 0; load('inventory')">window: ${invDays} d</button>
         <button onclick="exportCsv()">📄 CSV</button>
       </div>
     </div>` + cmpBar("inventory");
@@ -502,10 +502,10 @@ function renderSaved(d) {
   const rows = items.map(s => {
     const drop = s.drop_pct ? ` <span class="badge b-drop">📉 −${s.drop_pct} %</span>` : "";
     const note = s.note ? `<br><span class="muted">📝 ${esc(s.note)}</span>` : "";
-    const watch = s.alert_below ? `<br><span class="muted">🎯 strážim pod ${eur(s.alert_below)}</span>` : "";
+    const watch = s.alert_below ? `<br><span class="muted">🎯 watching below ${eur(s.alert_below)}</span>` : "";
     return `<tr>
       <td><a href="${esc(s.url || "#")}" target="_blank">${esc(s.title || ("ad " + s.ad_id))}</a>${drop}${note}${watch}<br>
-        <span class="muted">${s.current_price != null ? eur(s.current_price) : "cena ?"}${staleBadge(s.last_seen_at)}</span></td>
+        <span class="muted">${s.current_price != null ? eur(s.current_price) : "price ?"}${staleBadge(s.last_seen_at)}</span></td>
       <td style="white-space:nowrap">
         <button class="mini" onclick="openListing(${s.ad_id}, 'saved')">🔎</button>
         <button class="mini ${compareIds.includes(s.ad_id) ? "on" : ""}" onclick="toggleCompare(${s.ad_id}, this)">⚖️</button>
@@ -516,8 +516,8 @@ function renderSaved(d) {
   }).join("");
   content.innerHTML = `
     <div class="section card">
-      <h2>💾 Uložené (${items.length})</h2>
-      ${items.length ? `<table>${rows}</table>` : '<div class="muted">Zatiaľ nič — ulož si inzerát tlačidlom 💾 v bote alebo tu v detaile (🔎 → Uložiť).</div>'}
+      <h2>💾 Saved (${items.length})</h2>
+      ${items.length ? `<table>${rows}</table>` : '<div class="muted">Nothing yet — save a listing with 💾 in the bot or here in the detail (🔎 → Save).</div>'}
     </div>` + cmpBar("saved");
 }
 async function unsave(id) {
@@ -541,7 +541,7 @@ async function saveNote(id) {
 }
 async function saveCurrent(id) {
   const r = await post("save", { id });
-  if (r && r.ok) { buzz("ok"); toast("💾 Uložené"); }
+  if (r && r.ok) { buzz("ok"); toast("💾 Saved"); }
 }
 async function toggleSave(id, btn) {
   const saved = btn.classList.contains("on");
@@ -557,14 +557,14 @@ function descBlock(text) {
   const t = (text || "").trim();
   if (!t) return "";
   const long = t.length > 600;
-  return `<div class="section card"><h2>📝 Popis</h2>` +
+  return `<div class="section card"><h2>📝 Description</h2>` +
     `<div class="desc${long ? " clamp" : ""}" id="descbody">${esc(t)}</div>` +
-    (long ? `<div class="rowbtn"><button class="mini" onclick="document.getElementById('descbody').classList.toggle('clamp');this.textContent=this.textContent.includes('viac')?'▲ menej':'▼ viac'">▼ viac</button></div>` : "") +
+    (long ? `<div class="rowbtn"><button class="mini" onclick="document.getElementById('descbody').classList.toggle('clamp');this.textContent=this.textContent.includes('more')?'▲ less':'▼ more'">▼ more</button></div>` : "") +
     `</div>`;
 }
 
 function renderListing(d, from) {
-  if (d.error) { showErr("⚠️ Inzerát sa nenašiel."); return; }
+  if (d.error) { showErr("⚠️ Listing not found."); return; }
   const r = d.listing || {};
   const hist = (d.history || []).filter(h => h.price_eur != null);
   const bench = d.benchmark;
@@ -580,53 +580,53 @@ function renderListing(d, from) {
   let trend = "";
   if (hist.length >= 2) {
     const diff = Math.round((Number(last.price_eur) / Number(first.price_eur) - 1) * 100);
-    trend = `<div class="kv"><span class="k">vývoj ceny</span>` +
+    trend = `<div class="kv"><span class="k">price trend</span>` +
       `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${eur(first.price_eur)} → ${eur(last.price_eur)} (${diff > 0 ? "+" : ""}${diff} %)</span></div>`;
   }
   const ai = r.score != null
-    ? `<div class="kv"><span class="k">AI skóre</span><span class="v">⭐ ${r.score}/100</span></div>` +
-      (r.why ? `<div class="kv"><span class="k">prečo</span><span class="v">${esc(r.why)}</span></div>` : "") +
-      (r.risk ? `<div class="kv"><span class="k">riziko</span><span class="v">${esc(r.risk)}</span></div>` : "") +
-      (r.condition ? `<div class="kv"><span class="k">stav</span><span class="v">${esc(r.condition)}</span></div>` : "") +
-      (r.target_offer ? `<div class="kv"><span class="k">prvá ponuka</span><span class="v">${eur(r.target_offer)}</span></div>` : "")
-    : `<div class="kv"><span class="k">AI</span><span class="muted">⏳ zatiaľ bez hodnotenia</span></div>`;
+    ? `<div class="kv"><span class="k">AI score</span><span class="v">⭐ ${r.score}/100</span></div>` +
+      (r.why ? `<div class="kv"><span class="k">why</span><span class="v">${esc(r.why)}</span></div>` : "") +
+      (r.risk ? `<div class="kv"><span class="k">risk</span><span class="v">${esc(r.risk)}</span></div>` : "") +
+      (r.condition ? `<div class="kv"><span class="k">condition</span><span class="v">${esc(r.condition)}</span></div>` : "") +
+      (r.target_offer ? `<div class="kv"><span class="k">first offer</span><span class="v">${eur(r.target_offer)}</span></div>` : "")
+    : `<div class="kv"><span class="k">AI</span><span class="muted">⏳ no score yet</span></div>`;
   let market = "";
   if (bench && bench.n && r.price_eur != null && bench.median) {
     const diff = Math.round((Number(r.price_eur) / Number(bench.median) - 1) * 100);
-    const verdict = diff < 0 ? "pod mediánom" : "nad mediánom";
-    const warn = bench.n < 3 ? ' <span class="badge b-warn">málo dát (n=' + bench.n + ")</span>"
-      : (bench.trimmed ? ' <span class="muted">(bez extrémov)</span>' : "");
-    market = `<div class="section card"><h2>📊 Trh (n=${bench.n}, rok ±2)${warn}</h2>` +
-      `<div class="kv"><span class="k">medián asking cien</span><span class="v">${eur(bench.median)}</span></div>` +
-      `<div class="kv"><span class="k">tento inzerát</span>` +
+    const verdict = diff < 0 ? "below median" : "above median";
+    const warn = bench.n < 3 ? ' <span class="badge b-warn">low data (n=' + bench.n + ")</span>"
+      : (bench.trimmed ? ' <span class="muted">(outliers removed)</span>' : "");
+    market = `<div class="section card"><h2>📊 Market (n=${bench.n}, year ±2)${warn}</h2>` +
+      `<div class="kv"><span class="k">median asking price</span><span class="v">${eur(bench.median)}</span></div>` +
+      `<div class="kv"><span class="k">this listing</span>` +
       `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${Math.abs(diff)} % ${verdict}</span></div>` +
       `<div class="kv"><span class="k">p10 – p90</span><span class="v">${eur(bench.p10)} – ${eur(bench.p90)}</span></div></div>`;
   }
   const stale = staleBadge(r.last_seen_at);
   const backBtn = from === "compare"
-    ? `<button class="mini" onclick="backToCompare()">◀️ späť</button>`
-    : `<button class="mini" onclick="backTo('${from || "inventory"}')">◀️ späť</button>`;
+    ? `<button class="mini" onclick="backToCompare()">◀️ back</button>`
+    : `<button class="mini" onclick="backTo('${from || "inventory"}')">◀️ back</button>`;
   content.innerHTML = `
     <div class="section">
       ${backBtn}
-      <button class="mini" onclick="saveCurrent(${r.ad_id})">💾 Uložiť</button>
+      <button class="mini" onclick="saveCurrent(${r.ad_id})">💾 Save</button>
     </div>
     <div class="section card">
       <h2>${esc(r.title)}${stale}</h2>
       ${gallery(r.image_urls)}
-      <div class="kv"><span class="k">cena</span><span class="v">💰 ${eur(r.price_eur)}</span></div>
-      <div class="kv"><span class="k">rok · km</span><span class="v">${r.year ?? "?"} · ${km(r.mileage_km)}</span></div>
-      <div class="kv"><span class="k">lokalita</span><span class="v">${esc(r.city || "?")}</span></div>
-      ${r.views != null ? `<div class="kv"><span class="k">zobrazenia</span><span class="v">👁 ${r.views}</span></div>` : ""}
-      <div class="kv"><span class="k">inzerát z</span><span class="v">${esc(r.published_date || "?")}</span></div>
+      <div class="kv"><span class="k">price</span><span class="v">💰 ${eur(r.price_eur)}</span></div>
+      <div class="kv"><span class="k">year · km</span><span class="v">${r.year ?? "?"} · ${km(r.mileage_km)}</span></div>
+      <div class="kv"><span class="k">location</span><span class="v">${esc(r.city || "?")}</span></div>
+      ${r.views != null ? `<div class="kv"><span class="k">views</span><span class="v">👁 ${r.views}</span></div>` : ""}
+      <div class="kv"><span class="k">listed</span><span class="v">${esc(r.published_date || "?")}</span></div>
       ${trend}
       ${sparkHtml}
     </div>
-    <div class="section card"><h2>🤖 AI hodnotenie</h2>${ai}</div>
+    <div class="section card"><h2>🤖 AI review</h2>${ai}</div>
     ${market}
     ${descBlock(r.description || r.description_preview)}
     <div class="section">
-      <a href="${esc(r.url)}" target="_blank">🔗 Otvoriť inzerát na Bazoši</a>
+      <a href="${esc(r.url)}" target="_blank">🔗 Open listing on Bazoš</a>
     </div>`;
 }
 
@@ -634,22 +634,22 @@ function renderCompare(d, from) {
   const items = (d.items || []).map(x => x.listing).filter(Boolean);
   const cols = items.map(r => `
     <td><b>${esc(r.title)}</b><br><span class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)}</span><br>
-    ${r.score != null ? `<span class="badge b-score">⭐ ${r.score}</span>` : '<span class="badge b-wait">⏳ bez AI</span>'}
+    ${r.score != null ? `<span class="badge b-score">⭐ ${r.score}</span>` : '<span class="badge b-wait">⏳ unscored</span>'}
     ${staleBadge(r.last_seen_at)}</td>`).join("");
   const row = (label, fn) => `<tr><td>${label}</td>${items.map(r => `<td>${fn(r)}</td>`).join("")}</tr>`;
   content.innerHTML = `
-    <div class="section"><button class="mini" onclick="backTo('${from || "inventory"}')">◀️ späť</button></div>
-    <div class="section card"><h2>⚖️ Porovnanie (${items.length})</h2>
+    <div class="section"><button class="mini" onclick="backTo('${from || "inventory"}')">◀️ back</button></div>
+    <div class="section card"><h2>⚖️ Compare (${items.length})</h2>
     <table class="cmp-table">
       <tr><td></td>${cols}</tr>
-      ${row("cena", r => "💰 " + eur(r.price_eur))}
-      ${row("rok · km", r => (r.year ?? "?") + " · " + km(r.mileage_km))}
-      ${row("mesto", r => esc(r.city || "?"))}
-      ${row("skóre", r => r.score != null ? "⭐ " + r.score + "/100" : "—")}
-      ${row("prvá ponuka", r => r.target_offer ? eur(r.target_offer) : "—")}
-      ${row("stav", r => esc(r.condition || "—"))}
-      ${row("dôvod", r => esc((r.why || "—").slice(0, 120)))}
-      ${row("odkaz", r => `<a href="${esc(r.url)}" target="_blank">🔗</a> <button class="mini" onclick="openListing(${r.ad_id}, 'compare')">🔎</button>`)}
+      ${row("price", r => "💰 " + eur(r.price_eur))}
+      ${row("year · km", r => (r.year ?? "?") + " · " + km(r.mileage_km))}
+      ${row("city", r => esc(r.city || "?"))}
+      ${row("score", r => r.score != null ? "⭐ " + r.score + "/100" : "—")}
+      ${row("first offer", r => r.target_offer ? eur(r.target_offer) : "—")}
+      ${row("condition", r => esc(r.condition || "—"))}
+      ${row("reason", r => esc((r.why || "—").slice(0, 120)))}
+      ${row("link", r => `<a href="${esc(r.url)}" target="_blank">🔗</a> <button class="mini" onclick="openListing(${r.ad_id}, 'compare')">🔎</button>`)}
     </table></div>`;
 }
 
@@ -657,19 +657,19 @@ function renderQueue(d) {
   const pend = (d.pending || []).map(t => {
     const pct = t.total ? Math.round((t.done || 0) / t.total * 100) : 0;
     return `<div class="q-item">
-      <div class="crit">⏳ ${esc((t.criteria || "bez kritérií").slice(0, 60))}</div>
-      <div class="meta">${esc(t.model || "?")} · ${t.started_at ? t.done + "/" + t.total : "čaká v rade"} · ${ago(t.created_at)}</div>
+      <div class="crit">⏳ ${esc((t.criteria || "no criteria").slice(0, 60))}</div>
+      <div class="meta">${esc(t.model || "?")} · ${t.started_at ? t.done + "/" + t.total : "waiting in line"} · ${ago(t.created_at)}</div>
       <div class="prog"><div class="fill" style="width:${pct}%"></div></div>
     </div>`;
   }).join("");
   const fin = (d.finished || []).map(t => `
     <div class="q-item">
-      <div class="crit">${t.error ? "⚠️" : "✅"} ${esc((t.criteria || "bez kritérií").slice(0, 60))}</div>
-      <div class="meta">${t.error ? esc(t.error) : (t.done || 0) + "/" + (t.total || 0) + " áut"} · ${ago(t.done_at)}</div>
+      <div class="crit">${t.error ? "⚠️" : "✅"} ${esc((t.criteria || "no criteria").slice(0, 60))}</div>
+      <div class="meta">${t.error ? esc(t.error) : (t.done || 0) + "/" + (t.total || 0) + " cars"} · ${ago(t.done_at)}</div>
     </div>`).join("");
   content.innerHTML = `
-    <div class="section"><h2>Čaká / beží (${(d.pending || []).length})</h2>${pend || '<div class="muted">Fronta je prázdna ✅</div>'}</div>
-    <div class="section"><h2>Posledné dokončené</h2>${fin || '<div class="muted">Zatiaľ nič</div>'}</div>`;
+    <div class="section"><h2>Waiting / running (${(d.pending || []).length})</h2>${pend || '<div class="muted">Queue is empty ✅</div>'}</div>
+    <div class="section"><h2>Recently finished</h2>${fin || '<div class="muted">Nothing yet</div>'}</div>`;
 }
 
 function renderStats(d) {
@@ -683,34 +683,34 @@ function renderStats(d) {
   const cost = d.cost || {};
   const ct = cost.total || {};
   const funnelHtml = ["scraped", "evaluated", "notified", "saved"]
-    .map(k => `<div class="card kpi"><div class="num">${funnel[k] ?? "?"}</div><div class="lbl">${{scraped: "📦 nazbierané", evaluated: "🤖 ohodnotené", notified: "🔔 upozornené", saved: "💾 uložené"}[k]}</div></div>`).join("");
+    .map(k => `<div class="card kpi"><div class="num">${funnel[k] ?? "?"}</div><div class="lbl">${{scraped: "📦 collected", evaluated: "🤖 scored", notified: "🔔 notified", saved: "💾 saved"}[k]}</div></div>`).join("");
   const dropsHtml = drops.map(x => `
     <tr><td class="trend-down"><b>−${x.pct} %</b></td>
     <td><a href="${esc(x.url)}" target="_blank">${esc(x.title)}</a><br><span class="muted">${eur(x.prev)} → ${eur(x.now_price)} · ${esc(x.city || "")}</span></td></tr>`).join("");
-  const costHtml = `<div class="kv"><span class="k">hodnotení (${ct.n ?? 0})</span><span class="v">${ct.unknown ? ct.unknown + " bez dát · " : ""}${Number(ct.cost_usd || 0).toFixed(4)} $</span></div>` +
-    `<div class="kv"><span class="k">tokeny prompt/completion</span><span class="v">${ct.prompt_tokens ?? 0} / ${ct.completion_tokens ?? 0}</span></div>` +
+  const costHtml = `<div class="kv"><span class="k">scored (${ct.n ?? 0})</span><span class="v">${ct.unknown ? ct.unknown + " unknown · " : ""}${Number(ct.cost_usd || 0).toFixed(4)} $</span></div>` +
+    `<div class="kv"><span class="k">prompt/completion tokens</span><span class="v">${ct.prompt_tokens ?? 0} / ${ct.completion_tokens ?? 0}</span></div>` +
     ((cost.by_model || []).map(m =>
       `<div class="kv"><span class="k">${esc(m.model)}</span><span class="v">${m.n}× · ${Number(m.cost_usd || 0).toFixed(4)} $</span></div>`
     ).join(""));
   content.innerHTML = `
     <div class="grid">
-      <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 inzerátov</div></div>
-      <div class="card kpi"><div class="num">${s.evaluated ?? 0}</div><div class="lbl">🤖 ohodnotených</div></div>
-      <div class="card kpi"><div class="num">${eur(p.median)}</div><div class="lbl">💰 medián cien</div></div>
-      <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 zliav / 7 dní</div></div>
+      <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 listings</div></div>
+      <div class="card kpi"><div class="num">${s.evaluated ?? 0}</div><div class="lbl">🤖 scored</div></div>
+      <div class="card kpi"><div class="num">${eur(p.median)}</div><div class="lbl">💰 median price</div></div>
+      <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 discounts / 7 days</div></div>
     </div>
-    <div class="section card"><h2>Nové za 7 dní</h2>${spark(counts)}</div>
-    <div class="section card"><h2>Rozdelenie AI skóre</h2>${bars([{k: "90+", v: (s.bands || {}).b90 || 0}, {k: "80–89", v: (s.bands || {}).b80 || 0}, {k: "70–79", v: (s.bands || {}).b70 || 0}, {k: "50–69", v: (s.bands || {}).b50 || 0}, {k: "<50", v: (s.bands || {}).b0 || 0}], "k", "v")}</div>
-    <div class="section card"><h2>💰 Histogram cien</h2>${bars(d.histogram || [], "bucket", "n", r => eur(r.lo) + "–" + eur(r.hi))}</div>
-    <div class="section card"><h2>🏷 Top značky</h2>${bars(d.top_makes || [], "make", "n", r => esc(r.make) + " (" + eur(r.median) + ")")}</div>
-    <div class="section card"><h2>⭐ Skóre vs. cena (medián)</h2>${bars(d.score_vs_price || [], "band", "median_price", r => r.band + " · " + r.n + "×")}</div>
-    <div class="section card"><h2>📈 Nové za 30 dní (${t30.reduce((a, x) => a + x[1], 0)})</h2>${spark(t30.map(x => x[1]))}</div>
-    <div class="section card"><h2>🤖 Tempo hodnotenia (14 dní)</h2>${spark(cov.map(x => x[1]))}<div class="muted">celkom ${cov.reduce((a, x) => a + x[1], 0)} hodnotení</div></div>
-    <div class="section card"><h2>📉 Najväčšie zľavy (30 dní)</h2>${dropsHtml ? `<table>${dropsHtml}</table>` : '<div class="muted">Zatiaľ žiadne.</div>'}</div>
+    <div class="section card"><h2>New in 7 days</h2>${spark(counts)}</div>
+    <div class="section card"><h2>AI score distribution</h2>${bars([{k: "90+", v: (s.bands || {}).b90 || 0}, {k: "80–89", v: (s.bands || {}).b80 || 0}, {k: "70–79", v: (s.bands || {}).b70 || 0}, {k: "50–69", v: (s.bands || {}).b50 || 0}, {k: "<50", v: (s.bands || {}).b0 || 0}], "k", "v")}</div>
+    <div class="section card"><h2>💰 Price histogram</h2>${bars(d.histogram || [], "bucket", "n", r => eur(r.lo) + "–" + eur(r.hi))}</div>
+    <div class="section card"><h2>🏷 Top makes</h2>${bars(d.top_makes || [], "make", "n", r => esc(r.make) + " (" + eur(r.median) + ")")}</div>
+    <div class="section card"><h2>⭐ Score vs. price (median)</h2>${bars(d.score_vs_price || [], "band", "median_price", r => r.band + " · " + r.n + "×")}</div>
+    <div class="section card"><h2>📈 New in 30 days (${t30.reduce((a, x) => a + x[1], 0)})</h2>${spark(t30.map(x => x[1]))}</div>
+    <div class="section card"><h2>🤖 Scoring pace (14 days)</h2>${spark(cov.map(x => x[1]))}<div class="muted">${cov.reduce((a, x) => a + x[1], 0)} scored in total</div></div>
+    <div class="section card"><h2>📉 Biggest discounts (30 days)</h2>${dropsHtml ? `<table>${dropsHtml}</table>` : '<div class="muted">None yet.</div>'}</div>
     <div class="section"><h2>🔄 Pipeline funnel</h2><div class="grid">${funnelHtml}</div></div>
-    <div class="section card"><h2>💵 Cena AI hodnotenia (30 dní)</h2>${costHtml}<div class="muted">Staré hodnotenia bez tokenových dát sa rátajú ako „bez dát“.</div></div>
-    <div class="section card"><h2>Ceny</h2>
-      <div class="muted">min ${eur(p.mn)} · medián ${eur(p.median)} · max ${eur(p.mx)}</div></div>`;
+    <div class="section card"><h2>💵 AI scoring cost (30 days)</h2>${costHtml}<div class="muted">Old scores without token data count as “unknown”.</div></div>
+    <div class="section card"><h2>Prices</h2>
+      <div class="muted">min ${eur(p.mn)} · median ${eur(p.median)} · max ${eur(p.mx)}</div></div>`;
 }
 
 function renderProfiles(d) {
@@ -722,19 +722,19 @@ function renderProfiles(d) {
       <button class="tgl ${s.notify_enabled ? "on" : ""}" onclick="toggleSearch('${esc(s.name.replace(/'/g, "\\'"))}', ${!s.notify_enabled})">${s.notify_enabled ? "🔔" : "🔕"}</button></span>
     </div>`).join("");
   content.innerHTML = `
-    <div class="section card"><h2>🎯 Aktívny profil</h2>
-      <div class="kv"><span class="k">kritériá</span><span class="v">${esc(a.criteria || "—")}</span></div>
+    <div class="section card"><h2>🎯 Active profile</h2>
+      <div class="kv"><span class="k">criteria</span><span class="v">${esc(a.criteria || "—")}</span></div>
       <div class="kv"><span class="k">model</span><span class="v">${esc(a.model || "—")}</span></div>
-      <div class="switch"><span>⭐ Min. skóre (${a.min_score ?? "—"})</span>
+      <div class="switch"><span>⭐ Min. score (${a.min_score ?? "—"})</span>
         <span><button class="tgl" onclick="setScore(${(a.min_score ?? 60) - 5})">−5</button>
         <button class="tgl" onclick="setScore(${(a.min_score ?? 60) + 5})">+5</button></span></div>
-      <div class="switch"><span>📸 Fotky v notifikáciách</span>
-        <button class="tgl ${a.show_photo ? "on" : ""}" onclick="setPhotos(${!a.show_photo})">${a.show_photo ? "zapnuté" : "vypnuté"}</button></div>
-      <div class="switch"><span>🔔 Upozornenia (všetky)</span>
-        <button class="tgl ${a.notify_enabled ? "on" : ""}" onclick="setNotify(${!a.notify_enabled})">${a.notify_enabled ? "zapnuté" : "vypnuté"}</button></div>
+      <div class="switch"><span>📸 Photos in notifications</span>
+        <button class="tgl ${a.show_photo ? "on" : ""}" onclick="setPhotos(${!a.show_photo})">${a.show_photo ? "on" : "off"}</button></div>
+      <div class="switch"><span>🔔 Alerts (all)</span>
+        <button class="tgl ${a.notify_enabled ? "on" : ""}" onclick="setNotify(${!a.notify_enabled})">${a.notify_enabled ? "on" : "off"}</button></div>
     </div>
-    <div class="section card"><h2>🔎 Uložené hľadania (${(d.searches || []).length})</h2>
-      ${rows || '<div class="muted">Zatiaľ žiadne — ulož si hľadanie v bote cez /search.</div>'}</div>`;
+    <div class="section card"><h2>🔎 Saved searches (${(d.searches || []).length})</h2>
+      ${rows || '<div class="muted">None yet — save a search in the bot with /search.</div>'}</div>`;
 }
 async function useProfile(name) {
   const r = await post("use", { name });

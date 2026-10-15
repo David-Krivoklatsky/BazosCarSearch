@@ -128,4 +128,4 @@ def test_handler_error_replies_to_chat(monkeypatch) -> None:
 
     assert status == 200
     assert b"handled with error" in body
-    assert sent and "Chyba" in sent[0]
+    assert sent and "Something failed" in sent[0]

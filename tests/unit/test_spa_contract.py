@@ -55,21 +55,21 @@ def test_spa_has_gallery_description_and_filters() -> None:
 
 
 def test_spa_renders_stats_v2_sections() -> None:
-    for marker in ("Histogram cien", "Top značky", "Porovnanie", "Pipeline funnel",
-                   "Cena AI hodnotenia", "Najväčšie zľavy", "Tempo hodnotenia"):
+    for marker in ("Price histogram", "Top makes", "Compare", "Pipeline funnel",
+                   "AI scoring cost", "Biggest discounts", "Scoring pace"):
         assert marker in HTML, f"missing stats section {marker}"
 
 
 def test_spa_benchmark_warns_on_small_n() -> None:
-    assert "málo dát" in HTML
+    assert "low data" in HTML
 
 
 def test_spa_saved_shows_alert_threshold() -> None:
-    assert "strážim pod" in HTML
+    assert "watching below" in HTML
 
 
 def test_spa_has_retry_and_empty_states() -> None:
-    assert "Skúsiť znova" in HTML
+    assert "Try again" in HTML
     assert "lastRetry" in HTML
 
 

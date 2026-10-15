@@ -36,7 +36,7 @@ class Listing(BaseModel):
 
 
 class DealEvaluation(BaseModel):
-    """LLM deal-score for one listing (Phase 3): AI ohodnotí inzerát + ``why``.
+    """LLM deal-score for one listing (Phase 3): AI scores the listing + ``why``.
 
     ``condition`` and ``target_offer`` are v2 additions: a short condition
     assessment and a suggested first offer (EUR) for negotiation. Both are

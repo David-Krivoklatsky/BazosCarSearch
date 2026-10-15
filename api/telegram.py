@@ -153,7 +153,7 @@ def app(environ, start_response):  # noqa: ANN001 — WSGI callable
             if chat_id and settings.telegram_bot_token:
                 async def _err() -> None:
                     async with TelegramNotifier(settings.telegram_bot_token, str(chat_id)) as ntf:
-                        await ntf.send_message("⚠️ Chyba pri spracovaní — skús to znova.")
+                        await ntf.send_message("⚠️ Something failed — please try again.")
 
                 asyncio.run(_err())
         except Exception:

@@ -46,7 +46,7 @@ def test_format_listing_includes_key_fields() -> None:
     assert "33 650 km" in text
     assert "Nitra" in text
     assert "88/100" in text
-    assert "Riziko" in text
+    assert "Risk" in text
     assert "turbo" in text
     # the bare URL is hidden — it only appears inside the <a href> hyperlink
     assert ">https://auto.bazos.sk" not in text
@@ -70,7 +70,7 @@ def test_format_message_escapes_html() -> None:
 
 def test_format_message_fallback_price() -> None:
     listing = _listing(price_eur=None, price_raw=None)
-    assert "Dohodou" in format_listing(listing)
+    assert "Ask" in format_listing(listing)
 
 
 def test_format_message_without_description() -> None:
@@ -170,11 +170,11 @@ async def test_answer_callback_acknowledges() -> None:
         return_value=Response(200, json={"ok": True})
     )
     async with TelegramNotifier("TOKEN", "42") as ntf:
-        ok = await ntf.answer_callback("123", "💾 Uložené ✅")
+        ok = await ntf.answer_callback("123", "💾 Saved ✅")
     assert ok is True
     body = json.loads(route.calls[0].request.content)
     assert body["callback_query_id"] == "123"
-    assert body["text"] == "💾 Uložené ✅"
+    assert body["text"] == "💾 Saved ✅"
 
 
 def test_notify_targets_new_ids_only() -> None:
