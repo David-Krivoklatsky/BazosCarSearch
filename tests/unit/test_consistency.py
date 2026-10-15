@@ -23,6 +23,7 @@ SLOVAK_ALLOWLIST = {
     "src/bazcar/llm/provider.py",  # SYSTEM_PROMPT — Slovak listings need it
     "src/bazcar/bot/classify.py",  # part-marker detection on Slovak text
     "src/bazcar/scrapers/bazos.py",  # Slovak page parsing
+    "src/bazcar/bot/formatting.py",  # backward-compat input aliases + Škoda example
     "src/bazcar/bot/daemon.py",  # input aliases only (checked separately)
     "src/bazcar/db/repository.py",  # make stoplist for Slovak titles
     "tests/fixtures/bazos_page.html",
@@ -109,6 +110,31 @@ def test_daemon_slovak_is_only_aliases_and_proper_nouns() -> None:
         if _SLOVAK_RE.search(stripped) and "token in {" not in line and "{" not in line:
             # non-literal Slovak (comments/docstrings) must be an allowed word
             assert DAEMON_ALLOWED.search(line), f"daemon.py:{i}: {line.strip()[:100]}"
+
+
+def test_no_plain_ascii_slovak_in_ui_files() -> None:
+    """Catch Slovak words without diacritics the diacritic regex misses.
+
+    (dohodou/zlyhal class of leftovers — the LLM prompt file is exempt.)
+    """
+    offenders: list[str] = []
+    for path in sorted((REPO / "src").rglob("*.py")):
+        rel = str(path.relative_to(REPO)).replace("\\", "/")
+        if rel in SLOVAK_ALLOWLIST:
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            low = line.lower()
+            for word in ("dohodou", "zlyhal", "z maxima", "bez dát", "bez dat"):
+                if word in low:
+                    offenders.append(f"{rel}:{i}: {line.strip()[:80]}")
+    for path in [REPO / "dashboard" / "index.html", REPO / "api" / "webapp.py",
+                 REPO / "api" / "telegram.py"]:
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            low = line.lower()
+            for word in ("dohodou", "zlyhal"):
+                if word in low:
+                    offenders.append(f"{path.name}:{i}: {line.strip()[:80]}")
+    assert not offenders, "plain-ASCII Slovak leftovers:\n" + "\n".join(offenders)
 
 
 def test_env_example_documents_all_settings() -> None:

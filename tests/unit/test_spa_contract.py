@@ -19,9 +19,11 @@ HTML = (Path(__file__).resolve().parent.parent.parent / "dashboard" / "index.htm
 
 
 def test_spa_covers_all_backend_views() -> None:
-    for view in ("overview", "inventory", "saved", "queue", "stats", "profiles"):
+    for view in ("listings", "saved", "insights", "profile"):
         assert f'data-view="{view}"' in HTML, f"missing tab for view {view}"
-        assert f"render{view.capitalize()}" in HTML or f"render{view.title()}" in HTML or view in HTML
+    # legacy tab/view names still resolve (old links, cached pages)
+    for legacy in ("overview", "inventory", "queue", "stats", "profiles"):
+        assert legacy in HTML, f"legacy view {legacy} not aliased"
     assert "openListing" in HTML  # listing detail
     assert "openCompare" in HTML  # compare
 
@@ -30,7 +32,8 @@ def test_spa_actions_match_backend() -> None:
     import api.webapp as webapp
 
     src = Path(webapp.__file__).read_text(encoding="utf-8")
-    for action in ("save", "unsave", "note", "use", "toggle_search", "notify", "score", "photos"):
+    for action in ("save", "unsave", "note", "alert", "criteria", "use",
+                   "toggle_search", "notify", "score", "photos"):
         assert f'"{action}"' in src, f"backend missing action {action}"
         assert action in HTML, f"SPA never calls action {action}"
 
@@ -56,7 +59,8 @@ def test_spa_has_gallery_description_and_filters() -> None:
 
 def test_spa_renders_stats_v2_sections() -> None:
     for marker in ("Price histogram", "Top makes", "Compare", "Pipeline funnel",
-                   "AI scoring cost", "Biggest discounts", "Scoring pace"):
+                   "AI scoring cost (30 days)", "Biggest discounts (30 days)",
+                   "Scoring pace (14 days)", "AI queue"):
         assert marker in HTML, f"missing stats section {marker}"
 
 

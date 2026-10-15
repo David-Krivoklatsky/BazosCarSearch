@@ -41,7 +41,7 @@ def _no_real_db(monkeypatch) -> None:
     async def _noop(self, chat_id: int, max_listings: int = 100, days: int = 3) -> bool:
         return True
 
-    monkeypatch.setattr(Bot, "_queue_rehodnotenie", _noop)
+    monkeypatch.setattr(Bot, "_queue_rescore", _noop)
 
 
 def _listing(ad_id: int, title: str, **over) -> Listing:
@@ -652,7 +652,7 @@ class _FakeRepo:
     async def fetch_price_history(self, ad_id, limit=10):
         return self.history
 
-    async def price_benchmark(self, make, year):
+    async def price_benchmark(self, make, year, model=None, mileage_km=None):
         return self.bench
 
     async def stats_overview(self, profile_key):

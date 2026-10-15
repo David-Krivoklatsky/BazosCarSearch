@@ -24,7 +24,7 @@ class SearchTemplate:
 
 TEMPLATES: list[SearchTemplate] = [
     SearchTemplate(
-        key="rodinne",
+        key="family",
         emoji="👨‍👩‍👧",
         name="Family",
         description="wagon/SUV, safe, under 150,000 km, €2,000–8,000",
@@ -33,7 +33,7 @@ TEMPLATES: list[SearchTemplate] = [
         min_score=65,
     ),
     SearchTemplate(
-        key="mesto",
+        key="city",
         emoji="🏙️",
         name="City",
         description="small car, low fuel use, under 120,000 km, €1,000–5,000",
@@ -42,7 +42,7 @@ TEMPLATES: list[SearchTemplate] = [
         min_score=60,
     ),
     SearchTemplate(
-        key="dialnica",
+        key="highway",
         emoji="🛣️",
         name="Highway",
         description="diesel, under 200,000 km, over 80 kW, €3,000–12,000",
@@ -51,7 +51,7 @@ TEMPLATES: list[SearchTemplate] = [
         min_score=65,
     ),
     SearchTemplate(
-        key="prve",
+        key="first",
         emoji="🎓",
         name="First car",
         description="cheap, reliable, simple, €800–3,000",
@@ -60,7 +60,7 @@ TEMPLATES: list[SearchTemplate] = [
         min_score=55,
     ),
     SearchTemplate(
-        key="prilezitost",
+        key="bargain",
         emoji="💎",
         name="Bargain",
         description="well under market, quick sale, no price filter",
@@ -71,7 +71,18 @@ TEMPLATES: list[SearchTemplate] = [
 ]
 
 
+_KEY_ALIASES = {
+    "rodinne": "family",
+    "mesto": "city",
+    "dialnica": "highway",
+    "prve": "first",
+    "prilezitost": "bargain",
+}
+
+
 def get_template(key: str) -> SearchTemplate | None:
+    """Look up by English key; old Slovak keys still resolve (old buttons)."""
+    key = _KEY_ALIASES.get(key, key)
     for template in TEMPLATES:
         if template.key == key:
             return template

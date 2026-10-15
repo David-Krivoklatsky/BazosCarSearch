@@ -241,10 +241,13 @@ class UserStore:
     async def set_search_notify(
         self, chat_id: int, name: str, enabled: bool
     ) -> bool:
-        """Toggle deal alerts for one saved search; False = search not found."""
+        """Toggle deal alerts for one saved search; False = search not found.
+
+        Name matching is case-insensitive (same as ``/use`` and the webapp).
+        """
         result = await self._require().execute(
             "UPDATE user_searches SET notify_enabled = $3, updated_at = now()"
-            " WHERE chat_id = $1 AND name = $2",
+            " WHERE chat_id = $1 AND LOWER(name) = LOWER($2)",
             chat_id,
             name,
             enabled,
@@ -323,6 +326,14 @@ class UserStore:
             chat_ids,
         )
         return {r["chat_id"]: r["alert_below"] for r in rows}
+
+    async def list_saved_ids(self, chat_id: int) -> set[int]:
+        """Just the saved ad ids (cheap — no listing join, for badge state)."""
+        rows = await self._require().fetch(
+            "SELECT ad_id FROM saved_listings WHERE chat_id = $1",
+            chat_id,
+        )
+        return {r["ad_id"] for r in rows}
 
     async def list_saved(self, chat_id: int) -> list[SavedListing]:
         rows = await self._require().fetch(

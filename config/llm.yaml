@@ -19,9 +19,9 @@ base_url: "https://openrouter.ai/api/v1"
 model: "~deepseek/deepseek-v4-flash-latest"
 
 # --- LLM parameters (sampling config) ---
-temperature: 0.0 # 0..2 — 0 = deterministické skórovanie
-max_tokens: 2048 # reasoning model potrebuje rezervu na chain-of-thought + JSON
-top_p: 0.95 # 0..1, jadrové vzorkovanie
+temperature: 0.0 # 0..2 — 0 = deterministic scoring
+max_tokens: 2048 # reasoning models need headroom for chain-of-thought + JSON
+top_p: 0.95 # 0..1, nucleus sampling
 frequency_penalty: 0.0 # -2..2
 presence_penalty: 0.0 # -2..2
 

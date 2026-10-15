@@ -22,11 +22,46 @@ from typing import Any
 
 import httpx
 
+from bazcar.bot.commands import (  # noqa: F401 — re-exported for callers/tests
+    _HIDDEN_COMMANDS,
+    BOT_COMMANDS,
+    COMMAND_HELP,
+    HELP_TEXT,
+    MENU_KEYBOARD,
+)
+from bazcar.bot.formatting import (  # noqa: F401 — re-exported for callers/tests
+    _CAR_SORT,
+    _CAR_STATUS,
+    _SORT_LABELS,
+    _STATUS_LABELS,
+    CARS_PAGE_SIZE,
+    EST_SECONDS_PER_EVAL,
+    _em,
+    _em_url,
+    _row_to_listing,
+    bar,
+    build_car_card,
+    build_cars_page,
+    build_queue_text,
+    build_stats_text,
+    cars_callback_encode,
+    cars_keyboard,
+    extract_make,
+    fmt_eur,
+    fmt_km,
+    parse_cars_args,
+    parse_cars_callback,
+    parse_eval_args,
+    parse_show_args,
+    sparkline,
+    stale_line,
+    time_ago,
+)
 from bazcar.bot.store import UserStore
 from bazcar.bot.templates import TEMPLATES, get_template
 from bazcar.config.settings import get_settings, load_llm_config
 from bazcar.core.exceptions import ConfigError
-from bazcar.core.models import DealEvaluation, Listing
+from bazcar.core.models import Listing
 from bazcar.core.profiles import profile_key
 from bazcar.db.repository import ListingRepository
 from bazcar.notify.telegram import TelegramNotifier
@@ -34,679 +69,6 @@ from bazcar.notify.telegram import TelegramNotifier
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org"
-
-# Registered via Telegram setMyCommands -> typing "/" shows an autocomplete
-# menu with these descriptions in every Telegram client.
-#
-# Visible set (22): the daily-driver commands. The rest still work as hidden
-# aliases for backward compatibility (old messages, muscle memory, tests):
-# /score, /photos, /models, /note, /alert, /digest, /status.
-BOT_COMMANDS: list[dict[str, str]] = [
-    {"command": "menu", "description": "🏠 Main menu — buttons for everything"},
-    {"command": "cars", "description": "🚗 All cars (even without AI score)"},
-    {"command": "car", "description": "🔍 Listing detail: /car ad_id"},
-    {"command": "show", "description": "⭐ Top-rated deals"},
-    {"command": "criteria", "description": "What I'm looking for — AI scores by this"},
-    {"command": "templates", "description": "📦 Ready-made searches (family, city…)"},
-    {"command": "search", "description": "Save a search: /search name: criteria"},
-    {"command": "searches", "description": "My saved searches"},
-    {"command": "use", "description": "Activate a saved search"},
-    {"command": "filter", "description": "Bazoš filters: query, price, dist, psc"},
-    {"command": "settings", "description": "⚙️ Settings & status"},
-    {"command": "eval", "description": "Re-score cars for the active search"},
-    {"command": "queue", "description": "⏳ AI evaluation queue"},
-    {"command": "stats", "description": "📊 Catalog and market stats"},
-    {"command": "health", "description": "🩺 Pipeline health (last run)"},
-    {"command": "dashboard", "description": "📱 Open the web dashboard"},
-    {"command": "export", "description": "📄 Download listings as CSV"},
-    {"command": "save", "description": "Save a listing for later (ad_id)"},
-    {"command": "saved", "description": "My saved listings + discounts"},
-    {"command": "unsave", "description": "Remove a saved listing"},
-    {"command": "model", "description": "AI model (list / switch)"},
-    {"command": "help", "description": "Help — /command help for details"},
-]
-
-# Hidden aliases: accepted by _command but not advertised in the menu.
-_HIDDEN_COMMANDS = {"score", "photos", "models", "note", "alert", "digest", "status"}
-
-
-# ---------------------------------------------------------------------------
-# Pure formatting helpers (unit-tested, no I/O)
-# ---------------------------------------------------------------------------
-
-CARS_PAGE_SIZE = 8
-
-# Compact tokens used in paginated /cars callback data.
-_CAR_STATUS = {"a": "all", "u": "unevaluated", "r": "rated"}
-_CAR_SORT = {"n": "newest", "c": "price_asc", "e": "price_desc", "s": "score"}
-
-_STATUS_LABELS = {"all": "all", "unevaluated": "unscored", "rated": "scored"}
-_SORT_LABELS = {
-    "newest": "newest",
-    "price_asc": "cheapest",
-    "price_desc": "priciest",
-    "score": "top score",
-}
-
-_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
-
-
-def sparkline(values: list[int]) -> str:
-    """Render a tiny bar sparkline (e.g. ▁▃▅█) from daily counts."""
-    if not values:
-        return ""
-    peak = max(values) or 1
-    return "".join(
-        _SPARK_BLOCKS[min(7, round(v / peak * 7))] if v else _SPARK_BLOCKS[0] for v in values
-    )
-
-
-def bar(value: int, total: int, width: int = 10) -> str:
-    """Render a unicode progress bar like ▓▓▓▓▓▓░░░░."""
-    if total <= 0:
-        return "░" * width
-    filled = round(value / total * width)
-    return "▓" * filled + "░" * (width - filled)
-
-
-def fmt_eur(value: Any) -> str:
-    """Format a price as '12 500 €' (None-safe)."""
-    if value is None:
-        return "dohodou"
-    try:
-        return f"{int(value):,} €".replace(",", " ")
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def fmt_km(value: Any) -> str:
-    if value is None:
-        return "? km"
-    return f"{int(value):,} km".replace(",", " ")
-
-
-def time_ago(dt: Any) -> str:
-    """Human age of a timestamp ('12 min ago') — accepts datetime or str."""
-    if dt is None:
-        return "never"
-    if isinstance(dt, str):
-        try:
-            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
-        except ValueError:
-            return str(dt)[:16]
-    if getattr(dt, "tzinfo", None) is None:
-        dt = dt.replace(tzinfo=UTC)
-    seconds = max(0, (datetime.now(UTC) - dt).total_seconds())
-    if seconds < 120:
-        return "just now"
-    minutes = int(seconds // 60)
-    if minutes < 60:
-        return f"{minutes} min ago"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours} h ago"
-    return f"{hours // 24} d ago"
-
-
-def extract_make(title: str) -> str | None:
-    """Crude make extraction: the first word of the title ('Škoda Octavia…')."""
-    match = re.match(r"[A-Za-zÁ-Žá-ž0-9]+", (title or "").strip())
-    if not match:
-        return None
-    make = match.group(0)
-    return make if len(make) >= 2 else None
-
-
-def parse_cars_args(arg: str) -> tuple[str, str, int]:
-    """Parse ``/cars [status] [sort] [days N]`` -> (status, sort, days).
-
-    "" -> ("all", "newest", 7); "unevaluated" -> ("unevaluated", "newest", 7);
-    "cheap days 30" -> ("all", "price_asc", 30). Slovak aliases included.
-    """
-    status, sort, days = "all", "newest", 7
-    tokens = (arg or "").lower().split()
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token in {"unevaluated", "neohodnotene", "neohodnotené", "fresh", "nove", "nové"}:
-            status = "unevaluated"
-        elif token in {"rated", "ohodnotene", "ohodnotené", "scored"}:
-            status = "rated"
-        elif token in {"cheap", "najlacnejsie", "najlacnejšie", "lacne"}:
-            sort = "price_asc"
-        elif token in {"expensive", "najdrahsie", "najdrahšie", "drahe", "drahé"}:
-            sort = "price_desc"
-        elif token in {"score", "skore", "skóre", "best", "najlepsie", "najlepšie"}:
-            sort = "score"
-        elif token in {"newest", "najnovsie", "najnovšie"}:
-            sort = "newest"
-        elif token in {"days", "dni"} and i + 1 < len(tokens) and tokens[i + 1].isdigit():
-            days = max(1, min(int(tokens[i + 1]), 3650))
-            i += 1
-        elif token.isdigit():
-            days = max(1, min(int(token), 3650))
-        i += 1
-    return status, sort, days
-
-
-def cars_callback_encode(status: str, sort: str, days: int, offset: int) -> str:
-    s_code = next(k for k, v in _CAR_STATUS.items() if v == status)
-    o_code = next(k for k, v in _CAR_SORT.items() if v == sort)
-    return f"c:{s_code}:{o_code}:{days}:{offset}"
-
-
-def parse_cars_callback(data: str) -> tuple[str, str, int, int] | None:
-    """Decode ``c:<status>:<sort>:<days>:<offset>`` back to view parameters."""
-    try:
-        _, s_code, o_code, days, offset = data.split(":")
-        return _CAR_STATUS[s_code], _CAR_SORT[o_code], int(days), int(offset)
-    except (ValueError, KeyError):
-        return None
-
-
-def build_cars_page(
-    rows: list[dict], *, total: int, offset: int, days: int, status: str, sort: str
-) -> str:
-    """Render one page of the /cars catalog (compact, one line per ad)."""
-    head = (
-        f"<b>🚗 Cars {offset + 1}–{offset + len(rows)} of {total}</b> "
-        f"<i>({_STATUS_LABELS[status]}, {_SORT_LABELS[sort]}, {days} days)</i>\n"
-    )
-    lines = []
-    for row in rows:
-        score = row.get("score")
-        is_car = row.get("is_car")
-        if score is None:
-            badge = "⏳"
-        elif is_car is False:
-            badge = "🛠"
-        else:
-            badge = f"⭐{score}"
-        bits = [fmt_eur(row.get("price_eur"))]
-        if row.get("year"):
-            bits.append(str(row["year"]))
-        if row.get("mileage_km") is not None:
-            bits.append(fmt_km(row["mileage_km"]))
-        if row.get("city"):
-            bits.append(_em(str(row["city"])))
-        title = _em(str(row["title"]))[:60]
-        lines.append(
-            f"{badge} <a href=\"{_em_url(row['url'])}\">{title}</a>\n"
-            f"    {' · '.join(bits)} · 🆔 {row['ad_id']}"
-        )
-    tail = "\n<i>/car &lt;id&gt; — detail · /export — CSV · /dashboard — charts</i>"
-    return head + "\n".join(lines) + tail
-
-
-def cars_keyboard(status: str, sort: str, days: int, offset: int, total: int) -> dict:
-    """Prev/next navigation for the /cars pager (edit-in-place)."""
-    buttons = []
-    if offset > 0:
-        prev_offset = max(0, offset - CARS_PAGE_SIZE)
-        buttons.append(
-            {"text": "◀️ Previous", "callback_data": cars_callback_encode(status, sort, days, prev_offset)}
-        )
-    if offset + CARS_PAGE_SIZE < total:
-        next_offset = offset + CARS_PAGE_SIZE
-        buttons.append(
-            {"text": "Next ▶️", "callback_data": cars_callback_encode(status, sort, days, next_offset)}
-        )
-    return {"inline_keyboard": [buttons] if buttons else []}
-
-
-def stale_line(last_seen_at: str | None, now: datetime | None = None) -> str | None:
-    """Staleness transparency: flag ads not seen in recent scrapes.
-
-    "Not seen recently" is NOT proof of sale — the card says so explicitly.
-    """
-    if not last_seen_at:
-        return None
-    try:
-        seen = last_seen_at if isinstance(last_seen_at, datetime) else datetime.fromisoformat(
-            str(last_seen_at).replace("Z", "+00:00")
-        )
-    except ValueError:
-        return None
-    if seen.tzinfo is None:
-        seen = seen.replace(tzinfo=UTC)
-    ref = now or datetime.now(UTC)
-    days = max(0, (ref - seen).days)
-    if days <= 7:
-        return None
-    return (
-        f"🕸 Last seen {days} days ago — the ad may be gone "
-        "(sold/removed), but that's not certain."
-    )
-
-
-def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
-    """Render the /car detail card (rich, with price history + benchmark)."""
-    lines = [f"<b>{_em(str(row['title']))}</b>"]
-    lines.append(f"💰 {fmt_eur(row.get('price_eur'))}")
-    meta = []
-    if row.get("year"):
-        meta.append(f"🗓 {row['year']}")
-    if row.get("mileage_km") is not None:
-        meta.append(f"🛣 {fmt_km(row['mileage_km'])}")
-    if row.get("city"):
-        meta.append(f"📍 {_em(str(row['city']))}")
-    if row.get("views") is not None:
-        meta.append(f"👁 {row['views']}")
-    if meta:
-        lines.append(" · ".join(meta))
-    if row.get("published_date"):
-        lines.append(f"📅 Listed {row['published_date']}")
-    stale = stale_line(row.get("last_seen_at"))
-    if stale:
-        lines.append(stale)
-
-    if row.get("score") is not None:
-        lines.append("")
-        lines.append(f"⭐ <b>{row['score']}/100</b> — {_em(row.get('why') or '')}")
-        if row.get("risk"):
-            lines.append(f"⚠️ <i>Risk:</i> {_em(row['risk'])}")
-        if row.get("condition"):
-            lines.append(f"🔧 <i>Condition:</i> {_em(row['condition'])}")
-        if row.get("target_offer"):
-            lines.append(f"🤝 <i>First offer:</i> {fmt_eur(row['target_offer'])}")
-        if row.get("eval_model"):
-            lines.append(f"<i>model: {_em(str(row['eval_model']))}</i>")
-    else:
-        lines.append("")
-        lines.append("⏳ <i>No AI score yet — queue it with /eval</i>")
-
-    points = [h for h in history if h.get("price_eur") is not None]
-    if len(points) >= 2:
-        first, last = points[0], points[-1]
-        try:
-            change = round((float(last["price_eur"]) / float(first["price_eur"]) - 1) * 100)
-            arrow = "📉" if change < 0 else "📈"
-            lines.append(
-                f"{arrow} Price trend: {fmt_eur(first['price_eur'])} → "
-                f"{fmt_eur(last['price_eur'])} ({change:+d} %)"
-            )
-        except (TypeError, ValueError, ZeroDivisionError):
-            pass
-
-    if bench and bench.get("n") and row.get("price_eur") is not None:
-        median = bench.get("median")
-        if median:
-            try:
-                diff = round((float(row["price_eur"]) / float(median) - 1) * 100)
-                verdict = "below median" if diff < 0 else "above median"
-                tag = f"n={bench['n']}"
-                if bench["n"] < 3:
-                    tag += ", low data ⚠️"
-                elif bench.get("trimmed"):
-                    tag += ", outliers removed"
-                lines.append(
-                    f"📊 Market ({tag}, year ±2): median {fmt_eur(int(median))} "
-                    f"— this one {abs(diff)} % {verdict}"
-                )
-            except (TypeError, ValueError, ZeroDivisionError):
-                pass
-    lines.append(f"🆔 {row['ad_id']}")
-    lines.append(f"<a href=\"{_em_url(row['url'])}\">🔗 Open listing</a>")
-    return "\n".join(lines)
-
-
-def build_stats_text(stats: dict, p_key: str) -> str:
-    """Render the /stats message: totals, coverage, sparkline, score bands."""
-    total = stats["total"]
-    evaluated = stats["evaluated"]
-    coverage = round(evaluated / total * 100) if total else 0
-    lines = ["<b>📊 Catalog stats</b>", ""]
-    lines.append(f"📦 Listings in database: <b>{total}</b>")
-    lines.append(
-        f"🤖 Scored (your profile): <b>{evaluated}</b> "
-        f"{bar(evaluated, total)} {coverage} %"
-    )
-    price = stats.get("price") or {}
-    if price.get("median") is not None:
-        lines.append(
-            f"💰 Prices: median <b>{fmt_eur(int(price['median']))}</b>, "
-            f"min {fmt_eur(price.get('mn'))}, max {fmt_eur(price.get('mx'))}"
-        )
-    new_by_day = stats.get("new_by_day") or []
-    if new_by_day:
-        counts = [n for _, n in new_by_day]
-        lines.append(
-            f"🆕 New in 7 days: <b>{sum(counts)}</b>  {sparkline(counts)} "
-            f"<i>({new_by_day[0][0][5:]} – {new_by_day[-1][0][5:]})</i>"
-        )
-    lines.append(f"📉 Discounts in 7 days: <b>{stats.get('drops_7d', 0)}</b>")
-    bands = stats.get("bands") or {}
-    band_total = sum(bands.values())
-    if band_total:
-        lines.append("")
-        lines.append("<b>Score (your profile)</b>")
-        for label, key in (("90+", "b90"), ("80–89", "b80"), ("70–79", "b70"),
-                           ("50–69", "b50"), ("<50", "b0")):
-            value = bands.get(key, 0)
-            lines.append(f"  {label:>6} {bar(value, band_total, 12)} {value}")
-    lines.append("")
-    lines.append(f"<i>profile: {p_key} · /cars — browse · /dashboard — charts</i>")
-    return "\n".join(lines)
-
-
-def build_queue_text(pending: list[dict], finished: list[dict]) -> str:
-    """Render the /queue message: running/queued tasks + recent outcomes."""
-    lines = ["<b>⏳ AI evaluation queue</b>", ""]
-    if not pending and not finished:
-        lines.append("Queue is empty — everything is scored. ✅")
-    for task in pending:
-        criteria = (task.get("criteria") or "no criteria").strip()
-        label = criteria if len(criteria) <= 40 else criteria[:37] + "…"
-        total = task.get("total") or 0
-        done = task.get("done") or 0
-        if task.get("started_at"):
-            progress = f"{bar(done, total)} {done}/{total}"
-        else:
-            progress = "waiting in line"
-        age = time_ago(task.get("created_at"))
-        attempts = task.get("attempts") or 0
-        retry = f", attempt {attempts}" if attempts else ""
-        lines.append(f"⏳ <i>{_em(label)}</i>\n    {progress} · {age}{retry}")
-        lines.append(f"    <code>{_em(task.get('model') or '?')}</code>")
-    if finished:
-        lines.append("")
-        lines.append("<b>Recently finished</b>")
-        for task in finished:
-            criteria = (task.get("criteria") or "no criteria").strip()
-            label = criteria if len(criteria) <= 40 else criteria[:37] + "…"
-            age = time_ago(task.get("done_at"))
-            if task.get("error"):
-                lines.append(f"⚠️ <i>{_em(label)}</i> — {_em(task['error'])} ({age})")
-            else:
-                lines.append(
-                    f"✅ <i>{_em(label)}</i> — {task.get('done') or 0}/{task.get('total') or 0} cars ({age})"
-                )
-    lines.append("")
-    lines.append("<i>The cron processes the queue every ~15 min. Speed up: button below.</i>")
-    return "\n".join(lines)
-
-
-MENU_KEYBOARD: dict = {
-    "inline_keyboard": [
-        [
-            {"text": "🚗 Browse cars", "callback_data": "menu:cars"},
-            {"text": "⭐ Top deals", "callback_data": "menu:show"},
-        ],
-        [
-            {"text": "📊 Stats", "callback_data": "menu:stats"},
-            {"text": "⏳ AI queue", "callback_data": "menu:queue"},
-        ],
-        [
-            {"text": "📦 Templates", "callback_data": "menu:templates"},
-            {"text": "💾 Saved", "callback_data": "menu:saved"},
-        ],
-        [
-            {"text": "📱 Dashboard", "callback_data": "menu:dashboard"},
-        ],
-        [
-            {"text": "⚙️ Settings", "callback_data": "menu:settings"},
-            {"text": "❓ Help", "callback_data": "menu:help"},
-        ],
-    ]
-}
-
-COMMAND_HELP: dict[str, str] = {
-    "/criteria": (
-        "<b>/criteria</b> — what I'm looking for\n\n"
-        "The AI scores every listing 0–100 against your criteria — "
-        "the more specific you are, the sharper the score.\n\n"
-        "<b>Usage:</b> <code>/criteria + text</code>\n"
-        "<b>Example:</b> <code>/criteria diesel, under 200,000 km, over 80 kW</code>\n\n"
-        "➡️ Changing it auto-queues a re-score of the last 3 days of cars "
-        "(you'll get a 🧮 report when it's done). New listings are scraped "
-        "under the active filters every ~15 min."
-    ),
-    "/search": (
-        "<b>/search</b> — save a named search\n\n"
-        "Saves the full profile: criteria + current Bazoš filters + min score.\n"
-        "Keep several searches (highway, city, family car…) and switch between them.\n\n"
-        "<b>Usage:</b> <code>/search name: criteria</code>\n"
-        "<b>Example:</b> <code>/search highway: diesel under 200k km</code>\n\n"
-        "💡 Set <code>/filter</code> and your score first, then save — "
-        "everything is kept in the profile."
-    ),
-    "/searches": (
-        "<b>/searches</b> — your saved searches\n\n"
-        "Shows all saved profiles (criteria + filters + score) with their "
-        "alert state. The 🔔/🔕 buttons toggle alerts per profile, "
-        "▶️ activates it (same as <code>/use name</code>)."
-    ),
-    "/alert": (
-        "<b>/alert</b> — watch a saved listing's price\n\n"
-        "<code>/alert 195315165 3000</code> — alert me once the price drops below €3,000\n"
-        "<code>/alert 195315165 off</code> — back to alerting on every discount\n"
-        "<code>/alert 195315165</code> — show the current threshold\n\n"
-        "Without a threshold I alert on every discount automatically."
-    ),
-    "/digest": (
-        "<b>/digest</b> — weekly summary\n\n"
-        "New listings, biggest discounts, top matches for your profile and the "
-        "AI queue state for the last 7 days. On demand, anytime."
-    ),
-    "/use": (
-        "<b>/use</b> — activate a saved search\n\n"
-        "Sets criteria, filters and min score from the saved profile and "
-        "auto-queues a re-score of recent cars under it.\n\n"
-        "<b>Usage:</b> <code>/use name</code>\n"
-        "<b>Example:</b> <code>/use highway</code>"
-    ),
-    "/settings": (
-        "<b>/settings</b> — settings & status\n\n"
-        "Shows your active criteria, model, min score, filters, scored-car "
-        "count, best score and whether a re-score is running — with buttons "
-        "to change score (±5), photos and alerts inline.\n\n"
-        "Replaces the old <code>/status</code>, <code>/score</code> and "
-        "<code>/photos</code> commands (they still work as aliases)."
-    ),
-    "/filter": (
-        "<b>/filter</b> — Bazoš filters (what gets scraped)\n\n"
-        "They filter results on Bazoš itself — controlling which listings load.\n"
-        "  <code>/filter query skoda octavia</code> — search text\n"
-        "  <code>/filter price 1500-4000</code> — price range in € (also 1500- or -4000)\n"
-        "  <code>/filter dist 100</code> — radius around the ZIP in km (set /filter psc first)\n"
-        "  <code>/filter psc 81101</code> — location\n"
-        "  <code>/filter clear</code> — back to defaults\n"
-        "  <code>/filter</code> — show active filters\n\n"
-        "💡 Mileage is not a Bazoš filter — the AI weighs it via criteria."
-    ),
-    "/show": (
-        "<b>/show</b> — matching listings from the recent window\n\n"
-        "Sends your top-rated listings (active search + score threshold) "
-        "as photo messages with buttons. Each message also carries the 📅 listing date.\n\n"
-        "<b>Usage:</b>\n"
-        "  <code>/show</code> — your default count, 3-day window\n"
-        "  <code>/show 20</code> — 20 cars (saved as the new default)\n"
-        "  <code>/show days 7</code> — 7-day window\n"
-        "  <code>/show 20 days 100</code> — combined\n\n"
-        "⚠️ The result count is driven mostly by the <b>score threshold</b> — a wider "
-        "window only adds older listings. The bot always prints how many matches exist in total.\n\n"
-        "💡 If the result is empty, the bot suggests the best score achieved."
-    ),
-    "/eval": (
-        "<b>/eval</b> — re-score cars for the active search\n\n"
-        "Queues a re-score under the active criteria and model. Already scored "
-        "cars (same search + model) are skipped — nothing is paid for twice.\n\n"
-        "<b>Usage:</b> (same parameters as /show)\n"
-        "  <code>/eval</code> — last 100 cars from 3 days\n"
-        "  <code>/eval 30</code> — 30 newest\n"
-        "  <code>/eval days 7</code> — 7-day window\n"
-        "  <code>/eval 50 days 7</code> — combined\n"
-        "  <code>/eval all</code> — everything in the DB (up to 500)\n\n"
-        "The bot immediately prints how many cars will be scored and a time "
-        "estimate. When done, you'll get a ✅ report."
-    ),
-    "/model": (
-        "<b>/model</b> — AI model (list / switch)\n\n"
-        "<b>Usage:</b>\n"
-        "  <code>/model</code> — current model + detail\n"
-        "  <code>/model ID</code> — set the model and start a re-score\n"
-        "  <code>/model info ID</code> — detail of one model\n"
-        "  <code>/models</code> — list all JSON-capable models (alias)\n\n"
-        "<b>Example:</b>\n"
-        "  <code>/model ~deepseek/deepseek-v4-flash-latest</code>\n\n"
-        "Key parameters (in /model info): 💰 price per 1M tokens, "
-        "⚡ requests/min (∞ = no limit), 🔡 context.\n\n"
-        "💡 If backfills throw 429s, switch to a model with ⚡∞."
-    ),
-    "/save": (
-        "<b>/save</b> — save a listing for later\n\n"
-        "<code>/save 195315165</code> (ad_id from a notification — the 🆔 line)\n\n"
-        "💡 Faster: the <b>💾 Save</b> button right on the listing. "
-        "Add a note with <code>/note id text</code>, watch the price with "
-        "<code>/alert id price</code>."
-    ),
-    "/saved": (
-        "<b>/saved</b> — my saved listings\n\n"
-        "Shows saved listings as links — tap and you're on Bazoš. Each shows "
-        "the current price, the drop from its max (🔔 watched automatically) "
-        "and your note.\n"
-        "Remove with <code>/unsave ad_id</code>, note with "
-        "<code>/note ad_id text</code>, price-watch with <code>/alert ad_id price</code>."
-    ),
-    "/note": (
-        "<b>/note</b> — note on a saved listing\n\n"
-        "<code>/note 195315165 call the seller after 6pm</code>\n\n"
-        "Empty text clears the note."
-    ),
-    "/unsave": (
-        "<b>/unsave</b> — remove a saved listing\n\n"
-        "<code>/unsave 195315165</code> (ad_id from /saved)"
-    ),
-    "/help": (
-        "<b>/help</b>\n\n"
-        "Overview of all commands. Per-command details: "
-        "<code>/command help</code> — e.g. <code>/filter help</code>."
-    ),
-    "/cars": (
-        "<b>/cars</b> — ALL cars in the database (even unscored)\n\n"
-        "Browse the whole collected catalog — unlike /show it needs no "
-        "AI score or score limit. Each row has a state: ⏳ unscored, "
-        "⭐n with AI score, 🛠 probably a spare part.\n\n"
-        "<b>Usage:</b>\n"
-        "  <code>/cars</code> — newest, 7 days\n"
-        "  <code>/cars unevaluated</code> — only unscored\n"
-        "  <code>/cars rated</code> — only scored\n"
-        "  <code>/cars cheap</code> / <code>expensive</code> / <code>score</code> — sort\n"
-        "  <code>/cars days 30</code> — 30-day window\n\n"
-        "Page with ◀️ ▶️. Detail: <code>/car id</code>."
-    ),
-    "/car": (
-        "<b>/car</b> — one listing's detail\n\n"
-        "<code>/car 195357798</code> (find ad_id in /cars or a notification)\n\n"
-        "Shows: price, year, mileage, city, date, AI review (score, reason, "
-        "risk, condition, first offer), price trend and the market comparison "
-        "(median of similar cars with sample size)."
-    ),
-    "/queue": (
-        "<b>/queue</b> — AI evaluation queue\n\n"
-        "What's waiting/running: per task the profile, model, progress "
-        "(x/y cars), age and attempt count. Below: recently finished and "
-        "failed tasks. The cron processes the queue every ~15 min."
-    ),
-    "/stats": (
-        "<b>/stats</b> — catalog stats\n\n"
-        "Listing count, AI coverage (your profile), price median/min/max, "
-        "new listings in 7 days (sparkline), discount count and score "
-        "distribution. Interactive charts: /dashboard."
-    ),
-    "/health": (
-        "<b>/health</b> — pipeline health\n\n"
-        "Last scraper run (when, how many pages/new/discounts/scored/ "
-        "notifications), queue and database state, plus 30-day AI spend vs "
-        "budget. If the last run is long overdue, something is broken."
-    ),
-    "/templates": (
-        "<b>/templates</b> — ready-made searches\n\n"
-        "Pick a template (family, city, highway, first car, bargain) "
-        "— sets criteria, filters and min score and starts a re-score. "
-        "Then fine-tune everything via /criteria and /filter."
-    ),
-    "/export": (
-        "<b>/export</b> — download listings as CSV\n\n"
-        "<code>/export</code> — last 30 days (max 200)\n"
-        "<code>/export 90</code> — last 90 days\n\n"
-        "The CSV includes your profile's AI score (when present)."
-    ),
-    "/dashboard": (
-        "<b>/dashboard</b> — web dashboard (Mini App)\n\n"
-        "Opens the graphical UI right inside Telegram: overview, inventory, "
-        "queue and stats with charts. Works once deployed on Vercel."
-    ),
-    "/menu": (
-        "<b>/menu</b> — main menu\n\n"
-        "Buttons for the most common actions: cars, top deals, stats, queue, "
-        "templates, saved, settings and help."
-    ),
-}
-
-
-def parse_show_args(arg: str) -> tuple[int | None, int]:
-    """Parse ``/show [N] [days N]`` -> (limit, days).
-
-    "" -> (None, 3) = use prefs default; "10" -> (10, 3); "days 7" -> (None, 7);
-    "20 days 7" -> (20, 7). "dni" is accepted as a Slovak alias.
-    """
-    tokens = (arg or "").lower().split()
-    limit: int | None = None
-    days = 3
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token in {"days", "dni"} and i + 1 < len(tokens) and tokens[i + 1].isdigit():
-            days = max(1, min(int(tokens[i + 1]), 3650))
-            i += 1
-        elif token.isdigit():
-            limit = max(1, min(int(token), 20))
-        i += 1
-    return limit, days
-
-
-def _row_to_listing(row: dict) -> Listing:
-    """Rebuild a Listing (+DealEvaluation when present) from a DB row.
-
-    Tolerates rows without an evaluation (catalog views): ``evaluation`` is
-    then None instead of a fabricated score.
-    """
-    evaluation = None
-    if row.get("score") is not None:
-        evaluation = DealEvaluation(
-            score=row["score"],
-            why=row.get("why") or "",
-            risk=row.get("risk") or "",
-            is_car=row.get("is_car") if row.get("is_car") is not None else True,
-            model=row.get("eval_model"),
-            condition=row.get("condition") or "",
-            target_offer=row.get("target_offer"),
-        )
-    return Listing(
-        ad_id=row["ad_id"],
-        url=row["url"],
-        title=row["title"],
-        price_eur=row["price_eur"],
-        city=row["city"],
-        image_urls=row["image_urls"],
-        year=row["year"],
-        mileage_km=row["mileage_km"],
-        description_preview=row.get("description_preview") or "",
-        description=row.get("description"),
-        published_date=row.get("published_date"),
-        evaluation=evaluation,
-    )
-
-
-def _em_url(url: str) -> str:
-    """Escape a URL for use inside an HTML attribute (href)."""
-    return url.replace("&", "&amp;").replace('"', "&quot;")
-
-
-def _em(text: str) -> str:
-    """HTML-escape a plain user-supplied string for Telegram parse_mode=HTML."""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 async def _dispatch_scrape() -> bool:
@@ -732,66 +94,6 @@ async def _dispatch_scrape() -> bool:
     except httpx.HTTPError:
         logger.warning("scrape dispatch failed", exc_info=True)
         return False
-
-HELP_TEXT = (
-    "<b>🤖 Bazcar — your used-car hunter</b>\n\n"
-    "Just tell me what you're looking for (e.g. <i>\"diesel under 200k km, over 80 kW\"</i>) "
-    "and every new listing arrives with an AI score of 0–100, a reason and a risk note.\n\n"
-    "<b>🚗 Catalog</b>\n"
-    "  /cars — all cars (even unscored), paged\n"
-    "  /car id — detail: price trend + market median\n"
-    "  /show — top-rated deals\n"
-    "  /export — download CSV\n\n"
-    "<b>🔎 What I want</b>\n"
-    "  /criteria — my requirements for AI scoring\n"
-    "  /templates — ready-made searches (family, city…)\n"
-    "  /filter — Bazoš filters (query, price, radius, ZIP)\n"
-    "  /settings — score threshold, photos, alerts\n\n"
-    "<b>⭐ Search profiles</b>\n"
-    "  /search name: criteria — save a profile\n"
-    "  /searches — list profiles\n"
-    "  /use name — activate a profile\n\n"
-    "<b>📊 Insights</b>\n"
-    "  /stats — catalog and market stats\n"
-    "  /queue — AI evaluation queue\n"
-    "  /health — pipeline health\n"
-    "  /dashboard — web charts (Mini App)\n"
-    "  /eval — re-score cars for a search\n\n"
-    "<b>💾 Saved</b>\n"
-    "  /save ad_id · /saved · /unsave ad_id\n"
-    "  (notes and price-watch live on the detail card and in /saved)\n\n"
-    "<b>⚙️ AI & settings</b>\n"
-    "  /model · /settings · /menu\n\n"
-    "💡 Details for each command: <code>/command help</code> (e.g. <code>/cars help</code>)\n"
-    "💡 Type <code>/</code> and Telegram autocompletes the commands."
-)
-
-
-EST_SECONDS_PER_EVAL = 20  # rough per-ad LLM latency on free reasoning models
-
-
-def parse_eval_args(arg: str) -> tuple[int, int]:
-    """Parse ``/eval [N] [days N] [all]`` -> (max_listings, days).
-
-    Examples: "" -> (100, 3) | "50" -> (50, 3) | "days 7" -> (100, 7)
-              "50 days 7" -> (50, 7) | "all" -> (500, 3650)
-    "dni" is accepted as a Slovak alias for "days".
-    """
-    tokens = (arg or "").lower().split()
-    limit, days = 100, 3
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token in {"all", "vsetky", "všetky"}:
-            limit, days = 500, 3650
-        elif token in {"days", "dni"} and i + 1 < len(tokens) and tokens[i + 1].isdigit():
-            days = max(1, min(int(tokens[i + 1]), 3650))
-            i += 1
-        elif token.isdigit():
-            limit = max(1, min(int(token), 500))
-        i += 1
-    return limit, days
-
 
 class Bot:
     """Message handler bound to a TelegramNotifier and UserStore."""
@@ -957,7 +259,7 @@ class Bot:
             return 'Tell me what you\'re looking for, e.g.: "diesel, under 200,000 km, over 80 kW".'
         await self.store.update_prefs(chat_id, criteria=text)
         try:
-            await self._queue_rehodnotenie(chat_id)
+            await self._queue_rescore(chat_id)
         except Exception:
             logger.warning("rehodnotenie queue failed", exc_info=True)
         return f"✅ Criteria saved:\n<i>{_em(text)}</i>"
@@ -1073,7 +375,7 @@ class Bot:
         self, chat_id: int, name: str, cb_query_id: str
     ) -> None:
         searches = await self.store.list_searches(chat_id)
-        match = next((s for s in searches if s.name == name), None)
+        match = next((s for s in searches if s.name.lower() == name.lower()), None)
         if match is None:
             await self.notifier.answer_callback(cb_query_id, "Search not found")
             return
@@ -1104,7 +406,7 @@ class Bot:
                 if s.min_score is not None:
                     reply += f"\n⭐ Score: {s.min_score}/100"
                 try:
-                    await self._queue_rehodnotenie(chat_id)
+                    await self._queue_rescore(chat_id)
                 except Exception:
                     logger.warning("rehodnotenie queue failed", exc_info=True)
                 return reply
@@ -1175,7 +477,7 @@ class Bot:
         """Trigger a re-score under the new model (best-effort, async fire-and-forget)."""
         async def _go() -> None:
             try:
-                await self._queue_rehodnotenie(chat_id)
+                await self._queue_rescore(chat_id)
             except Exception:
                 logger.warning("re-score after model change failed", exc_info=True)
 
@@ -1203,7 +505,7 @@ class Bot:
         await self.store.update_prefs(chat_id, show_photo=on)
         return "✅ Photos with listings: " + ("on" if on else "off")
 
-    async def _queue_rehodnotenie(
+    async def _queue_rescore(
         self, chat_id: int, max_listings: int = 100, days: int = 3
     ) -> bool:
         """Queue an eval backfill for the active profile and trigger a scrape.
@@ -1249,7 +551,7 @@ class Bot:
             finally:
                 await repo.close()
 
-        created = await self._queue_rehodnotenie(chat_id, max_listings=limit, days=days)
+        created = await self._queue_rescore(chat_id, max_listings=limit, days=days)
         if not created:
             return "⏳ Already re-scoring this search — send /show in a few minutes."
 
@@ -1402,7 +704,13 @@ class Bot:
                 return f"Listing <code>{ad_id}</code> is not in my database. Try /cars."
             history = await repo.fetch_price_history(ad_id)
             make = extract_make(str(row["title"]))
-            bench = await repo.price_benchmark(make, row.get("year")) if make else None
+            bench = (
+                await repo.price_benchmark(
+                    make, row.get("year"), mileage_km=row.get("mileage_km")
+                )
+                if make
+                else None
+            )
         finally:
             await repo.close()
         text = build_car_card(row, history, bench)
@@ -1537,7 +845,7 @@ class Bot:
             min_score=template.min_score,
         )
         try:
-            await self._queue_rehodnotenie(chat_id)
+            await self._queue_rescore(chat_id)
         except Exception:
             logger.warning("template re-eval queue failed", exc_info=True)
         await self.notifier.answer_callback(cb_query_id, f"{template.emoji} Activated!")
@@ -1677,7 +985,7 @@ class Bot:
         def _block(title: str, items: list[dict], cap: int) -> list[str]:
             shown = [_line(m) for m in items[:cap]]
             if len(items) > cap:
-                shown.append(f"  • … +{len(items) - cap} ďalších")
+                shown.append(f"  • … +{len(items) - cap} more")
             return [f"<b>{title}</b>", *shown]
 
         cap = 8 if query else 6
@@ -1749,7 +1057,7 @@ class Bot:
                 try:
                     if float(item.max_price) > float(item.current_price) > 0:
                         pct = round((1 - float(item.current_price) / float(item.max_price)) * 100)
-                        bits.append(f"🔔 −{pct} % z maxima")
+                        bits.append(f"🔔 −{pct} % from max")
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
             if item.alert_below:

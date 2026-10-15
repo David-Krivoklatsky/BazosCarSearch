@@ -18,8 +18,9 @@ Inventory accepts ``q`` (text), ``sort`` (newest/price_asc/price_desc/score),
 ``min_year``, ``max_year``, ``page`` and ``days``.
 
 POST actions (JSON body ``{"action": ...}``): ``save`` | ``unsave`` |
-``note`` | ``use`` (activate a saved search) | ``toggle_search`` |
-``notify`` | ``score`` | ``photos``.
+``note`` | ``alert`` (``id`` + ``below`` in EUR, null clears) | ``use``
+(activate a saved search) | ``criteria`` (edit active search text) |
+``toggle_search`` | ``notify`` | ``score`` | ``photos``.
 """
 
 from __future__ import annotations
@@ -140,19 +141,23 @@ async def _load_view(
 
     repo = ListingRepository(settings.database_url)
     await repo.connect()
+    # Share the repo's live connection with the store so each request uses a
+    # single DB connection (fakes in tests have no _conn -> falls back to two).
+    conn = getattr(repo, "_conn", None)
     try:
         criteria, model = None, load_llm_config().model
         saved_ids: set[int] = set()
         try:
-            async with UserStore(settings.database_url) as store:
+            async with UserStore(settings.database_url, conn=conn) as store:
                 prefs = await store.get_prefs(chat_id)
                 if prefs is not None:
                     criteria = prefs.criteria
                     model = prefs.model or model
-                try:
-                    saved_ids = {s.ad_id for s in await store.list_saved(chat_id)}
-                except Exception:
-                    logger.warning("saved-ids load failed in webapp", exc_info=True)
+                if view in {"inventory", "listing", "compare"}:
+                    try:
+                        saved_ids = await store.list_saved_ids(chat_id)
+                    except Exception:
+                        logger.warning("saved-ids load failed in webapp", exc_info=True)
         except Exception:
             logger.warning("prefs load failed in webapp", exc_info=True)
         p_key = profile_key(criteria, model)
@@ -207,13 +212,17 @@ async def _load_view(
         if view == "listing":
             if ad_id is None:
                 return {"error": "id required"}, HTTPStatus.BAD_REQUEST
-            return await _listing_payload(repo, ad_id, p_key), HTTPStatus.OK
+            payload = await _listing_payload(repo, ad_id, p_key)
+            if "error" not in payload and ad_id is not None:
+                payload["is_saved"] = ad_id in saved_ids
+            return payload, HTTPStatus.OK
         if view == "compare":
             ids = extra.get("ids") or []
             out = []
             for one in ids[:3]:
                 payload = await _listing_payload(repo, one, p_key)
                 if "error" not in payload:
+                    payload["is_saved"] = one in saved_ids
                     out.append(payload)
             if not out:
                 return {"error": "no listings found"}, HTTPStatus.NOT_FOUND
@@ -298,6 +307,28 @@ async def _load_view(
                 "funnel": funnel,
                 "cost": cost,
             }, HTTPStatus.OK
+        if view == "insights":
+            # Merged overview + stats + queue for the unified Insights tab.
+            # overview/stats/queue stay available for backward compatibility.
+            stats = await repo.stats_overview(p_key)
+            run = await repo.latest_scrape_run()
+            pending = await repo.pending_eval_tasks()
+            return {
+                "profile_key": p_key,
+                "stats": stats,
+                "last_run": run,
+                "queue_pending": len(pending),
+                "pending": pending,
+                "finished": await repo.recent_finished_eval_tasks(limit=5),
+                "histogram": await repo.price_histogram(),
+                "top_makes": await repo.top_makes(),
+                "score_vs_price": await repo.score_vs_price(p_key),
+                "trend30": await repo.new_by_day(30),
+                "coverage": await repo.coverage_trend(p_key),
+                "drops": await repo.drops_leaderboard(),
+                "funnel": await repo.funnel(p_key, chat_id),
+                "cost": await repo.eval_cost(p_key),
+            }, HTTPStatus.OK
         return {"error": f"unknown view: {view}"}, HTTPStatus.BAD_REQUEST
     finally:
         await repo.close()
@@ -337,6 +368,30 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
                 return {"error": "id required"}, HTTPStatus.BAD_REQUEST
             updated = await store.set_saved_note(chat_id, ad_id, note)
             return {"ok": True, "updated": updated}, HTTPStatus.OK
+        if action == "alert":
+            ad_id = _to_int(str(body.get("id") or ""), lo=1, hi=10**12)
+            if ad_id is None:
+                return {"error": "id required"}, HTTPStatus.BAD_REQUEST
+            raw_below = body.get("below")
+            if raw_below is None:
+                updated = await store.set_saved_alert(chat_id, ad_id, None)
+                return {"ok": True, "updated": updated}, HTTPStatus.OK
+            try:
+                below_raw = int(str(raw_below).strip())
+            except (TypeError, ValueError):
+                below_raw = 0
+            if below_raw <= 0:
+                return {"error": "below must be a positive number"}, HTTPStatus.BAD_REQUEST
+            below = _to_int(str(below_raw), lo=1, hi=10**9)
+            updated = await store.set_saved_alert(chat_id, ad_id, below)
+            return {"ok": True, "updated": updated}, HTTPStatus.OK
+        if action == "criteria":
+            criteria = str(body.get("criteria") or "").strip()[:500]
+            if not criteria:
+                return {"error": "criteria required"}, HTTPStatus.BAD_REQUEST
+            await store.ensure_prefs(chat_id)
+            await store.update_prefs(chat_id, criteria=criteria)
+            return {"ok": True}, HTTPStatus.OK
         if action == "use":
             name = str(body.get("name") or "").strip()
             if not name:

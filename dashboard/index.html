@@ -1,119 +1,144 @@
 <!DOCTYPE html>
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Bazcar dashboard</title>
+<title>Bazcar</title>
 <link rel="icon" href="data:,">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
-    --bg: #0f1420; --card: #1a2132; --card2: #222b40; --text: #e8ecf4;
-    --muted: #8b94a9; --accent: #4f8cff; --good: #3ddc84; --warn: #ffb648;
-    --bad: #ff6b6b; --line: #2a3450;
+    --bg: #141413; --surface: #1c1c1a; --surface2: #262624; --text: #ececea;
+    --muted: #9a9891; --line: rgba(255,255,255,.08); --accent: #d97757;
+    --accent-ink: #fff; --good: #8ba888; --warn: #c9a227; --bad: #c96a54;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     background: var(--bg); color: var(--text);
-    font: 15px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
-    padding: 12px 12px 40px;
+    font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    padding: 16px 14px 48px; max-width: 860px; margin: 0 auto;
+    font-variant-numeric: tabular-nums;
   }
-  h1 { font-size: 19px; margin: 4px 0 2px; }
-  .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
-  .tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  header.top { margin: 6px 0 14px; }
+  header.top h1 { font-size: 21px; font-weight: 650; letter-spacing: -.01em; }
+  header.top .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .tabs {
+    display: flex; gap: 2px; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 11px; padding: 3px;
+    margin-bottom: 16px; position: sticky; top: 0; z-index: 5;
+  }
   .tab {
-    background: var(--card); border: 1px solid var(--line); color: var(--muted);
-    padding: 8px 13px; border-radius: 999px; font-size: 13px; cursor: pointer;
+    flex: 1; background: transparent; border: 0; color: var(--muted);
+    padding: 8px 6px; border-radius: 8px; font-size: 13px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .tab.active { background: var(--surface2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); }
   .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-    padding: 12px 14px; overflow-x: auto;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 15px;
   }
-  table { min-width: 540px; }
-  .cmp-table { min-width: 620px; }
-  .kpi .num { font-size: 24px; font-weight: 700; }
-  .kpi .lbl { color: var(--muted); font-size: 12px; }
-  .section { margin-top: 16px; }
-  .section h2 { font-size: 15px; margin-bottom: 8px; }
+  .section { margin-top: 18px; }
+  .section > h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+  .kpis { display: flex; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 0; }
+  .kpi { flex: 1; text-align: center; }
+  .kpi + .kpi { border-left: 1px solid var(--line); }
+  .kpi .num { font-size: 22px; font-weight: 650; }
+  .kpi .lbl { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  td, th { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; font-size: 12px; }
-  a { color: var(--accent); text-decoration: none; }
-  .badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
-  .b-wait { background: #3a3f52; color: var(--muted); }
-  .b-score { background: #1d3a2b; color: var(--good); }
-  .b-part { background: #40262a; color: var(--bad); }
-  .b-drop { background: #1d3a2b; color: var(--good); }
-  .b-warn { background: #40351d; color: var(--warn); }
-  .spark { display: flex; align-items: flex-end; gap: 3px; height: 40px; margin-top: 6px; }
-  .spark div { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .85; }
-  .bars .row { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 12px; }
-  .bars .row .lab { width: 64px; color: var(--muted); text-align: right; flex-shrink: 0; }
-  .bars .track { flex: 1; background: var(--card2); border-radius: 6px; height: 14px; overflow: hidden; }
-  .bars .fill { height: 100%; background: var(--accent); border-radius: 6px; }
-  .bars .val { width: 44px; text-align: right; }
-  .q-item { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
-  .q-item .crit { font-weight: 600; }
-  .q-item .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
-  .prog { background: var(--card2); border-radius: 6px; height: 10px; overflow: hidden; margin-top: 6px; }
-  .prog .fill { height: 100%; background: var(--good); }
-  .err { background: #40262a; border: 1px solid var(--bad); padding: 10px 14px; border-radius: 10px; margin-top: 10px; }
+  td, th { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+  a { color: var(--text); text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
   .muted { color: var(--muted); }
-  .pager { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-  .pager button {
-    background: var(--card); border: 1px solid var(--line); color: var(--text);
-    padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; border: 1px solid var(--line); }
+  .b-wait { color: var(--muted); }
+  .b-score { color: var(--good); border-color: currentColor; }
+  .b-part { color: var(--bad); border-color: currentColor; }
+  .b-drop { color: var(--good); border-color: currentColor; }
+  .b-warn { color: var(--warn); border-color: currentColor; }
+  .btn {
+    background: transparent; border: 1px solid var(--line); color: var(--text);
+    padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
   }
-  .pager button:disabled { opacity: .4; cursor: default; }
+  .btn:disabled { opacity: .35; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.on { border-color: var(--accent); color: var(--accent); }
   .mini {
-    background: var(--card2); border: 1px solid var(--line); color: var(--text);
-    border-radius: 8px; padding: 4px 9px; cursor: pointer; font-size: 13px;
+    background: transparent; border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px;
   }
-  .mini.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .mini.on { border-color: var(--accent); color: var(--accent); }
+  .tgl { background: transparent; border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 4px 13px; cursor: pointer; font-size: 13px; }
+  .tgl.on { border-color: var(--good); color: var(--good); }
+  .rowbtn { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
   .kv:last-child { border-bottom: 0; }
   .kv .k { color: var(--muted); flex-shrink: 0; }
   .kv .v { text-align: right; }
-  .hist { display: flex; align-items: flex-end; gap: 3px; height: 54px; margin: 8px 0 4px; }
-  .hist div { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 3px; opacity: .85; }
   .trend-down { color: var(--good); } .trend-up { color: var(--bad); }
-  #loading { color: var(--muted); margin-top: 20px; }
-  .toolbar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
-  .toolbar input, .toolbar select {
-    background: var(--card2); border: 1px solid var(--line); color: var(--text);
-    border-radius: 8px; padding: 7px 9px; font-size: 13px; max-width: 100%;
+  .spark { display: flex; align-items: flex-end; gap: 3px; height: 40px; margin-top: 8px; }
+  .spark div { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 2px; opacity: .8; }
+  .hist { display: flex; align-items: flex-end; gap: 3px; height: 54px; margin: 10px 0 4px; }
+  .hist div { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-height: 3px; opacity: .8; }
+  .bars .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12.5px; }
+  .bars .row .lab { width: 88px; color: var(--muted); text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bars .track { flex: 1; background: var(--surface2); border-radius: 5px; height: 12px; overflow: hidden; }
+  .bars .fill { height: 100%; background: var(--accent); border-radius: 5px; opacity: .85; }
+  .bars .val { width: 40px; text-align: right; color: var(--muted); }
+  .q-item { border-bottom: 1px solid var(--line); padding: 10px 0; }
+  .q-item:last-child { border-bottom: 0; }
+  .q-item .crit { font-weight: 600; font-size: 13.5px; }
+  .q-item .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .prog { background: var(--surface2); border-radius: 5px; height: 8px; overflow: hidden; margin-top: 6px; }
+  .prog .fill { height: 100%; background: var(--good); }
+  .err { background: var(--surface); border: 1px solid var(--bad); padding: 12px 14px; border-radius: 10px; margin-top: 10px; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .toolbar input, .toolbar select, .field input {
+    background: var(--surface); border: 1px solid var(--line); color: var(--text);
+    border-radius: 9px; padding: 8px 11px; font-size: 13.5px; max-width: 100%;
   }
-  .toolbar input[type="search"] { flex: 1 1 140px; }
-  .toolbar input.num { width: 84px; }
-  .gallery { margin: 8px 0 4px; }
-  .gallery .main { width: 100%; border-radius: 10px; max-height: 320px; object-fit: cover; display: block; }
-  .gallery .thumbs { display: flex; gap: 6px; margin-top: 6px; overflow-x: auto; }
+  .toolbar input[type="search"] { flex: 1 1 160px; }
+  .toolbar input.num { width: 92px; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: -4px 0 12px; }
+  .item { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: flex-start; }
+  .item:last-child { border-bottom: 0; }
+  .item img.thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 9px; flex-shrink: 0; background: var(--surface2); }
+  .item .body { flex: 1; min-width: 0; }
+  .item .title { font-weight: 600; font-size: 14px; }
+  .item .specs { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .item .side { text-align: right; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+  .item .price { font-weight: 650; font-size: 14.5px; }
+  .iconbtns { display: flex; gap: 6px; }
+  .gallery { margin: 10px 0 4px; }
+  .gallery .main { width: 100%; border-radius: 10px; max-height: 340px; object-fit: cover; display: block; background: var(--surface2); }
+  .gallery .thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
   .gallery .thumbs img { height: 56px; border-radius: 8px; cursor: pointer; border: 2px solid transparent; }
   .gallery .thumbs img.sel { border-color: var(--accent); }
-  .desc { font-size: 13px; white-space: pre-wrap; color: var(--text); margin-top: 6px; }
+  .desc { font-size: 13.5px; white-space: pre-wrap; margin-top: 8px; }
   .desc.clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }
-  .skel { background: linear-gradient(90deg, var(--card) 25%, var(--card2) 50%, var(--card) 75%); background-size: 200% 100%; animation: sh 1.2s infinite; border-radius: 10px; height: 64px; margin-bottom: 8px; }
+  .skel { background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 50%, var(--surface) 75%); background-size: 200% 100%; animation: sh 1.2s infinite; border-radius: 10px; height: 64px; margin-bottom: 8px; }
   @keyframes sh { to { background-position: -200% 0; } }
+  .cmp-scroll { overflow-x: auto; }
+  .cmp-table { min-width: 640px; }
   .cmp-table td:first-child { color: var(--muted); width: 110px; }
-  .rowbtn { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-  .switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
   .switch:last-child { border-bottom: 0; }
-  .tgl { background: var(--card2); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 4px 12px; cursor: pointer; font-size: 13px; }
-  .tgl.on { background: #1d3a2b; border-color: var(--good); color: var(--good); }
+  .pager { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .pager .count { color: var(--muted); font-size: 12.5px; margin-left: auto; }
+  #loading { color: var(--muted); margin-top: 20px; }
 </style>
 </head>
 <body>
-<h1>🚗 Bazcar dashboard</h1>
-<div class="sub">Live data from Neon · your active profile</div>
+<header class="top">
+  <h1>Bazcar</h1>
+  <div class="sub">Live catalog · your profile</div>
+</header>
 <div class="tabs">
-  <button class="tab active" data-view="overview">Overview</button>
-  <button class="tab" data-view="inventory">Listings</button>
+  <button class="tab active" data-view="listings">Listings</button>
   <button class="tab" data-view="saved">Saved</button>
-  <button class="tab" data-view="queue">AI queue</button>
-  <button class="tab" data-view="stats">Stats</button>
-  <button class="tab" data-view="profiles">Profiles</button>
+  <button class="tab" data-view="insights">Insights</button>
+  <button class="tab" data-view="profile">Profile</button>
 </div>
 <div id="loading">Loading…</div>
 <div id="content"></div>
@@ -125,36 +150,37 @@ if (tg) {
   tg.ready(); tg.expand();
   try { if (tg.disableVerticalSwipes) tg.disableVerticalSwipes(); } catch (e) {}
   try {
-    // Apply the native theme only when Telegram actually provided one —
-    // outside Telegram (plain browser) themeParams is empty and colorScheme
-    // defaults are meaningless, so keep the bundled dark theme.
+    // Adopt the native Telegram theme when provided (warm dark/light handled
+    // by Telegram); otherwise keep the bundled warm-minimal theme.
     const p = tg.themeParams || {};
     if (p.bg_color) {
       const root = document.documentElement.style;
       root.setProperty("--bg", p.bg_color);
-      if (p.secondary_bg_color) root.setProperty("--card", p.secondary_bg_color);
+      if (p.secondary_bg_color) {
+        root.setProperty("--surface", p.secondary_bg_color);
+        root.setProperty("--surface2", p.secondary_bg_color);
+      }
       if (p.text_color) root.setProperty("--text", p.text_color);
       if (p.hint_color) root.setProperty("--muted", p.hint_color);
       if (p.button_color) root.setProperty("--accent", p.button_color);
-      if (tg.colorScheme === "light") {
-        root.setProperty("--card2", "#e6ebf4");
-        root.setProperty("--line", "#d4dbe8");
-      }
     }
   } catch (e) { /* keep defaults */ }
 }
 const initData = tg ? tg.initData : "";
 const content = document.getElementById("content");
 const loading = document.getElementById("loading");
-let currentView = "overview";
+let currentView = "listings";
 let invPage = 0, invDays = 30;
 let inv = { q: "", sort: "newest", status: "all", min_price: "", max_price: "", min_year: "", max_year: "" };
-let lastItems = [];
+let showFilters = false;
 let compareIds = [];
 let lastCompareIds = [];
-let lastCompareFrom = "inventory";
-let lastRetry = () => load("overview");
-const KNOWN_VIEWS = ["overview", "inventory", "saved", "queue", "stats", "profiles"];
+let lastCompareFrom = "listings";
+let savedIds = new Set();
+let lastRetry = () => load("listings");
+// Legacy tab/view names keep working (old links, cached pages).
+const VIEW_ALIASES = { overview: "insights", stats: "insights", queue: "insights", inventory: "listings", profiles: "profile" };
+const KNOWN_VIEWS = ["listings", "saved", "insights", "profile"];
 
 function buzz(kind) {
   try {
@@ -207,12 +233,15 @@ function ago(iso) {
   if (s < 120) return "just now";
   if (s < 3600) return Math.floor(s/60) + " min ago";
   if (s < 86400) return Math.floor(s/3600) + " h ago";
-  return Math.floor(s/86400) + " d ago";
+  const d = Math.floor(s/86400);
+  if (d < 30) return d + " d ago";
+  if (d < 365) return Math.floor(d/30) + " mo ago";
+  return Math.floor(d/365) + " y ago";
 }
 function staleBadge(iso) {
   if (!iso) return "";
   const d = Math.floor(Math.max(0, Date.now() - new Date(iso).getTime()) / 86400000);
-  return d > 7 ? ` <span class="badge b-warn">🕸 ${d} d unseen</span>` : "";
+  return d > 7 ? ` <span class="badge b-warn">${d} d unseen</span>` : "";
 }
 function spark(counts) {
   if (!counts.length) return '<div class="muted">no data</div>';
@@ -225,15 +254,18 @@ function bars(rows, labKey, valKey, fmtVal) {
   return '<div class="bars">' + rows.map(r => {
     const v = Number(r[valKey]) || 0;
     const lab = fmtVal ? fmtVal(r) : r[labKey];
-    return `<div class="row"><span class="lab">${esc(String(lab)).slice(0, 18)}</span>` +
+    return `<div class="row"><span class="lab">${esc(String(lab)).slice(0, 22)}</span>` +
       `<div class="track"><div class="fill" style="width:${Math.round(v/total*100)}%"></div></div>` +
       `<span class="val">${v}</span></div>`;
   }).join("") + "</div>";
 }
+function scoreBadge(score, isCar) {
+  if (score == null) return '<span class="badge b-wait">unscored</span>';
+  if (isCar === false) return '<span class="badge b-part">part</span>';
+  return `<span class="badge b-score">${score}</span>`;
+}
 function badge(row) {
-  if (row.score == null) return '<span class="badge b-wait">⏳ unscored</span>';
-  if (row.is_car === false) return '<span class="badge b-part">🛠 part</span>';
-  return `<span class="badge b-score">⭐ ${row.score}</span>`;
+  return scoreBadge(row.score, row.is_car);
 }
 function skeleton(n) {
   loading.style.display = "none";
@@ -243,7 +275,7 @@ function showErr(html, retry) {
   loading.style.display = "none";
   if (retry) lastRetry = retry;
   content.innerHTML = '<div class="err">' + html + "</div>" +
-    '<div class="rowbtn"><button class="mini" onclick="lastRetry()">🔄 Try again</button></div>';
+    '<div class="rowbtn"><button class="mini" onclick="lastRetry()">Try again</button></div>';
   buzz("err");
 }
 
@@ -253,13 +285,13 @@ async function get(params) {
       headers: { "X-Telegram-Init-Data": initData }
     });
     if (resp.status === 401) {
-      showErr("🔒 Open the dashboard via the /dashboard button in the bot — " +
+      showErr("Open the dashboard via the /dashboard button in the bot — " +
         "direct browser access is not allowed.");
       return null;
     }
     return await resp.json();
   } catch (e) {
-    showErr("⚠️ Load failed: " + esc(e.message));
+    showErr("Load failed: " + esc(e.message));
     return null;
   }
 }
@@ -274,12 +306,12 @@ async function post(action, fields) {
       body: JSON.stringify(Object.assign({ action }, fields || {}))
     });
     if (resp.status === 401) {
-      showErr("🔒 Session expired — reopen the dashboard via /dashboard in the bot.");
+      showErr("Session expired — reopen the dashboard via /dashboard in the bot.");
       return null;
     }
     return await resp.json();
   } catch (e) {
-    showErr("⚠️ Save failed: " + esc(e.message));
+    showErr("Save failed: " + esc(e.message));
     return null;
   }
 }
@@ -289,7 +321,8 @@ function markTab(view) {
     t.classList.toggle("active", t.dataset.view === view));
 }
 async function load(view) {
-  if (!KNOWN_VIEWS.includes(view)) view = "overview";
+  view = VIEW_ALIASES[view] || view;
+  if (!KNOWN_VIEWS.includes(view)) view = "listings";
   currentView = view;
   markTab(view);
   setBack(null);
@@ -297,25 +330,26 @@ async function load(view) {
   skeleton(3);
   content.innerHTML = "";
   const params = new URLSearchParams({ view });
-  if (view === "inventory") {
+  if (view === "listings") {
+    params.set("view", "inventory");
     params.set("page", invPage); params.set("days", invDays);
     params.set("sort", inv.sort); params.set("status", inv.status);
     if (inv.q) params.set("q", inv.q);
     ["min_price", "max_price", "min_year", "max_year"].forEach(k => {
       if (inv[k] !== "") params.set(k, inv[k]);
     });
+  } else if (view === "insights") {
+    params.set("view", "insights");
   }
   lastRetry = () => load(view);
   const data = await get(params);
   if (data == null) return;
   loading.style.display = "none";
-  if (data.error && view !== "listing") { showErr("⚠️ " + esc(data.error)); return; }
-  if (view === "overview") renderOverview(data);
-  else if (view === "inventory") renderInventory(data);
+  if (data.error && view !== "listing") { showErr(esc(data.error)); return; }
+  if (view === "listings") renderListings(data);
   else if (view === "saved") renderSaved(data);
-  else if (view === "queue") renderQueue(data);
-  else if (view === "stats") renderStats(data);
-  else if (view === "profiles") renderProfiles(data);
+  else if (view === "insights") renderInsights(data);
+  else if (view === "profile") renderProfile(data);
 }
 function backTo(view) { setBack(null); load(view); }
 function backToCompare() { openCompare(lastCompareIds, lastCompareFrom); }
@@ -327,7 +361,7 @@ async function openListing(id, from) {
   skeleton(2);
   content.innerHTML = "";
   if (from === "compare") setBack(backToCompare);
-  else setBack(() => backTo(from || "inventory"));
+  else setBack(() => backTo(from || "listings"));
   lastRetry = () => openListing(id, from);
   const data = await get(new URLSearchParams({ view: "listing", id: String(id) }));
   if (data == null) return;
@@ -341,13 +375,13 @@ async function openCompare(ids, from) {
   skeleton(2);
   content.innerHTML = "";
   lastCompareIds = [...ids];
-  lastCompareFrom = from || "inventory";
+  lastCompareFrom = from || "listings";
   setBack(() => backTo(lastCompareFrom));
   lastRetry = () => openCompare(lastCompareIds, lastCompareFrom);
   const data = await get(new URLSearchParams({ view: "compare", ids: ids.join(",") }));
   if (data == null) return;
   loading.style.display = "none";
-  if (data.error) { showErr("⚠️ " + esc(data.error)); return; }
+  if (data.error) { showErr(esc(data.error)); return; }
   renderCompare(data, from);
 }
 
@@ -369,8 +403,22 @@ function toggleCompare(id, btn) {
 }
 function cmpBar(from) {
   return `<div class="rowbtn" id="cmpbar" style="display:${compareIds.length >= 2 ? "block" : "none"}">` +
-    `<button class="mini on" onclick="openCompare(compareIds, '${from}')">⚖️ Compare (<span id="cmpn">${compareIds.length}</span>)</button>` +
-    `<button class="mini" onclick="compareIds=[];load('${from}')">✖️ Clear selection</button></div>`;
+    `<button class="mini on" onclick="openCompare(compareIds, '${from}')">Compare (<span id="cmpn">${compareIds.length}</span>)</button>` +
+    `<button class="mini" onclick="compareIds=[];load('${from}')">Clear selection</button></div>`;
+}
+async function toggleSave(id, btn, from) {
+  const saved = savedIds.has(Number(id));
+  const r = await post(saved ? "unsave" : "save", { id });
+  if (r && r.ok) {
+    buzz("ok");
+    if (saved) savedIds.delete(Number(id)); else savedIds.add(Number(id));
+    if (from === "detail" && btn) {
+      btn.classList.toggle("on");
+      btn.textContent = saved ? "Save" : "Saved";
+    } else {
+      load(currentView === "saved" ? "saved" : "listings");
+    }
+  }
 }
 
 function gallery(images) {
@@ -385,96 +433,85 @@ function gallery(images) {
     (imgs.length > 1 ? `<div class="thumbs">${thumbs}</div>` : "") + `</div>`;
 }
 
-function renderOverview(d) {
-  const s = d.stats || {};
-  const run = d.last_run || {};
-  const cov = s.total ? Math.round((s.evaluated || 0) / s.total * 100) : 0;
-  const counts = (s.new_by_day || []).map(x => x[1]);
-  content.innerHTML = `
-    <div class="grid">
-      <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 listings in DB</div></div>
-      <div class="card kpi"><div class="num">${cov} %</div><div class="lbl">🤖 AI coverage</div></div>
-      <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 discounts / 7 days</div></div>
-      <div class="card kpi"><div class="num">${d.queue_pending ?? 0}</div><div class="lbl">⏳ in queue</div></div>
-    </div>
-    <div class="section card">
-      <h2>New listings in 7 days (${counts.reduce((a,b)=>a+b,0)})</h2>${spark(counts)}
-    </div>
-    <div class="section card">
-      <h2>Last run</h2>
-      <div class="muted">${run.finished_at ? ago(run.finished_at) : "none recorded"} ·
-        ${run.inserted ?? "?"} new · ${run.evaluated ?? "?"} scored ·
-        ${run.notified ?? "?"} notifications</div>
-    </div>`;
-}
-
 function toolbar() {
+  const adv = showFilters ? `
+    <div class="filters">
+      <input class="num" id="fminp" inputmode="numeric" placeholder="€ from" value="${esc(inv.min_price)}">
+      <input class="num" id="fmaxp" inputmode="numeric" placeholder="€ to" value="${esc(inv.max_price)}">
+      <input class="num" id="fminy" inputmode="numeric" placeholder="Year from" value="${esc(inv.min_year)}">
+      <input class="num" id="fmaxy" inputmode="numeric" placeholder="Year to" value="${esc(inv.max_year)}">
+      <button class="mini" onclick="resetFilters()">Reset</button>
+    </div>` : "";
   return `<div class="toolbar">
-    <input type="search" id="fq" placeholder="🔎 Search titles…" value="${esc(inv.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
+    <input type="search" id="fq" placeholder="Search titles…" value="${esc(inv.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
     <select id="fsort" onchange="applyFilters()">
       <option value="newest" ${inv.sort === "newest" ? "selected" : ""}>Newest</option>
-      <option value="score" ${inv.sort === "score" ? "selected" : ""}>By AI score</option>
-      <option value="price_asc" ${inv.sort === "price_asc" ? "selected" : ""}>Cheapest first</option>
-      <option value="price_desc" ${inv.sort === "price_desc" ? "selected" : ""}>Priciest first</option>
+      <option value="score" ${inv.sort === "score" ? "selected" : ""}>Top score</option>
+      <option value="price_asc" ${inv.sort === "price_asc" ? "selected" : ""}>Cheapest</option>
+      <option value="price_desc" ${inv.sort === "price_desc" ? "selected" : ""}>Priciest</option>
     </select>
     <select id="fstatus" onchange="applyFilters()">
       <option value="all" ${inv.status === "all" ? "selected" : ""}>All</option>
-      <option value="rated" ${inv.status === "rated" ? "selected" : ""}>Scored only</option>
-      <option value="unevaluated" ${inv.status === "unevaluated" ? "selected" : ""}>Unscored only</option>
+      <option value="rated" ${inv.status === "rated" ? "selected" : ""}>Scored</option>
+      <option value="unevaluated" ${inv.status === "unevaluated" ? "selected" : ""}>Unscored</option>
     </select>
-    <input class="num" id="fminp" inputmode="numeric" placeholder="€ from" value="${esc(inv.min_price)}">
-    <input class="num" id="fmaxp" inputmode="numeric" placeholder="€ to" value="${esc(inv.max_price)}">
-    <input class="num" id="fminy" inputmode="numeric" placeholder="year from" value="${esc(inv.min_year)}">
-    <input class="num" id="fmaxy" inputmode="numeric" placeholder="year to" value="${esc(inv.max_year)}">
-    <button class="mini on" onclick="applyFilters()">Filter</button>
-    <button class="mini" onclick="resetFilters()">✖️</button>
-  </div>`;
+    <button class="mini ${showFilters ? "on" : ""}" onclick="showFilters=!showFilters;renderListings(lastData)">Filters</button>
+  </div>${adv}`;
 }
 function applyFilters() {
   const g = id => (document.getElementById(id) || {}).value || "";
   inv.q = g("fq").trim();
   inv.sort = g("fsort") || "newest";
   inv.status = g("fstatus") || "all";
-  inv.min_price = g("fminp").trim(); inv.max_price = g("fmaxp").trim();
-  inv.min_year = g("fminy").trim(); inv.max_year = g("fmaxy").trim();
+  if (showFilters) {
+    inv.min_price = g("fminp").trim(); inv.max_price = g("fmaxp").trim();
+    inv.min_year = g("fminy").trim(); inv.max_year = g("fmaxy").trim();
+  }
   invPage = 0;
-  load("inventory");
+  load("listings");
 }
 function resetFilters() {
   inv = { q: "", sort: "newest", status: "all", min_price: "", max_price: "", min_year: "", max_year: "" };
   invPage = 0;
-  load("inventory");
+  load("listings");
 }
 
-function renderInventory(d) {
+let lastData = null;
+function renderListings(d) {
+  lastData = d;
   const items = d.items || [];
-  lastItems = items;
+  savedIds = new Set(d.saved_ids || [...savedIds]);
   const from = d.page * d.page_size + 1;
   const to = d.page * d.page_size + items.length;
-  const savedSet = new Set(d.saved_ids || []);
-  const rows = items.map(r => `
-    <tr>
-      <td>${badge(r)}${staleBadge(r.last_seen_at)}</td>
-      <td><a href="${esc(r.url)}" target="_blank">${esc(r.title)}</a><br>
-        <span class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)} · ${esc(r.city || "")}</span></td>
-      <td class="muted">${esc((r.published_date || "").slice(5))}</td>
-      <td style="white-space:nowrap">
-        <button class="mini" onclick="openListing(${r.ad_id}, 'inventory')">🔎</button>
-        <button class="mini ${compareIds.includes(r.ad_id) ? "on" : ""}" onclick="toggleCompare(${r.ad_id}, this)">⚖️</button>
-        <button class="mini ${savedSet.has(r.ad_id) ? "on" : ""}" onclick="toggleSave(${r.ad_id}, this)">${savedSet.has(r.ad_id) ? "💾✓" : "💾"}</button>
-      </td>
-    </tr>`).join("");
-  content.innerHTML = toolbar() + `
-    <div class="section card">
-      <h2>Listings ${items.length ? from + "–" + to : 0} of ${d.total} (last ${invDays} days)</h2>
-      ${items.length ? `<table><tr><th>AI</th><th>Listing</th><th>Date</th><th></th></tr>${rows}</table>` : '<div class="muted">Nothing matches these filters — try loosening them.</div>'}
-      <div class="pager">
-        <button ${d.page === 0 ? "disabled" : ""} onclick="invPage--;load('inventory')">◀️</button>
-        <button ${to >= d.total ? "disabled" : ""} onclick="invPage++;load('inventory')">▶️</button>
-        <button onclick="invDays = invDays === 30 ? 90 : (invDays === 90 ? 7 : 30); invPage = 0; load('inventory')">window: ${invDays} d</button>
-        <button onclick="exportCsv()">📄 CSV</button>
+  const cards = items.map(r => {
+    const img = (r.image_urls || []).find(extUrl);
+    const isSaved = savedIds.has(r.ad_id);
+    return `<div class="item">
+      ${img ? `<img class="thumb" src="${esc(img)}" loading="lazy" alt="">` : ""}
+      <div class="body">
+        <div class="title"><a href="${esc(r.url)}">${esc(r.title)}</a></div>
+        <div class="specs">${r.year ?? "?"} · ${km(r.mileage_km)} · ${esc(r.city || "")} · ${esc((r.published_date || "").slice(5) || ago(r.first_seen_at))}</div>
+        <div class="specs">${badge(r)}${staleBadge(r.last_seen_at)}</div>
       </div>
-    </div>` + cmpBar("inventory");
+      <div class="side">
+        <div class="price">${eur(r.price_eur)}</div>
+        <div class="iconbtns">
+          <button class="mini" onclick="openListing(${r.ad_id}, 'listings')">View</button>
+          <button class="mini ${compareIds.includes(r.ad_id) ? "on" : ""}" onclick="toggleCompare(${r.ad_id}, this)">⇄</button>
+          <button class="mini ${isSaved ? "on" : ""}" onclick="toggleSave(${r.ad_id}, this)">${isSaved ? "Saved" : "Save"}</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+  content.innerHTML = toolbar() + `
+    <div class="muted" style="margin:2px 0 6px">${items.length ? `Showing ${from}–${to} of ${d.total} · last ${invDays} days` : "No results"}</div>
+    ${items.length ? cards : '<div class="muted">Nothing matches these filters — try loosening them.</div>'}
+    <div class="pager">
+      <button class="btn" ${d.page === 0 ? "disabled" : ""} onclick="invPage--;load('listings')">‹ Prev</button>
+      <button class="btn" ${to >= d.total ? "disabled" : ""} onclick="invPage++;load('listings')">Next ›</button>
+      <button class="btn" onclick="invDays = invDays === 30 ? 90 : (invDays === 90 ? 7 : 30); invPage = 0; load('listings')">${invDays}d window</button>
+      <button class="btn" onclick="exportCsv()">Export CSV</button>
+    </div>` + cmpBar("listings");
 }
 async function exportCsv() {
   const params = new URLSearchParams({ view: "inventory", per: 200, days: invDays, sort: inv.sort, status: inv.status });
@@ -498,39 +535,47 @@ async function exportCsv() {
 
 function renderSaved(d) {
   const items = d.items || [];
-  lastItems = [];
-  const rows = items.map(s => {
-    const drop = s.drop_pct ? ` <span class="badge b-drop">📉 −${s.drop_pct} %</span>` : "";
-    const note = s.note ? `<br><span class="muted">📝 ${esc(s.note)}</span>` : "";
-    const watch = s.alert_below ? `<br><span class="muted">🎯 watching below ${eur(s.alert_below)}</span>` : "";
-    return `<tr>
-      <td><a href="${esc(s.url || "#")}" target="_blank">${esc(s.title || ("ad " + s.ad_id))}</a>${drop}${note}${watch}<br>
-        <span class="muted">${s.current_price != null ? eur(s.current_price) : "price ?"}${staleBadge(s.last_seen_at)}</span></td>
-      <td style="white-space:nowrap">
-        <button class="mini" onclick="openListing(${s.ad_id}, 'saved')">🔎</button>
-        <button class="mini ${compareIds.includes(s.ad_id) ? "on" : ""}" onclick="toggleCompare(${s.ad_id}, this)">⚖️</button>
-        <button class="mini" data-note="${esc(s.note || "")}" onclick="editNote(${s.ad_id}, this)">📝</button>
-        <button class="mini" onclick="unsave(${s.ad_id})">🗑</button>
-      </td>
-    </tr>`;
+  savedIds = new Set((d.saved_ids || []).concat(items.map(s => s.ad_id)));
+  const cards = items.map(s => {
+    const drop = s.drop_pct ? ` <span class="badge b-drop">−${s.drop_pct} %</span>` : "";
+    const watch = s.alert_below ? `<div class="specs">watching below ${eur(s.alert_below)}</div>` : "";
+    return `<div class="item" id="saved-${s.ad_id}">
+      <div class="body">
+        <div class="title"><a href="${esc(s.url || "#")}">${esc(s.title || ("ad " + s.ad_id))}</a>${drop}</div>
+        <div class="specs">${s.current_price != null ? eur(s.current_price) : "price ?"}${staleBadge(s.last_seen_at)}</div>
+        <div class="specs" id="note-line-${s.ad_id}">${s.note ? "Note: " + esc(s.note) : '<span class="muted">No note</span>'}</div>
+        ${watch}
+        <div class="specs" id="alert-line-${s.ad_id}"></div>
+      </div>
+      <div class="side">
+        <div class="iconbtns">
+          <button class="mini" onclick="openListing(${s.ad_id}, 'saved')">View</button>
+          <button class="mini ${compareIds.includes(s.ad_id) ? "on" : ""}" onclick="toggleCompare(${s.ad_id}, this)">⇄</button>
+        </div>
+        <div class="iconbtns">
+          <button class="mini" data-note="${esc(s.note || "")}" onclick="editNote(${s.ad_id}, this)">Note</button>
+          <button class="mini" data-below="${s.alert_below || ""}" onclick="editAlert(${s.ad_id}, this)">Alert</button>
+          <button class="mini" onclick="unsave(${s.ad_id})">Remove</button>
+        </div>
+      </div>
+    </div>`;
   }).join("");
   content.innerHTML = `
-    <div class="section card">
-      <h2>💾 Saved (${items.length})</h2>
-      ${items.length ? `<table>${rows}</table>` : '<div class="muted">Nothing yet — save a listing with 💾 in the bot or here in the detail (🔎 → Save).</div>'}
-    </div>` + cmpBar("saved");
+    <div class="muted" style="margin:2px 0 6px">${items.length ? `${items.length} saved` : "Nothing saved yet"}</div>
+    ${items.length ? cards : '<div class="muted">Nothing yet — save a listing with Save in the bot or in a detail view.</div>'}
+    ` + cmpBar("saved");
 }
 async function unsave(id) {
   const r = await post("unsave", { id });
-  if (r && r.ok) { buzz("ok"); load("saved"); }
+  if (r && r.ok) { buzz("ok"); savedIds.delete(Number(id)); load("saved"); }
 }
 function editNote(id, btn) {
-  const cell = btn.closest("td") || btn.parentNode;
+  const line = document.getElementById(`note-line-${id}`);
   const current = btn.dataset ? (btn.dataset.note || "") : "";
-  cell.innerHTML = `<input id="note-${id}" maxlength="500" value="${esc(current).replace(/"/g, "&quot;")}" ` +
-    `style="width:100%;background:var(--card2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 9px;font-size:13px">` +
+  line.innerHTML = `<input id="note-${id}" maxlength="500" value="${esc(current).replace(/"/g, "&quot;")}" ` +
+    `style="width:100%;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 9px;font-size:13px">` +
     `<div class="rowbtn"><button class="mini on" onclick="saveNote(${id})">OK</button>` +
-    `<button class="mini" onclick="load('saved')">✖</button></div>`;
+    `<button class="mini" onclick="load('saved')">Cancel</button></div>`;
   const inp = document.getElementById(`note-${id}`);
   if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
 }
@@ -539,33 +584,41 @@ async function saveNote(id) {
   const r = await post("note", { id, note: ((inp && inp.value) || "").slice(0, 500) });
   if (r && r.ok) { buzz("ok"); load("saved"); }
 }
-async function saveCurrent(id) {
-  const r = await post("save", { id });
-  if (r && r.ok) { buzz("ok"); toast("💾 Saved"); }
+function editAlert(id, btn) {
+  const line = document.getElementById(`alert-line-${id}`);
+  const current = btn.dataset ? (btn.dataset.below || "") : "";
+  line.innerHTML = `<input id="alert-${id}" inputmode="numeric" placeholder="Alert under €…" value="${esc(current)}" ` +
+    `style="width:130px;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 9px;font-size:13px">` +
+    `<div class="rowbtn"><button class="mini on" onclick="saveAlert(${id})">Set</button>` +
+    `<button class="mini" onclick="clearAlert(${id})">Clear</button></div>`;
+  const inp = document.getElementById(`alert-${id}`);
+  if (inp) inp.focus();
 }
-async function toggleSave(id, btn) {
-  const saved = btn.classList.contains("on");
-  const r = await post(saved ? "unsave" : "save", { id });
-  if (r && r.ok) {
-    buzz("ok");
-    btn.classList.toggle("on");
-    btn.textContent = saved ? "💾" : "💾✓";
-  }
+async function saveAlert(id) {
+  const inp = document.getElementById(`alert-${id}`);
+  const r = await post("alert", { id, below: ((inp && inp.value) || "").trim() });
+  if (r && r.ok) { buzz("ok"); load("saved"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function clearAlert(id) {
+  const r = await post("alert", { id });
+  if (r && r.ok) { buzz("ok"); load("saved"); }
 }
 
 function descBlock(text) {
   const t = (text || "").trim();
   if (!t) return "";
   const long = t.length > 600;
-  return `<div class="section card"><h2>📝 Description</h2>` +
+  return `<div class="section"><h2>Description</h2>` +
     `<div class="desc${long ? " clamp" : ""}" id="descbody">${esc(t)}</div>` +
-    (long ? `<div class="rowbtn"><button class="mini" onclick="document.getElementById('descbody').classList.toggle('clamp');this.textContent=this.textContent.includes('more')?'▲ less':'▼ more'">▼ more</button></div>` : "") +
-    `</div>`;
+    (long ? `<div class="rowbtn"><button class="mini" onclick="document.getElementById('descbody').classList.toggle('clamp');this.textContent=this.textContent.includes('more')?'Show less':'Show more'">Show more</button></div>` : "");
 }
 
 function renderListing(d, from) {
-  if (d.error) { showErr("⚠️ Listing not found."); return; }
+  if (d.error) { showErr("Listing not found."); return; }
   const r = d.listing || {};
+  const isSaved = !!d.is_saved || savedIds.has(r.ad_id);
+  if (isSaved) savedIds.add(r.ad_id);
   const hist = (d.history || []).filter(h => h.price_eur != null);
   const bench = d.benchmark;
   let sparkHtml = "";
@@ -580,186 +633,205 @@ function renderListing(d, from) {
   let trend = "";
   if (hist.length >= 2) {
     const diff = Math.round((Number(last.price_eur) / Number(first.price_eur) - 1) * 100);
-    trend = `<div class="kv"><span class="k">price trend</span>` +
+    trend = `<div class="kv"><span class="k">Price trend</span>` +
       `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${eur(first.price_eur)} → ${eur(last.price_eur)} (${diff > 0 ? "+" : ""}${diff} %)</span></div>`;
   }
   const ai = r.score != null
-    ? `<div class="kv"><span class="k">AI score</span><span class="v">⭐ ${r.score}/100</span></div>` +
-      (r.why ? `<div class="kv"><span class="k">why</span><span class="v">${esc(r.why)}</span></div>` : "") +
-      (r.risk ? `<div class="kv"><span class="k">risk</span><span class="v">${esc(r.risk)}</span></div>` : "") +
-      (r.condition ? `<div class="kv"><span class="k">condition</span><span class="v">${esc(r.condition)}</span></div>` : "") +
-      (r.target_offer ? `<div class="kv"><span class="k">first offer</span><span class="v">${eur(r.target_offer)}</span></div>` : "")
-    : `<div class="kv"><span class="k">AI</span><span class="muted">⏳ no score yet</span></div>`;
+    ? `<div class="kv"><span class="k">AI score</span><span class="v">${r.score}/100</span></div>` +
+      (r.why ? `<div class="kv"><span class="k">Why</span><span class="v">${esc(r.why)}</span></div>` : "") +
+      (r.risk ? `<div class="kv"><span class="k">Risk</span><span class="v">${esc(r.risk)}</span></div>` : "") +
+      (r.condition ? `<div class="kv"><span class="k">Condition</span><span class="v">${esc(r.condition)}</span></div>` : "") +
+      (r.target_offer ? `<div class="kv"><span class="k">First offer</span><span class="v">${eur(r.target_offer)}</span></div>` : "")
+    : `<div class="kv"><span class="k">AI</span><span class="muted">no score yet</span></div>`;
   let market = "";
   if (bench && bench.n && r.price_eur != null && bench.median) {
     const diff = Math.round((Number(r.price_eur) / Number(bench.median) - 1) * 100);
     const verdict = diff < 0 ? "below median" : "above median";
     const warn = bench.n < 3 ? ' <span class="badge b-warn">low data (n=' + bench.n + ")</span>"
       : (bench.trimmed ? ' <span class="muted">(outliers removed)</span>' : "");
-    market = `<div class="section card"><h2>📊 Market (n=${bench.n}, year ±2)${warn}</h2>` +
-      `<div class="kv"><span class="k">median asking price</span><span class="v">${eur(bench.median)}</span></div>` +
-      `<div class="kv"><span class="k">this listing</span>` +
+    market = `<div class="section"><h2>Market (n=${bench.n}, year ±2)${warn}</h2><div class="card">` +
+      `<div class="kv"><span class="k">Median asking price</span><span class="v">${eur(bench.median)}</span></div>` +
+      `<div class="kv"><span class="k">This listing</span>` +
       `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${Math.abs(diff)} % ${verdict}</span></div>` +
-      `<div class="kv"><span class="k">p10 – p90</span><span class="v">${eur(bench.p10)} – ${eur(bench.p90)}</span></div></div>`;
+      `<div class="kv"><span class="k">p10 – p90</span><span class="v">${eur(bench.p10)} – ${eur(bench.p90)}</span></div></div></div>`;
   }
   const stale = staleBadge(r.last_seen_at);
   const backBtn = from === "compare"
-    ? `<button class="mini" onclick="backToCompare()">◀️ back</button>`
-    : `<button class="mini" onclick="backTo('${from || "inventory"}')">◀️ back</button>`;
+    ? `<button class="mini" onclick="backToCompare()">‹ Back</button>`
+    : `<button class="mini" onclick="backTo('${from || "listings"}')">‹ Back</button>`;
   content.innerHTML = `
-    <div class="section">
+    <div class="rowbtn" style="margin-top:0">
       ${backBtn}
-      <button class="mini" onclick="saveCurrent(${r.ad_id})">💾 Save</button>
+      <button class="mini ${isSaved ? "on" : ""}" id="detail-save" onclick="toggleSave(${r.ad_id}, this, 'detail')">${isSaved ? "Saved" : "Save"}</button>
+      <a href="${esc(r.url)}" style="align-self:center">Open on Bazoš →</a>
     </div>
     <div class="section card">
-      <h2>${esc(r.title)}${stale}</h2>
+      <h2 style="font-size:17px;margin-bottom:6px">${esc(r.title)}${stale}</h2>
+      <div class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)} · ${esc(r.city || "?")} · listed ${esc(r.published_date || "?")}${r.views != null ? ` · ${r.views} views` : ""}</div>
       ${gallery(r.image_urls)}
-      <div class="kv"><span class="k">price</span><span class="v">💰 ${eur(r.price_eur)}</span></div>
-      <div class="kv"><span class="k">year · km</span><span class="v">${r.year ?? "?"} · ${km(r.mileage_km)}</span></div>
-      <div class="kv"><span class="k">location</span><span class="v">${esc(r.city || "?")}</span></div>
-      ${r.views != null ? `<div class="kv"><span class="k">views</span><span class="v">👁 ${r.views}</span></div>` : ""}
-      <div class="kv"><span class="k">listed</span><span class="v">${esc(r.published_date || "?")}</span></div>
       ${trend}
       ${sparkHtml}
     </div>
-    <div class="section card"><h2>🤖 AI review</h2>${ai}</div>
+    <div class="section"><h2>AI review</h2><div class="card">${ai}</div></div>
     ${market}
-    ${descBlock(r.description || r.description_preview)}
-    <div class="section">
-      <a href="${esc(r.url)}" target="_blank">🔗 Open listing on Bazoš</a>
-    </div>`;
+    ${descBlock(r.description || r.description_preview)}`;
 }
 
 function renderCompare(d, from) {
   const items = (d.items || []).map(x => x.listing).filter(Boolean);
   const cols = items.map(r => `
     <td><b>${esc(r.title)}</b><br><span class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)}</span><br>
-    ${r.score != null ? `<span class="badge b-score">⭐ ${r.score}</span>` : '<span class="badge b-wait">⏳ unscored</span>'}
+    ${r.score != null ? `<span class="badge b-score">${r.score}</span>` : '<span class="badge b-wait">unscored</span>'}
     ${staleBadge(r.last_seen_at)}</td>`).join("");
   const row = (label, fn) => `<tr><td>${label}</td>${items.map(r => `<td>${fn(r)}</td>`).join("")}</tr>`;
   content.innerHTML = `
-    <div class="section"><button class="mini" onclick="backTo('${from || "inventory"}')">◀️ back</button></div>
-    <div class="section card"><h2>⚖️ Compare (${items.length})</h2>
+    <div class="rowbtn" style="margin-top:0"><button class="mini" onclick="backTo('${from || "listings"}')">‹ Back</button></div>
+    <div class="section"><h2>Compare (${items.length})</h2><div class="card cmp-scroll">
     <table class="cmp-table">
       <tr><td></td>${cols}</tr>
-      ${row("price", r => "💰 " + eur(r.price_eur))}
-      ${row("year · km", r => (r.year ?? "?") + " · " + km(r.mileage_km))}
-      ${row("city", r => esc(r.city || "?"))}
-      ${row("score", r => r.score != null ? "⭐ " + r.score + "/100" : "—")}
-      ${row("first offer", r => r.target_offer ? eur(r.target_offer) : "—")}
-      ${row("condition", r => esc(r.condition || "—"))}
-      ${row("reason", r => esc((r.why || "—").slice(0, 120)))}
-      ${row("link", r => `<a href="${esc(r.url)}" target="_blank">🔗</a> <button class="mini" onclick="openListing(${r.ad_id}, 'compare')">🔎</button>`)}
-    </table></div>`;
+      ${row("Price", r => eur(r.price_eur))}
+      ${row("Year · km", r => (r.year ?? "?") + " · " + km(r.mileage_km))}
+      ${row("City", r => esc(r.city || "?"))}
+      ${row("Score", r => r.score != null ? r.score + "/100" : "—")}
+      ${row("First offer", r => r.target_offer ? eur(r.target_offer) : "—")}
+      ${row("Condition", r => esc(r.condition || "—"))}
+      ${row("Reason", r => esc((r.why || "—").slice(0, 120)))}
+      ${row("Link", r => `<a href="${esc(r.url)}">Open</a> <button class="mini" onclick="openListing(${r.ad_id}, 'compare')">View</button>`)}
+    </table></div></div>`;
 }
 
-function renderQueue(d) {
-  const pend = (d.pending || []).map(t => {
-    const pct = t.total ? Math.round((t.done || 0) / t.total * 100) : 0;
-    return `<div class="q-item">
-      <div class="crit">⏳ ${esc((t.criteria || "no criteria").slice(0, 60))}</div>
-      <div class="meta">${esc(t.model || "?")} · ${t.started_at ? t.done + "/" + t.total : "waiting in line"} · ${ago(t.created_at)}</div>
-      <div class="prog"><div class="fill" style="width:${pct}%"></div></div>
-    </div>`;
-  }).join("");
-  const fin = (d.finished || []).map(t => `
-    <div class="q-item">
-      <div class="crit">${t.error ? "⚠️" : "✅"} ${esc((t.criteria || "no criteria").slice(0, 60))}</div>
-      <div class="meta">${t.error ? esc(t.error) : (t.done || 0) + "/" + (t.total || 0) + " cars"} · ${ago(t.done_at)}</div>
-    </div>`).join("");
-  content.innerHTML = `
-    <div class="section"><h2>Waiting / running (${(d.pending || []).length})</h2>${pend || '<div class="muted">Queue is empty ✅</div>'}</div>
-    <div class="section"><h2>Recently finished</h2>${fin || '<div class="muted">Nothing yet</div>'}</div>`;
-}
-
-function renderStats(d) {
+function renderInsights(d) {
   const s = d.stats || {};
-  const counts = (s.new_by_day || []).map(x => x[1]);
   const p = s.price || {};
+  const pend = d.pending || [];
+  const fin = d.finished || [];
+  const run = d.last_run || {};
   const t30 = d.trend30 || [];
   const cov = d.coverage || [];
   const drops = d.drops || [];
   const funnel = d.funnel || {};
   const cost = d.cost || {};
   const ct = cost.total || {};
-  const funnelHtml = ["scraped", "evaluated", "notified", "saved"]
-    .map(k => `<div class="card kpi"><div class="num">${funnel[k] ?? "?"}</div><div class="lbl">${{scraped: "📦 collected", evaluated: "🤖 scored", notified: "🔔 notified", saved: "💾 saved"}[k]}</div></div>`).join("");
-  const dropsHtml = drops.map(x => `
-    <tr><td class="trend-down"><b>−${x.pct} %</b></td>
-    <td><a href="${esc(x.url)}" target="_blank">${esc(x.title)}</a><br><span class="muted">${eur(x.prev)} → ${eur(x.now_price)} · ${esc(x.city || "")}</span></td></tr>`).join("");
-  const costHtml = `<div class="kv"><span class="k">scored (${ct.n ?? 0})</span><span class="v">${ct.unknown ? ct.unknown + " unknown · " : ""}${Number(ct.cost_usd || 0).toFixed(4)} $</span></div>` +
-    `<div class="kv"><span class="k">prompt/completion tokens</span><span class="v">${ct.prompt_tokens ?? 0} / ${ct.completion_tokens ?? 0}</span></div>` +
-    ((cost.by_model || []).map(m =>
-      `<div class="kv"><span class="k">${esc(m.model)}</span><span class="v">${m.n}× · ${Number(m.cost_usd || 0).toFixed(4)} $</span></div>`
-    ).join(""));
-  content.innerHTML = `
-    <div class="grid">
-      <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 listings</div></div>
-      <div class="card kpi"><div class="num">${s.evaluated ?? 0}</div><div class="lbl">🤖 scored</div></div>
-      <div class="card kpi"><div class="num">${eur(p.median)}</div><div class="lbl">💰 median price</div></div>
-      <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 discounts / 7 days</div></div>
-    </div>
-    <div class="section card"><h2>New in 7 days</h2>${spark(counts)}</div>
-    <div class="section card"><h2>AI score distribution</h2>${bars([{k: "90+", v: (s.bands || {}).b90 || 0}, {k: "80–89", v: (s.bands || {}).b80 || 0}, {k: "70–79", v: (s.bands || {}).b70 || 0}, {k: "50–69", v: (s.bands || {}).b50 || 0}, {k: "<50", v: (s.bands || {}).b0 || 0}], "k", "v")}</div>
-    <div class="section card"><h2>💰 Price histogram</h2>${bars(d.histogram || [], "bucket", "n", r => eur(r.lo) + "–" + eur(r.hi))}</div>
-    <div class="section card"><h2>🏷 Top makes</h2>${bars(d.top_makes || [], "make", "n", r => esc(r.make) + " (" + eur(r.median) + ")")}</div>
-    <div class="section card"><h2>⭐ Score vs. price (median)</h2>${bars(d.score_vs_price || [], "band", "median_price", r => r.band + " · " + r.n + "×")}</div>
-    <div class="section card"><h2>📈 New in 30 days (${t30.reduce((a, x) => a + x[1], 0)})</h2>${spark(t30.map(x => x[1]))}</div>
-    <div class="section card"><h2>🤖 Scoring pace (14 days)</h2>${spark(cov.map(x => x[1]))}<div class="muted">${cov.reduce((a, x) => a + x[1], 0)} scored in total</div></div>
-    <div class="section card"><h2>📉 Biggest discounts (30 days)</h2>${dropsHtml ? `<table>${dropsHtml}</table>` : '<div class="muted">None yet.</div>'}</div>
-    <div class="section"><h2>🔄 Pipeline funnel</h2><div class="grid">${funnelHtml}</div></div>
-    <div class="section card"><h2>💵 AI scoring cost (30 days)</h2>${costHtml}<div class="muted">Old scores without token data count as “unknown”.</div></div>
-    <div class="section card"><h2>Prices</h2>
-      <div class="muted">min ${eur(p.mn)} · median ${eur(p.median)} · max ${eur(p.mx)}</div></div>`;
-}
-
-function renderProfiles(d) {
-  const a = d.active || {};
-  const rows = (d.searches || []).map(s => `
-    <div class="switch"><span>${s.notify_enabled ? "🔔" : "🔕"} <b>${esc(s.name)}</b><br>
-      <span class="muted">${esc((s.criteria || "").slice(0, 80))}${s.min_score != null ? " · ⭐" + s.min_score : ""}</span></span>
-      <span style="white-space:nowrap"><button class="tgl" onclick="useProfile('${esc(s.name.replace(/'/g, "\\'"))}')">▶️</button>
-      <button class="tgl ${s.notify_enabled ? "on" : ""}" onclick="toggleSearch('${esc(s.name.replace(/'/g, "\\'"))}', ${!s.notify_enabled})">${s.notify_enabled ? "🔔" : "🔕"}</button></span>
+  const covPct = s.total ? Math.round((s.evaluated || 0) / s.total * 100) : 0;
+  const counts = (s.new_by_day || []).map(x => x[1]);
+  const pendHtml = pend.slice(0, 3).map(t => `
+    <div class="q-item">
+      <div class="crit">${esc((t.criteria || "no criteria").slice(0, 60))}</div>
+      <div class="meta">${esc(t.model || "?")} · ${t.started_at ? t.done + "/" + t.total : "waiting in line"} · ${ago(t.created_at)}</div>
+      <div class="prog"><div class="fill" style="width:${t.total ? Math.round((t.done || 0) / t.total * 100) : 0}%"></div></div>
+    </div>`).join("");
+  const finHtml = fin.slice(0, 3).map(t => `
+    <div class="q-item">
+      <div class="crit">${esc((t.criteria || "no criteria").slice(0, 50))}</div>
+      <div class="meta">${t.error ? esc(t.error) : (t.done || 0) + "/" + (t.total || 0) + " cars"} · ${ago(t.done_at)}</div>
+    </div>`).join("");
+  const dropsHtml = drops.slice(0, 5).map(x => `
+    <div class="item">
+      <div class="body">
+        <div class="title"><a href="${esc(x.url)}">${esc(x.title)}</a></div>
+        <div class="specs">${eur(x.prev)} → ${eur(x.now_price)} · ${esc(x.city || "")}</div>
+      </div>
+      <div class="side"><span class="badge b-drop">−${x.pct} %</span></div>
     </div>`).join("");
   content.innerHTML = `
-    <div class="section card"><h2>🎯 Active profile</h2>
-      <div class="kv"><span class="k">criteria</span><span class="v">${esc(a.criteria || "—")}</span></div>
-      <div class="kv"><span class="k">model</span><span class="v">${esc(a.model || "—")}</span></div>
-      <div class="switch"><span>⭐ Min. score (${a.min_score ?? "—"})</span>
+    <div class="kpis">
+      <div class="kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">listings</div></div>
+      <div class="kpi"><div class="num">${covPct}%</div><div class="lbl">AI coverage</div></div>
+      <div class="kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">discounts / 7d</div></div>
+      <div class="kpi"><div class="num">${d.queue_pending ?? pend.length}</div><div class="lbl">in queue</div></div>
+    </div>
+    <div class="section"><h2>Price histogram</h2><div class="card">
+      ${bars(d.histogram || [], "bucket", "n", r => eur(r.lo) + "–" + eur(r.hi))}
+      <div class="muted" style="margin-top:6px">min ${eur(p.mn)} · median ${eur(p.median)} · max ${eur(p.mx)}</div>
+    </div></div>
+    <div class="section"><h2>Top makes</h2><div class="card">${bars(d.top_makes || [], "make", "n", r => esc(r.make) + " (" + eur(r.median) + ")")}</div></div>
+    <div class="section"><h2>Score vs. price (median)</h2><div class="card">${bars(d.score_vs_price || [], "band", "median_price", r => r.band + " · " + r.n + "×")}</div></div>
+    <div class="section"><h2>New in 30 days (${t30.reduce((a, x) => a + x[1], 0)})</h2><div class="card">${spark(t30.map(x => x[1]))}</div></div>
+    <div class="section"><h2>AI score distribution</h2><div class="card">${bars([{k: "90+", v: (s.bands || {}).b90 || 0}, {k: "80–89", v: (s.bands || {}).b80 || 0}, {k: "70–79", v: (s.bands || {}).b70 || 0}, {k: "50–69", v: (s.bands || {}).b50 || 0}, {k: "<50", v: (s.bands || {}).b0 || 0}], "k", "v")}</div></div>
+    <div class="section"><h2>Scoring pace (14 days)</h2><div class="card">${spark(cov.map(x => x[1]))}<div class="muted">${cov.reduce((a, x) => a + x[1], 0)} scored in total</div></div></div>
+    <div class="section"><h2>Biggest discounts (30 days)</h2><div class="card">${dropsHtml || '<div class="muted">None yet.</div>'}</div></div>
+    <div class="section"><h2>Pipeline funnel</h2><div class="kpis">
+      ${[["Collected", funnel.scraped], ["Scored", funnel.evaluated], ["Notified", funnel.notified], ["Saved", funnel.saved]].map(([l, v]) => `<div class="kpi"><div class="num">${v ?? "?"}</div><div class="lbl">${l.toLowerCase()}</div></div>`).join("")}
+    </div></div>
+    <div class="section"><h2>AI scoring cost (30 days)</h2><div class="card">
+      <div class="kv"><span class="k">Scored (${ct.n ?? 0})</span><span class="v">${ct.unknown ? ct.unknown + " unknown · " : ""}${Number(ct.cost_usd || 0).toFixed(4)} $</span></div>
+      <div class="kv"><span class="k">Prompt/completion tokens</span><span class="v">${ct.prompt_tokens ?? 0} / ${ct.completion_tokens ?? 0}</span></div>
+      ${(cost.by_model || []).map(m =>
+        `<div class="kv"><span class="k">${esc(m.model)}</span><span class="v">${m.n}× · ${Number(m.cost_usd || 0).toFixed(4)} $</span></div>`
+      ).join("")}
+      <div class="muted">Old scores without token data count as “unknown”.</div>
+    </div></div>
+    <div class="section"><h2>AI queue (${pend.length} waiting)</h2><div class="card">
+      ${pendHtml || '<div class="muted">Queue is empty — everything is scored.</div>'}
+      ${finHtml ? `<div class="muted" style="margin-top:8px">Recently: ${fin.length} finished</div>` + finHtml : ""}
+    </div></div>
+    <div class="section"><h2>Last run</h2><div class="card"><div class="muted">
+      ${run.finished_at ? ago(run.finished_at) : "none recorded"} ·
+      ${run.inserted ?? "?"} new · ${run.evaluated ?? "?"} scored · ${run.notified ?? "?"} notifications
+    </div></div></div>`;
+}
+
+function renderProfile(d) {
+  const a = d.active || {};
+  const rows = (d.searches || []).map(s => `
+    <div class="switch"><span>${s.notify_enabled ? "On" : "Off"} · <b>${esc(s.name)}</b><br>
+      <span class="muted">${esc((s.criteria || "").slice(0, 80))}${s.min_score != null ? " · " + s.min_score : ""}</span></span>
+      <span style="white-space:nowrap"><button class="tgl" onclick="useProfile('${esc(s.name.replace(/'/g, "\\'"))}')">Use</button>
+      <button class="tgl ${s.notify_enabled ? "on" : ""}" onclick="toggleSearch('${esc(s.name.replace(/'/g, "\\'"))}', ${!s.notify_enabled})">${s.notify_enabled ? "On" : "Off"}</button></span>
+    </div>`).join("");
+  content.innerHTML = `
+    <div class="section"><h2>Active profile</h2><div class="card">
+      <div class="kv"><span class="k">Criteria</span><span class="v" id="crit-line">${esc(a.criteria || "—")} <button class="mini" onclick="editCriteria(this, '${esc((a.criteria || "").replace(/'/g, "\\'"))}')">Edit</button></span></div>
+      <div class="kv"><span class="k">Model</span><span class="v">${esc(a.model || "—")}</span></div>
+      <div class="switch"><span>Min. score (${a.min_score ?? "—"})</span>
         <span><button class="tgl" onclick="setScore(${(a.min_score ?? 60) - 5})">−5</button>
         <button class="tgl" onclick="setScore(${(a.min_score ?? 60) + 5})">+5</button></span></div>
-      <div class="switch"><span>📸 Photos in notifications</span>
+      <div class="switch"><span>Photos in notifications</span>
         <button class="tgl ${a.show_photo ? "on" : ""}" onclick="setPhotos(${!a.show_photo})">${a.show_photo ? "on" : "off"}</button></div>
-      <div class="switch"><span>🔔 Alerts (all)</span>
+      <div class="switch"><span>Alerts (all)</span>
         <button class="tgl ${a.notify_enabled ? "on" : ""}" onclick="setNotify(${!a.notify_enabled})">${a.notify_enabled ? "on" : "off"}</button></div>
-    </div>
-    <div class="section card"><h2>🔎 Saved searches (${(d.searches || []).length})</h2>
-      ${rows || '<div class="muted">None yet — save a search in the bot with /search.</div>'}</div>`;
+    </div></div>
+    <div class="section"><h2>Saved searches (${(d.searches || []).length})</h2><div class="card">
+      ${rows || '<div class="muted">None yet — save a search in the bot with /search.</div>'}</div></div>`;
+}
+function editCriteria(btn, current) {
+  const line = document.getElementById("crit-line");
+  line.innerHTML = `<input id="crit-in" maxlength="500" value="${esc(current).replace(/"/g, "&quot;")}" ` +
+    `style="width:70%;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 9px;font-size:13px">` +
+    ` <button class="mini on" onclick="saveCriteria()">OK</button>`;
+  const inp = document.getElementById("crit-in");
+  if (inp) inp.focus();
+}
+async function saveCriteria() {
+  const inp = document.getElementById("crit-in");
+  const r = await post("criteria", { criteria: ((inp && inp.value) || "").trim().slice(0, 500) });
+  if (r && r.ok) { buzz("ok"); load("profile"); }
+  else if (r && r.error) { toast(r.error); }
 }
 async function useProfile(name) {
   const r = await post("use", { name });
-  if (r && r.ok) { buzz("ok"); load("profiles"); }
+  if (r && r.ok) { buzz("ok"); load("profile"); }
 }
 async function toggleSearch(name, enabled) {
   const r = await post("toggle_search", { name, enabled });
-  if (r && r.ok) { buzz("ok"); load("profiles"); }
+  if (r && r.ok) { buzz("ok"); load("profile"); }
 }
 async function setNotify(enabled) {
   const r = await post("notify", { enabled });
-  if (r && r.ok) { buzz("ok"); load("profiles"); }
+  if (r && r.ok) { buzz("ok"); load("profile"); }
 }
 async function setScore(min_score) {
   const r = await post("score", { min_score });
-  if (r && r.ok) { buzz("ok"); load("profiles"); }
+  if (r && r.ok) { buzz("ok"); load("profile"); }
 }
 async function setPhotos(enabled) {
   const r = await post("photos", { enabled });
-  if (r && r.ok) { buzz("ok"); load("profiles"); }
+  if (r && r.ok) { buzz("ok"); load("profile"); }
 }
 
 document.querySelectorAll(".tab").forEach(t =>
   t.addEventListener("click", () => load(t.dataset.view)));
-load("overview");
+load("listings");
 </script>
 </body>
 </html>

@@ -256,6 +256,9 @@ class _RichStore(_FakeStore):
             )
         ]
 
+    async def list_saved_ids(self, chat_id: int):
+        return {1}
+
     async def list_searches(self, chat_id: int):
         from bazcar.bot.store import SearchProfile
 
@@ -296,6 +299,10 @@ class _RichStore(_FakeStore):
 
     async def set_saved_note(self, chat_id, ad_id, note) -> bool:
         self.calls.append(("note", ad_id, note))
+        return True
+
+    async def set_saved_alert(self, chat_id, ad_id, below) -> bool:
+        self.calls.append(("alert", ad_id, below))
         return True
 
 
@@ -499,6 +506,51 @@ def test_post_actions_prefs_and_search(_fresh_settings, _rich_deps) -> None:
     assert payload == {"ok": True}
     _, payload = _call_post({"action": "bogus"}, init_data)
     assert payload["error"].startswith("unknown action")
+
+
+def test_post_action_alert_sets_and_clears(_fresh_settings, _rich_deps) -> None:
+    store, _ = _rich_deps
+    init_data = _make_init_data(user_id=42)
+    _, payload = _call_post({"action": "alert", "id": 9, "below": 3000}, init_data)
+    assert payload == {"ok": True, "updated": True}
+    assert ("alert", 9, 3000) in store.calls
+    _, payload = _call_post({"action": "alert", "id": 9}, init_data)
+    assert payload == {"ok": True, "updated": True}
+    assert ("alert", 9, None) in store.calls
+    _, payload = _call_post({"action": "alert", "id": 9, "below": -5}, init_data)
+    assert payload["error"] == "below must be a positive number"
+    _, payload = _call_post({"action": "alert"}, init_data)
+    assert payload["error"] == "id required"
+
+
+def test_post_action_criteria_updates_profile(_fresh_settings, _rich_deps) -> None:
+    store, _ = _rich_deps
+    init_data = _make_init_data(user_id=42)
+    _, payload = _call_post({"action": "criteria", "criteria": "diesel wagon"}, init_data)
+    assert payload == {"ok": True}
+    assert ("prefs", {"criteria": "diesel wagon"}) in [
+        c for c in store.calls if c[0] == "prefs"
+    ]
+    _, payload = _call_post({"action": "criteria", "criteria": "  "}, init_data)
+    assert payload["error"] == "criteria required"
+
+
+def test_insights_view_merges_overview_stats_queue(_rich_deps) -> None:
+    payload, status = _run_view("insights")
+    assert status == 200
+    for key in ("stats", "last_run", "queue_pending", "pending", "finished",
+                "histogram", "top_makes", "score_vs_price", "trend30",
+                "coverage", "drops", "funnel", "cost"):
+        assert key in payload, f"insights missing {key}"
+
+
+def test_listing_view_reports_saved_state(_rich_deps) -> None:
+    # saved_ids = {1}; ad 9 is not saved
+    from api import webapp
+
+    payload, status = asyncio.run(webapp._load_view("listing", 42, 0, 30, 9))
+    assert status == 200
+    assert payload["is_saved"] is False
 
 
 def test_post_requires_auth(_fresh_settings) -> None:

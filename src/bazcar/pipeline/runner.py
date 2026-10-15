@@ -378,7 +378,7 @@ async def _process_eval_tasks() -> int:
                 if attempts >= MAX_EVAL_TASK_RETRIES:
                     await repo.fail_eval_task(
                         task["id"],
-                        f"model {task['model']} zlyhal {attempts}x (429/limit)",
+                        f"model {task['model']} failed {attempts}x (429/limit)",
                     )
                     logger.warning(
                         "eval task %d abandoned after %d failed attempts (model %s)",

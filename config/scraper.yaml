@@ -9,7 +9,7 @@ base:
     min_price: 1000
     max_price: 3000
     psc: null
-    distance_km: null   # okruh okolo PSC v km (Bazoš '?km='), nie najazdené km
+    distance_km: null   # radius around the ZIP code in km (Bazoš '?km='), not vehicle mileage
 
 http:
   timeout_seconds: 15
