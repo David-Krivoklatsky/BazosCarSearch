@@ -261,14 +261,17 @@ def test_score_and_photos_commands():
     assert prefs.show_photo is True
 
 
-def test_save_and_saved_commands():
+def test_save_and_saved_commands(monkeypatch):
+    """Offline path: no DB -> export-file fallback, never touches the network."""
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 123456"}})
     saved = asyncio.run(bot.store.list_saved(42))
     assert [s.ad_id for s in saved] == [123456]
 
 
-def test_inline_save_button_stores_ad_and_answers():
+def test_inline_save_button_stores_ad_and_answers(monkeypatch):
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
     bot = _bot()
     _run(
         bot.handle,
@@ -875,7 +878,26 @@ def test_menu_dashboard_button_routes_to_dashboard(monkeypatch):
     assert "menu:dashboard" in flat
 
 
-def test_note_command_sets_and_clears():
+def test_save_resolves_title_from_db(fake_repo):
+    fake_repo.rows = [_row(111)]
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 111"}})
+    saved = asyncio.run(bot.store.list_saved(42))
+    assert saved[0].ad_title == "Škoda Octavia 111"
+    assert saved[0].ad_url == "https://x/111"
+
+
+def test_save_falls_back_to_untitled_without_db(monkeypatch):
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 999999999"}})
+    saved = asyncio.run(bot.store.list_saved(42))
+    assert saved[0].ad_id == 999999999
+    assert saved[0].ad_title is None
+
+
+def test_note_command_sets_and_clears(monkeypatch):
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 111"}})
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/note 111 zavolat po 18:00"}})

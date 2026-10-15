@@ -1674,11 +1674,33 @@ class Bot:
             ad_id = int(arg)
         except ValueError:
             return "/save ad_id"
-        listing = await self._find_listing(ad_id)
-        title = listing.title if listing else None
-        url = listing.url if listing else None
+        title, url = await self._resolve_listing_meta(ad_id)
         await self.store.save_listing(chat_id, ad_id, title, url)
         return f"💾 Uložené ad {ad_id}."
+
+    async def _resolve_listing_meta(self, ad_id: int) -> tuple[str | None, str | None]:
+        """Title/url for a saved ad: live DB first, export file as fallback.
+
+        The export-file path only works on long-lived hosts; on serverless
+        (Vercel) the export dir is empty, so the database is authoritative.
+        """
+        settings = get_settings()
+        if settings.database_url:
+            try:
+                repo = ListingRepository(settings.database_url)
+                await repo.connect()
+                try:
+                    row = await repo.fetch_listing_by_id(ad_id, "")
+                finally:
+                    await repo.close()
+                if row:
+                    return row.get("title"), row.get("url")
+            except Exception:
+                logger.warning("save title lookup in db failed", exc_info=True)
+        listing = await self._find_listing(ad_id)
+        if listing is not None:
+            return listing.title, listing.url
+        return None, None
 
     async def _saved(self, chat_id: int) -> str:
         saved = await self.store.list_saved(chat_id)

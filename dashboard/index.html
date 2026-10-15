@@ -148,7 +148,10 @@ let invPage = 0, invDays = 30;
 let inv = { q: "", sort: "newest", status: "all", min_price: "", max_price: "", min_year: "", max_year: "" };
 let lastItems = [];
 let compareIds = [];
+let lastCompareIds = [];
+let lastCompareFrom = "inventory";
 let lastRetry = () => load("overview");
+const KNOWN_VIEWS = ["overview", "inventory", "saved", "queue", "stats", "profiles"];
 
 function buzz(kind) {
   try {
@@ -262,6 +265,7 @@ function markTab(view) {
     t.classList.toggle("active", t.dataset.view === view));
 }
 async function load(view) {
+  if (!KNOWN_VIEWS.includes(view)) view = "overview";
   currentView = view;
   markTab(view);
   setBack(null);
@@ -290,6 +294,7 @@ async function load(view) {
   else if (view === "profiles") renderProfiles(data);
 }
 function backTo(view) { setBack(null); load(view); }
+function backToCompare() { openCompare(lastCompareIds, lastCompareFrom); }
 
 async function openListing(id, from) {
   currentView = "listing";
@@ -297,7 +302,8 @@ async function openListing(id, from) {
   buzz();
   skeleton(2);
   content.innerHTML = "";
-  setBack(() => backTo(from || "inventory"));
+  if (from === "compare") setBack(backToCompare);
+  else setBack(() => backTo(from || "inventory"));
   lastRetry = () => openListing(id, from);
   const data = await get(new URLSearchParams({ view: "listing", id: String(id) }));
   if (data == null) return;
@@ -310,8 +316,10 @@ async function openCompare(ids, from) {
   buzz();
   skeleton(2);
   content.innerHTML = "";
-  setBack(() => backTo(from || "inventory"));
-  lastRetry = () => openCompare(ids, from);
+  lastCompareIds = [...ids];
+  lastCompareFrom = from || "inventory";
+  setBack(() => backTo(lastCompareFrom));
+  lastRetry = () => openCompare(lastCompareIds, lastCompareFrom);
   const data = await get(new URLSearchParams({ view: "compare", ids: ids.join(",") }));
   if (data == null) return;
   loading.style.display = "none";
@@ -550,9 +558,12 @@ function renderListing(d, from) {
       `<div class="kv"><span class="k">p10 – p90</span><span class="v">${eur(bench.p10)} – ${eur(bench.p90)}</span></div></div>`;
   }
   const stale = staleBadge(r.last_seen_at);
+  const backBtn = from === "compare"
+    ? `<button class="mini" onclick="backToCompare()">◀️ späť</button>`
+    : `<button class="mini" onclick="backTo('${from || "inventory"}')">◀️ späť</button>`;
   content.innerHTML = `
     <div class="section">
-      <button class="mini" onclick="backTo('${from || "inventory"}')">◀️ späť</button>
+      ${backBtn}
       <button class="mini" onclick="saveCurrent(${r.ad_id})">💾 Uložiť</button>
     </div>
     <div class="section card">

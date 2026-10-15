@@ -69,6 +69,15 @@ def test_spa_has_retry_and_empty_states() -> None:
     assert "lastRetry" in HTML
 
 
+def test_spa_compare_back_navigation() -> None:
+    """Compare -> detail -> back must reopen the compare view, not dead-end."""
+    assert "lastCompareIds" in HTML
+    assert "function backToCompare" in HTML
+    assert "KNOWN_VIEWS" in HTML
+    # the detail back button routes through the compare path when coming from it
+    assert 'from === "compare"' in HTML
+
+
 def test_spa_js_balanced_braces() -> None:
     scripts = re.findall(r"<script>(.*?)</script>", HTML, re.DOTALL)
     assert scripts, "no inline script found"
