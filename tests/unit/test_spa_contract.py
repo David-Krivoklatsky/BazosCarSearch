@@ -64,6 +64,10 @@ def test_spa_benchmark_warns_on_small_n() -> None:
     assert "málo dát" in HTML
 
 
+def test_spa_saved_shows_alert_threshold() -> None:
+    assert "strážim pod" in HTML
+
+
 def test_spa_has_retry_and_empty_states() -> None:
     assert "Skúsiť znova" in HTML
     assert "lastRetry" in HTML

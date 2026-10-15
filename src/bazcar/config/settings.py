@@ -133,6 +133,16 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("BAZCAR_WEBAPP_URL", "WEBAPP_URL"),
         description="Public URL of the Telegram Mini App dashboard (https://...).",
     )
+    monthly_budget_usd: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "BAZCAR_MONTHLY_BUDGET_USD", "MONTHLY_BUDGET_USD"
+        ),
+        description=(
+            "LLM spend guardrail: when the trailing-30-day evaluation cost "
+            "reaches this, fresh scoring pauses (cached scores still served)."
+        ),
+    )
 
     def allowed_chats(self) -> set[int] | None:
         """Parse the allowlist; None means open onboarding (no restriction)."""

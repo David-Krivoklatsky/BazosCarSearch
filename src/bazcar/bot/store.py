@@ -47,6 +47,7 @@ class SavedListing:
     current_price: int | None = None
     max_price: int | None = None
     last_seen_at: str | None = None
+    alert_below: int | None = None
 
 
 class UserStore:
@@ -299,9 +300,33 @@ class UserStore:
         )
         return result != "UPDATE 0"
 
+    async def set_saved_alert(
+        self, chat_id: int, ad_id: int, below: int | None
+    ) -> bool:
+        """Alert threshold for a saved ad (None = alert on any drop)."""
+        result = await self._require().execute(
+            "UPDATE saved_listings SET alert_below = $3 WHERE chat_id = $1 AND ad_id = $2",
+            chat_id,
+            ad_id,
+            below,
+        )
+        return result != "UPDATE 0"
+
+    async def alert_thresholds(self, chat_ids: list[int], ad_id: int) -> dict[int, int | None]:
+        """chat_id -> alert_below for savers of one ad (missing key = no row)."""
+        if not chat_ids:
+            return {}
+        rows = await self._require().fetch(
+            "SELECT chat_id, alert_below FROM saved_listings"
+            " WHERE ad_id = $1 AND chat_id = ANY($2::bigint[])",
+            ad_id,
+            chat_ids,
+        )
+        return {r["chat_id"]: r["alert_below"] for r in rows}
+
     async def list_saved(self, chat_id: int) -> list[SavedListing]:
         rows = await self._require().fetch(
-            "SELECT s.ad_id, s.ad_title, s.ad_url, s.note,"
+            "SELECT s.ad_id, s.ad_title, s.ad_url, s.note, s.alert_below,"
             " l.price_eur AS current_price, l.last_seen_at,"
             " (SELECT max(h.price_eur) FROM price_history h WHERE h.ad_id = s.ad_id)"
             " AS max_price"

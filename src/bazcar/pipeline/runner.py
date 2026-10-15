@@ -516,12 +516,39 @@ async def _notify_price_drops(
         await repo.close()
     if not chats_by_ad:
         return 0
+    from bazcar.bot.store import UserStore
+
+    thresholds: dict[int, dict[int, int | None]] = {}
+    try:
+        store = UserStore(settings.database_url)
+        await store.connect()
+        try:
+            for ad_id in chats_by_ad:
+                try:
+                    thresholds[ad_id] = await store.alert_thresholds(chats_by_ad[ad_id], ad_id)
+                except Exception:
+                    logger.warning("alert thresholds unavailable for ad %s", ad_id, exc_info=True)
+                    thresholds[ad_id] = {}
+        finally:
+            await store.close()
+    except Exception:
+        # Thresholds are best-effort: without them every saver is alerted.
+        logger.warning("alert thresholds lookup failed, alerting all savers", exc_info=True)
     sent = 0
     async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id or "") as ntf:
         for ad_id, old_price, new_price in drops:
             targets = chats_by_ad.get(ad_id)
             listing = by_id.get(ad_id)
             if not targets or listing is None:
+                continue
+            limits = thresholds.get(ad_id, {})
+            targets = [
+                chat_id
+                for chat_id in targets
+                if limits.get(chat_id) is None
+                or float(new_price) <= float(limits[chat_id])
+            ]
+            if not targets:
                 continue
             pct = round((1 - float(new_price) / float(old_price)) * 100) if old_price else 0
             old_fmt = f"{old_price:,.0f}".replace(",", " ")
@@ -579,6 +606,18 @@ async def _evaluate(
                 await repo.close()
                 repo = None
 
+    budget = getattr(settings, "monthly_budget_usd", None)
+    if repo is not None and budget is not None:
+        spent = await _monthly_spend(repo)
+        if spent >= budget:
+            logger.warning(
+                "monthly AI budget exhausted ($%.4f >= $%.4f) — serving cached scores only",
+                spent,
+                budget,
+            )
+            await repo.close()
+            return 0
+
     total_fresh = 0
     try:
         for user in users:
@@ -595,6 +634,16 @@ async def _evaluate(
     finally:
         if repo is not None:
             await repo.close()
+
+
+async def _monthly_spend(repo) -> float:
+    """Trailing-30-day evaluation spend in USD (0.0 when unknown)."""
+    try:
+        cost = await repo.eval_cost(None, 30)
+        return float(cost.get("total", {}).get("cost_usd") or 0)
+    except Exception:
+        logger.warning("monthly spend lookup failed", exc_info=True)
+        return 0.0
 
 
 async def _persist(

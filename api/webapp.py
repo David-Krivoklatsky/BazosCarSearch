@@ -246,6 +246,7 @@ async def _load_view(
                         "current_price": s.current_price,
                         "drop_pct": drop_pct if (drop_pct or 0) > 0 else None,
                         "last_seen_at": s.last_seen_at,
+                        "alert_below": s.alert_below,
                     }
                 )
             return {"items": items, "saved_ids": sorted(saved_ids)}, HTTPStatus.OK
@@ -341,7 +342,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             if not name:
                 return {"error": "name required"}, HTTPStatus.BAD_REQUEST
             searches = await store.list_searches(chat_id)
-            match = next((s for s in searches if s.name == name), None)
+            match = next((s for s in searches if s.name.lower() == name.lower()), None)
             if match is None:
                 return {"error": "search not found"}, HTTPStatus.NOT_FOUND
             await store.update_prefs(

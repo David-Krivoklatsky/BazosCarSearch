@@ -217,6 +217,13 @@ class _FakeStore:
                 return True
         return False
 
+    async def set_saved_alert(self, chat_id: int, ad_id: int, below: int | None) -> bool:
+        for s in self.saved.get(chat_id, []):
+            if s.ad_id == ad_id:
+                s.alert_below = below
+                return True
+        return False
+
     async def list_saved(self, chat_id: int) -> list[SavedListing]:
         return self.saved.get(chat_id, [])
 
@@ -591,6 +598,7 @@ class _DbSettings(_NoDbSettings):
         self.database_url = "postgres://fake"
         self.telegram_bot_token = None
         self.telegram_chat_id = None
+        self.telegram_min_score = None
         self.webapp_url = None
 
     def allowed_chats(self) -> set[int] | None:
@@ -627,6 +635,19 @@ class _FakeRepo:
     async def fetch_listing_by_id(self, ad_id, profile_key):
         type(self).calls.append(("fetch_listing_by_id", ad_id))
         return self.rows[0] if self.rows and self.rows[0]["ad_id"] == ad_id else None
+
+    async def new_by_day(self, days=7):
+        return [("2026-10-10", 2)]
+
+    async def drops_leaderboard(self, limit=10, days=30):
+        return [{"ad_id": 1, "title": "Skoda", "url": "https://x/1",
+                 "city": "BA", "prev": 6000, "now_price": 5000, "pct": 16.7}]
+
+    async def count_recent_matches(self, profile_key, min_score, days):
+        return 1
+
+    async def fetch_recent_matches(self, profile_key, min_score, days, limit):
+        return [{"ad_id": 1, "title": "Skoda", "url": "https://x/1", "score": 90}]
 
     async def fetch_price_history(self, ad_id, limit=10):
         return self.history
@@ -997,3 +1018,52 @@ def test_global_notify_toggle_callback():
     )
     prefs = asyncio.run(bot.store.get_prefs(42))
     assert prefs.notify_enabled is False
+
+
+def test_alert_sets_shows_and_clears_threshold(monkeypatch):
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 111"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 111 3000"}})
+    saved = asyncio.run(bot.store.list_saved(42))
+    assert saved[0].alert_below == 3000
+    assert "3 000" in bot.notifier.sent[-1][1]
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 111"}})
+    assert "strážim pod" in bot.notifier.sent[-1][1]
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 111 off"}})
+    saved = asyncio.run(bot.store.list_saved(42))
+    assert saved[0].alert_below is None
+
+
+def test_alert_requires_saved_and_valid_price(monkeypatch):
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 999 3000"}})
+    assert "nemáš uložený" in bot.notifier.sent[-1][1]
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert"}})
+    assert "Použitie" in bot.notifier.sent[-1][1]
+
+
+def test_digest_renders_week(fake_repo):
+    bot = _bot_with_prefs()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/digest"}})
+    text = bot.notifier.sent[-1][1]
+    assert "Týždenný súhrn" in text
+    assert "16.7" in text
+    assert "90/100" in text
+
+
+def test_status_shows_notify_state():
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/photos on"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/status"}})
+    assert "Upozornenia: 🔔 zapnuté" in bot.notifier.sent[-1][1]
+
+
+def test_saved_shows_alert_threshold(monkeypatch):
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
+    bot = _bot()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/save 111"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 111 2500"}})
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/saved"}})
+    assert "strážim pod 2 500" in bot.notifier.sent[-1][1]

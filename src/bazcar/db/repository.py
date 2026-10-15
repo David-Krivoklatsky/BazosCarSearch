@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS saved_listings (
     ad_title    text,
     ad_url      text,
     note        text NOT NULL DEFAULT '',
+    alert_below int,
     saved_at    timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (chat_id, ad_id)
 );
@@ -181,6 +182,8 @@ ALTER TABLE evaluations
     ADD COLUMN IF NOT EXISTS cost_usd numeric(12, 6);
 ALTER TABLE saved_listings
     ADD COLUMN IF NOT EXISTS note text NOT NULL DEFAULT '';
+ALTER TABLE saved_listings
+    ADD COLUMN IF NOT EXISTS alert_below int;
 ALTER TABLE user_searches
     ADD COLUMN IF NOT EXISTS notify_enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE user_prefs

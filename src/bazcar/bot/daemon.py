@@ -62,6 +62,8 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "save", "description": "Uložiť inzerát na neskôr (ad_id)"},
     {"command": "saved", "description": "Moje uložené inzeráty + zľavy"},
     {"command": "note", "description": "Poznámka k uloženému: /note id text"},
+    {"command": "alert", "description": "Strážiť cenu: /alert id [cena|off]"},
+    {"command": "digest", "description": "📬 Týždenný súhrn noviniek"},
     {"command": "unsave", "description": "Odstrániť uložený inzerát"},
     {"command": "help", "description": "Nápoveda — /prikaz help pre detaily"},
 ]
@@ -469,8 +471,21 @@ COMMAND_HELP: dict[str, str] = {
     ),
     "/searches": (
         "<b>/searches</b> — zoznam uložených hľadaní\n\n"
-        "Ukáže všetky uložené profily (kritériá + filtre + skóre).\n"
-        "Aktivuješ ich príkazom <code>/use meno</code>."
+        "Ukáže všetky uložené profily (kritériá + filtre + skóre) aj so stavom "
+        "upozornení. Tlačidlami 🔔/🔕 prepneš upozornenia pre každý profil, "
+        "▶️ ho aktivuješ (to isté ako <code>/use meno</code>)."
+    ),
+    "/alert": (
+        "<b>/alert</b> — strážiť cenu uloženého inzerátu\n\n"
+        "<code>/alert 195315165 3000</code> — upozorním, až cena klesne pod 3 000 €\n"
+        "<code>/alert 195315165 off</code> — späť na upozornenie pri každej zľave\n"
+        "<code>/alert 195315165</code> — ukáže aktuálny prah\n\n"
+        "Bez prahu upozorním na každú zľavu automaticky."
+    ),
+    "/digest": (
+        "<b>/digest</b> — týždenný súhrn\n\n"
+        "Nové inzeráty, najväčšie zľavy, top zhody s tvojím profilom a stav "
+        "AI fronty za posledných 7 dní. Na vyžiadanie, kedykoľvek."
     ),
     "/use": (
         "<b>/use</b> — aktivovať uložené hľadanie\n\n"
@@ -763,7 +778,7 @@ HELP_TEXT = (
     "  /dashboard — webové grafy (Mini App)\n"
     "  /eval — prehodnotiť autá podľa searchu\n\n"
     "<b>💾 Uložené</b>\n"
-    "  /save ad_id · /saved · /note ad_id text · /unsave ad_id\n\n"
+    "  /save ad_id · /saved · /note ad_id text · /alert ad_id cena · /digest · /unsave ad_id\n\n"
     "<b>⚙️ AI a nastavenia</b>\n"
     "  /models · /model · /photos · /status · /menu\n\n"
     "💡 Detail každého príkazu: <code>/prikaz help</code> (napr. <code>/cars help</code>)\n"
@@ -922,6 +937,10 @@ class Bot:
                 return await self._saved(chat_id)
             case "/note":
                 return await self._note(chat_id, arg)
+            case "/alert":
+                return await self._alert(chat_id, arg)
+            case "/digest":
+                return await self._digest(chat_id)
             case "/unsave":
                 return await self._unsave(chat_id, arg)
             case "/cars":
@@ -1461,10 +1480,25 @@ class Bot:
         try:
             run = await repo.latest_scrape_run()
             pending = await repo.pending_eval_tasks()
+            try:
+                cost = await repo.eval_cost(None, 30)
+                spend = float(cost.get("total", {}).get("cost_usd") or 0)
+            except Exception:
+                logger.warning("health cost lookup failed", exc_info=True)
+                spend = None
         finally:
             await repo.close()
         lines = ["<b>🩺 Zdravie pipeline</b>", ""]
         lines.append("🗄 Databáza: ✅ spojená")
+        budget = getattr(settings, "monthly_budget_usd", None)
+        if spend is not None:
+            if budget is not None:
+                state = "⏸️ stopnuté (rozpočet)" if spend >= budget else "✅"
+                lines.append(
+                    f"💵 AI za 30 dní: <b>{spend:.4f} $</b> / {budget} $ {state}"
+                )
+            else:
+                lines.append(f"💵 AI za 30 dní: <b>{spend:.4f} $</b> (bez limitu)")
         if run:
             age = time_ago(run.get("finished_at") or run.get("started_at"))
             lines.append(f"🔄 Posledný beh: <b>{age}</b>")
@@ -1727,11 +1761,16 @@ class Bot:
                         bits.append(f"🔔 −{pct} % z maxima")
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
+            if item.alert_below:
+                try:
+                    bits.append(f"🎯 strážim pod {fmt_eur(int(item.alert_below))}")
+                except (TypeError, ValueError):
+                    pass
             if item.note:
                 note = item.note if len(item.note) <= 80 else item.note[:77] + "…"
                 bits.append(f"📝 {_em(note)}")
             lines.append(head + ("\n  " + " · ".join(bits) if bits else ""))
-        lines.append("\n<i>/note ad_id text — poznámka · /unsave ad_id — odstrániť</i>")
+        lines.append("\n<i>/note ad_id text — poznámka · /alert ad_id cena — strážiť cenu · /unsave ad_id — odstrániť</i>")
         return "\n".join(lines)
 
     async def _note(self, chat_id: int, arg: str) -> str:
@@ -1753,6 +1792,73 @@ class Bot:
         removed = await self.store.remove_saved(chat_id, ad_id)
         return "Odstránené ✅" if removed else f"Ad {ad_id} nemáš uložený."
 
+    async def _alert(self, chat_id: int, arg: str) -> str:
+        """Per-ad price watch: /alert <ad_id> [cena|off] (empty = show)."""
+        parts = (arg or "").split(maxsplit=1)
+        if not parts or not parts[0].lstrip("-").isdigit():
+            return "Použitie: <code>/alert ad_id [cena|off]</code> — napr. <code>/alert 195315165 3000</code>"
+        ad_id = int(parts[0])
+        saved = await self.store.list_saved(chat_id)
+        if all(s.ad_id != ad_id for s in saved):
+            return f"Ad {ad_id} nemáš uložený. Najprv <code>/save {ad_id}</code>."
+        if len(parts) == 1:
+            current = next(s.alert_below for s in saved if s.ad_id == ad_id)
+            return (
+                f"🔔 Ad {ad_id}: strážim pod <b>{fmt_eur(current)}</b>."
+                if current
+                else f"🔔 Ad {ad_id}: upozorním na každú zľavu. Prah nastavíš: <code>/alert {ad_id} cena</code>"
+            )
+        raw = parts[1].strip().lower()
+        if raw in {"off", "0", "vyp", "vypnúť"}:
+            await self.store.set_saved_alert(chat_id, ad_id, None)
+            return f"🔔 Ad {ad_id}: prah zrušený — upozorním na každú zľavu."
+        try:
+            below = int(raw.replace(" ", "").replace("€", ""))
+        except ValueError:
+            return "Cena musí byť číslo — napr. <code>/alert 195315165 3000</code>"
+        if below <= 0:
+            return "Cena musí byť kladná."
+        await self.store.set_saved_alert(chat_id, ad_id, below)
+        return f"🔔 Ad {ad_id}: upozorním, až cena klesne pod <b>{fmt_eur(below)}</b>."
+
+    async def _digest(self, chat_id: int) -> str:
+        """On-demand weekly summary: new ads, drops, top matches, queue."""
+        settings = get_settings()
+        if not settings.database_url:
+            return "⚠️ /digest potrebuje databázu."
+        p_key, prefs = await self._profile_key_for(chat_id)
+        min_score = (prefs.min_score if prefs and prefs.min_score is not None else None)
+        if min_score is None:
+            min_score = settings.telegram_min_score or 0
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            week = await repo.new_by_day(7)
+            drops = await repo.drops_leaderboard(3, 7)
+            total_matches = await repo.count_recent_matches(p_key, min_score, 7)
+            top = await repo.fetch_recent_matches(p_key, min_score, 7, 3)
+            pending = await repo.pending_eval_tasks()
+        finally:
+            await repo.close()
+        lines = ["<b>📬 Týždenný súhrn</b>"]
+        lines.append(f"🆕 Nových inzerátov za 7 dní: <b>{sum(n for _, n in week)}</b>")
+        lines.append(f"📉 Zliav za 7 dní: <b>{len(drops)}</b>")
+        for d in drops:
+            lines.append(
+                f"  −{d['pct']} % <a href=\"{_em_url(d['url'])}\">{_em(d['title'])}</a> "
+                f"({fmt_eur(d['prev'])} → {fmt_eur(d['now_price'])})"
+            )
+        lines.append(f"⭐ Zhoduje sa s tvojím profilom (7 dní): <b>{total_matches}</b>")
+        for m in top:
+            lines.append(
+                f"  {m.get('score', '?')}/100 <a href=\"{_em_url(m['url'])}\">{_em(m['title'])}</a>"
+            )
+        lines.append(
+            f"⏳ Vo fronte AI: <b>{len(pending)}</b>"
+            + (" — spracuje cron." if pending else " ✅")
+        )
+        return "\n".join(lines)
+
     async def _status(self, chat_id: int) -> str:
         prefs = await self.store.get_prefs(chat_id)
         if prefs is None:
@@ -1765,9 +1871,13 @@ class Bot:
             f"Model: {_em(model)}",
             f"Min. hodnotenie: {_em(str(prefs.min_score or '—'))}",
             f"Fotky: {'áno' if prefs.show_photo else 'nie'}",
+            f"Upozornenia: {'🔔 zapnuté' if prefs.notify_enabled else '🔕 vypnuté'}",
             self._filters_summary(prefs.filters),
  f"Profil: <code>{p_key}</code>",
         ]
+        budget = getattr(get_settings(), "monthly_budget_usd", None)
+        if budget is not None:
+            lines.append(f"💵 Mesačný AI rozpočet: <b>{budget} $</b>")
         if get_settings().database_url:
             try:
                 repo = ListingRepository(get_settings().database_url)

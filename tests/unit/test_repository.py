@@ -105,3 +105,33 @@ def test_plan_empty_input():
     assert plan.stats.total == 0
     assert plan.upserts == []
     assert plan.history == []
+
+
+def test_schema_bootstrap_covers_code_selected_columns():
+    """init_schema must create every newer column the code SELECTs/writes.
+
+    The webhook auto-migrates on each call, but a deploy that selects a
+    column before any migration ran would 500 — this pins the DDL side.
+    """
+    from bazcar.db.repository import SCHEMA_SQL
+
+    for column in (
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+        "note",
+        "alert_below",
+        "notify_enabled",
+        "condition",
+        "target_offer",
+    ):
+        assert column in SCHEMA_SQL, f"schema bootstrap missing {column}"
+
+
+def test_upsert_evaluation_sql_matches_usage_columns():
+    """The evaluation upsert must persist token usage (12 params)."""
+    from bazcar.db.repository import _UPSERT_EVALUATION_SQL
+
+    assert _UPSERT_EVALUATION_SQL.count("$") == 12
+    for column in ("prompt_tokens", "completion_tokens", "cost_usd"):
+        assert column in _UPSERT_EVALUATION_SQL

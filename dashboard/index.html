@@ -502,8 +502,9 @@ function renderSaved(d) {
   const rows = items.map(s => {
     const drop = s.drop_pct ? ` <span class="badge b-drop">📉 −${s.drop_pct} %</span>` : "";
     const note = s.note ? `<br><span class="muted">📝 ${esc(s.note)}</span>` : "";
+    const watch = s.alert_below ? `<br><span class="muted">🎯 strážim pod ${eur(s.alert_below)}</span>` : "";
     return `<tr>
-      <td><a href="${esc(s.url || "#")}" target="_blank">${esc(s.title || ("ad " + s.ad_id))}</a>${drop}${note}<br>
+      <td><a href="${esc(s.url || "#")}" target="_blank">${esc(s.title || ("ad " + s.ad_id))}</a>${drop}${note}${watch}<br>
         <span class="muted">${s.current_price != null ? eur(s.current_price) : "cena ?"}${staleBadge(s.last_seen_at)}</span></td>
       <td style="white-space:nowrap">
         <button class="mini" onclick="openListing(${s.ad_id}, 'saved')">🔎</button>

@@ -34,6 +34,9 @@ class _Settings:
         self.telegram_chat_id = kw.get("telegram_chat_id")
         self.telegram_min_score = kw.get("telegram_min_score", 70)
         self.telegram_bot_token = kw.get("telegram_bot_token")
+        self.openrouter_api_key = kw.get("openrouter_api_key")
+        self.openrouter_model = kw.get("openrouter_model")
+        self.monthly_budget_usd = kw.get("monthly_budget_usd")
 
 
 def _run(coro):
@@ -521,3 +524,82 @@ def test_match_sweep_covers_enabled_searches(monkeypatch):
     _SweepRepo.rows_by_profile[p_search] = [_match_row(2)]
     assert _run(_notify_unseen_matches([user], enabled=True)) == 1
     assert notifier.sent == [(7, "2")]
+
+
+def test_price_drops_respect_alert_thresholds(monkeypatch):
+    """Saver with alert_below=4000 is skipped when the price only fell to 5000."""
+    from bazcar.pipeline.runner import _notify_price_drops
+
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(telegram_bot_token="T", database_url="postgres://x"),
+    )
+
+    class _Repo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def fetch_chats_saving(self, ad_ids):
+            return {1: [7, 8]}
+
+    class _Store:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def alert_thresholds(self, chat_ids, ad_id):
+            return {7: 4000, 8: None}
+
+    notifier = _FakeNotifier()
+    notifier.sent = []
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    monkeypatch.setattr("bazcar.bot.store.UserStore", _Store)
+    monkeypatch.setattr("bazcar.notify.TelegramNotifier", lambda *a, **kw: notifier)
+    sent = _run(_notify_price_drops([_listing()], [(1, Decimal("6000"), Decimal("5000"))]))
+    assert sent == 1
+    assert [chat for chat, _ in notifier.sent] == [8]
+
+
+def test_evaluate_pauses_when_budget_exhausted(monkeypatch):
+    """Monthly cap reached -> no fresh LLM calls, cached scores still served."""
+    from bazcar.pipeline.runner import _evaluate
+
+    class _Repo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def init_schema(self):
+            return None
+
+        async def eval_cost(self, profile_key=None, days=30):
+            return {"total": {"n": 10, "cost_usd": 5.0}, "by_model": []}
+
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(
+            telegram_bot_token="T",
+            database_url="postgres://x",
+            openrouter_api_key="K",
+            monthly_budget_usd=1.0,
+        ),
+    )
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    users = [_user(7, None, criteria="diesel", model="m/1", min_score=70)]
+    assert _run(_evaluate([_listing()], enabled=True, users=users)) == 0
