@@ -23,11 +23,17 @@ SYSTEM_PROMPT = (
     "daný inzerát 0–100 (100 = vynikajúci obchod), podľa kritérií používateľa "
     "(ak nie sú, hodnotiť všeobecne). V poli risk uveď NAJVÄČŠÍ možný problém "
     "alebo prečo by kúpa mohla byť riziková (1 veta, po slovensky; ak žiadne "
-    "riziko, krátke 'najazdené' alebo 'neznáme' ). Odpovedaj LEN jedným JSON "
-    "objestom (žiadny text pred ani za ním): "
+    "riziko, krátke 'najazdené' alebo 'neznáme' ). V poli condition zhrň "
+    "predpokladaný stav vozidla podľa popisu (2-4 slová, po slovensky, napr. "
+    "'zachovalé, servisované'). V poli target_offer navrhni primeranú prvú "
+    "ponuku v EUR na vyjednávanie (celé číslo, nižšia než požadovaná cena; "
+    "null ak cena nie je známa). Odpovedaj LEN jedným JSON "
+    "objektom (žiadny text pred ani za ním): "
     "{\"score\": <int 0-100>, \"why\": \"<1-2 viet po slovensky: dôvod>\", "
     "\"risk\": \"<najväčší možný problém po slovensky>\", "
-    "\"is_car\": <true ak inzerát predáva celé auto, inak false — svetlá/diskía/pn/a sedaky>}."
+    "\"is_car\": <true ak inzerát predáva celé auto, inak false — svetlá/disky/pn/a sedaky>, "
+    "\"condition\": \"<predpokladaný stav, 2-4 slová>\", "
+    "\"target_offer\": <int EUR alebo null>}."
 )
 
 
@@ -121,7 +127,32 @@ def parse_evaluation(content: str | None) -> DealEvaluation | None:
             why = str(payload.get("why", "")).strip()
             risk = str(payload.get("risk", "")).strip()
             is_car = bool(payload.get("is_car", True))
-            return DealEvaluation(score=score, why=why, risk=risk, is_car=is_car)
+            condition = str(payload.get("condition", "") or "").strip()
+            offer_raw = payload.get("target_offer")
+            target_offer = None
+            if offer_raw is not None:
+                try:
+                    cleaned = (
+                        str(offer_raw)
+                        .replace("\u00a0", "")
+                        .replace(" ", "")
+                        .replace("€", "")
+                        .replace("EUR", "")
+                        .replace("eur", "")
+                    )
+                    target_offer = int(cleaned)
+                    if target_offer <= 0:
+                        target_offer = None
+                except (ValueError, TypeError):
+                    target_offer = None
+            return DealEvaluation(
+                score=score,
+                why=why,
+                risk=risk,
+                is_car=is_car,
+                condition=condition,
+                target_offer=target_offer,
+            )
         except (KeyError, ValueError, TypeError):
             return None
 

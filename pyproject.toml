@@ -33,8 +33,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/bazcar"]
 
+# Vercel's Python runtime loads a single entrypoint and routes EVERY request to
+# it (files under api/ do not become separate functions when an entrypoint is
+# set). api/index.py is that entrypoint and dispatches by path to the webhook /
+# Mini App / dashboard WSGI apps. Do not point this at a single surface app.
 [tool.vercel]
-entrypoint = "api.telegram:app"
+entrypoint = "api.index:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

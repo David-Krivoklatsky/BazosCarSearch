@@ -121,6 +121,29 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("TELEGRAM_WEBHOOK_SECRET", "BAZCAR_TELEGRAM_WEBHOOK_SECRET"),
     )
+    allowed_chat_ids: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated Telegram chat ids allowed to use the bot. "
+            "Empty/unset = open onboarding (any chat can /start and gets prefs)."
+        ),
+    )
+    webapp_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("BAZCAR_WEBAPP_URL", "WEBAPP_URL"),
+        description="Public URL of the Telegram Mini App dashboard (https://...).",
+    )
+
+    def allowed_chats(self) -> set[int] | None:
+        """Parse the allowlist; None means open onboarding (no restriction)."""
+        if not self.allowed_chat_ids or not self.allowed_chat_ids.strip():
+            return None
+        ids: set[int] = set()
+        for part in self.allowed_chat_ids.split(","):
+            part = part.strip()
+            if part.lstrip("-").isdigit():
+                ids.add(int(part))
+        return ids or None
 
 
 @lru_cache(maxsize=1)

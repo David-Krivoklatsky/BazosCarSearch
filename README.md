@@ -13,6 +13,7 @@ Autonómny vyhľadávač výhodných ojazdených áut na [Bazoš.sk](https://aut
 | 4 | Telegram notifikácie, prepínanie modelu cez bot | Príchod notifikácie k novému inzerátu; zmena kritérií/modelu cez bot | hotové (live overené) |
 | 5 | Samostatné spustenie na GitHub Actions (cron ~15 min) | Automatický beh na GHA + logy | hotové (`scrape.yml`, secrets) |
 | 6 | Autonómny kontakt predajcov (čakanie, zľava, kúpa) | Bot úspešne ponúkne kúpu predajcovi | — |
+| 7 | Multi-user profily + Telegram Mini App dashboard | Každý chat má vlastný profil; `/dashboard` otvorí web s dátami | hotové |
 
 ## Technický stack
 Python 3.11+ / `uv`, `httpx` (async) + BeautifulSoup4 + lxml, Pydantic v2, Typer,
@@ -56,12 +57,45 @@ Live overenie: nastav `TELEGRAM_BOT_TOKEN` a `TELEGRAM_CHAT_ID` v `.env` a spust
 `bazcar scrape --pages 1 --notify` — nové inzeráty prídu na Telegram.
 
 Bot (Fáza 4): `bazcar bot` — dlhopolling, ukladá kritériá, model, min. skóre,
-fotky a uložené inzeráty do Neon (`tests/unit/test_bot.py`). Príkazy: `/start`,
-`/status`, `/criteria`, `/search meno: kritériá`, `/searches`, `/use meno`,
-`/model`, `/score 0-100`, `/photos on|off`, `/filter query|price|km|psc`,
-`/save ad_id`, `/saved`, `/unsave ad_id`.
-Potrebuje `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` a `BAZCAR_DATABASE_URL`.
+fotky a uložené inzeráty do Neon (`tests/unit/test_bot.py`). Potrebuje
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` a `BAZCAR_DATABASE_URL`.
 Otestuj číslo jedným behom: `uv run bazcar bot --once`.
+
+**Multi-user**: každý chat má vlastný profil (kritériá, filtre, model, skóre) —
+stačí, keď používateľ napíše `/start`. Bez `BAZCAR_ALLOWED_CHAT_IDS` je bot
+otvorený (onboarding); s ním je to whitelist (napr. len ty).
+
+Príkazy:
+- Základ: `/start`, `/help`, `/menu`, `/status`, `/criteria`, `/model`, `/models`,
+  `/score 0-100`, `/photos on|off`.
+- Hľadania: `/search meno: kritériá`, `/searches`, `/use meno`,
+  `/filter query|price|km|psc`, `/filter clear`.
+- **Katalóg**: `/cars [status] [sort] [days N]` (status `all|unevaluated|rated`,
+  sort `cheap|expensive|score|newest`) — prehliadaj VŠETKY inzeráty, aj tie bez
+  AI skóre; stránkovanie tlačidlami. `/car <ad_id>` — detail s vývojom ceny a
+  trhovým benchmarkom.
+- **Prehľady**: `/stats` (pokrytie AI, sparkline, pásma skóre), `/queue`
+  (fronta AI, priebeh), `/health` (posledný beh, DB), `/export [dni]` (CSV),
+  `/templates` (hotové profily), `/dashboard` (Mini App).
+- Uložené: `/save ad_id`, `/saved`, `/unsave ad_id`.
+
+## Dashboard (Telegram Mini App)
+`/dashboard` otvorí v Telegrame webový dashboard (inventár, fronta AI,
+štatistiky) — žije vo Verceli ako dve serverless funkcie:
+- `api/dashboard.py` — servíruje `dashboard/index.html` (statická SPA),
+- `api/webapp.py` — JSON API
+  (`?view=overview|inventory|listing&id=<ad_id>|queue|stats`).
+
+V inventári klik na 🔎 otvorí detail inzerátu (vývoj ceny + trhový
+benchmark, teda aj market-value signál, ktorý vidíš v bote cez `/car`).
+
+Autentifikácia: každý request nesie podpísané Telegram `initData` (HMAC-SHA256),
+overené proti bot tokenu → používateľ vidí len dáta svojho profilu. Bez podpisu
+API vráti 401, takže stránka môže byť verejná bez úniku dát.
+
+Nastav `BAZCAR_WEBAPP_URL=https://<projekt>.vercel.app/api/dashboard`
+(ak nie je, odvodí sa z `VERCEL_URL` za behu). Vercel automaticky namapuje
+súbory v `api/` na `/api/<meno>`.
 
 ## Konfigurácia
 - `.env` (z `.env.example`) — runtime premenné (vrát. `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`), žiadne tajomstvá v repo.
@@ -74,3 +108,8 @@ Dva workfowy (public repo = neobmedzené Actions minúty):
 
 Secrets: `BAZCAR_DATABASE_URL`, `OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`,
 `TELEGRAM_CHAT_ID`. Manuálne spustenie: `gh workflow run scrape|bot`.
+
+Alternatíva pre okamžité odpovede: nasaď `api/telegram.py` na Vercel a nastav
+webhook (`bazcar webhook --url https://<projekt>.vercel.app/api/telegram`) —
+Telegram potom doručuje updaty priamo funkcii (viď `.env.example`,
+`TELEGRAM_WEBHOOK_SECRET`). GitHub Actions ostáva plánovač scrape/backfill.

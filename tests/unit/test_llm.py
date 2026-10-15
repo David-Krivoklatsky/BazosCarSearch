@@ -57,6 +57,34 @@ def test_parse_evaluation_handles_none_content() -> None:
     assert parse_evaluation(None) is None
 
 
+def test_parse_evaluation_v2_fields() -> None:
+    raw = (
+        '{"score": 81, "why": "Solídna ponuka.", "risk": "vysoké km", '
+        '"is_car": true, "condition": "zachovalé, servisované", "target_offer": 7300}'
+    )
+    eval_ = parse_evaluation(raw)
+    assert eval_ is not None
+    assert eval_.score == 81
+    assert eval_.condition == "zachovalé, servisované"
+    assert eval_.target_offer == 7300
+
+
+def test_parse_evaluation_v1_still_parses() -> None:
+    eval_ = parse_evaluation('{"score": 70, "why": "ok", "risk": "km"}')
+    assert eval_ is not None
+    assert eval_.condition == ""
+    assert eval_.target_offer is None
+
+
+def test_parse_evaluation_offer_edge_cases() -> None:
+    assert parse_evaluation('{"score": 50, "target_offer": null}').target_offer is None
+    assert parse_evaluation('{"score": 50, "target_offer": "7 300"}').target_offer == 7300
+    assert parse_evaluation('{"score": 50, "target_offer": "7\u00a0500 €"}').target_offer == 7500
+    assert parse_evaluation('{"score": 50, "target_offer": "6200 EUR"}').target_offer == 6200
+    assert parse_evaluation('{"score": 50, "target_offer": -100}').target_offer is None
+    assert parse_evaluation('{"score": 50, "target_offer": "abc"}').target_offer is None
+
+
 def test_parse_evaluation_finds_json_inside_reasoning_prose() -> None:
     content = (
         "Here's a thinking process:\n"

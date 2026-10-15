@@ -1,30 +1,35 @@
-"""Telegram bot daemon (Phase 4): set preferences, saved lists, model, criteria.
+"""Telegram bot daemon: preferences, catalog browsing, stats, queue, templates.
 
-Runs ``bazcar bot`` — a long-polling loop (``getUpdates``) that answers the
-user's commands. Scraping itself stays in the CLI/cron; the bot only persists
-preferences that the pipeline reads back (criteria, model, min score, photos)
-and lets the user save/bookmark listings for later.
+Runs ``bazcar bot`` — a long-polling loop (``getUpdates``) — or the Vercel
+webhook (api/telegram.py). Scraping stays in the CLI/cron; the bot persists
+preferences (criteria, model, min score, photos), lets the user browse the
+WHOLE collected catalog (evaluated or not), watch the AI queue, see stats
+and open the Mini App dashboard.
 """
 
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import os
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from bazcar.bot.store import UserStore
+from bazcar.bot.templates import TEMPLATES, get_template
 from bazcar.config.settings import get_settings, load_llm_config
 from bazcar.core.exceptions import ConfigError
 from bazcar.core.models import DealEvaluation, Listing
+from bazcar.core.profiles import profile_key
 from bazcar.db.repository import ListingRepository
 from bazcar.notify.telegram import TelegramNotifier
-from bazcar.pipeline.runner import profile_key
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +38,24 @@ TELEGRAM_API = "https://api.telegram.org"
 # Registered via Telegram setMyCommands -> typing "/" shows an autocomplete
 # menu with these descriptions in every Telegram client.
 BOT_COMMANDS: list[dict[str, str]] = [
+    {"command": "menu", "description": "🏠 Hlavné menu — tlačidlá na všetko"},
+    {"command": "cars", "description": "🚗 Všetky autá (aj bez AI hodnotenia)"},
+    {"command": "car", "description": "🔍 Detail inzerátu: /car ad_id"},
+    {"command": "show", "description": "⭐ Najlepšie ohodnotené ponuky"},
     {"command": "criteria", "description": "Čo hľadám — AI boduje inzeráty podľa toho"},
+    {"command": "templates", "description": "📦 Hotové hľadania (rodinné, mesto, diaľnica…)"},
     {"command": "search", "description": "Uložiť hľadanie: /search meno: kritériá"},
     {"command": "searches", "description": "Moje uložené hľadania"},
     {"command": "use", "description": "Aktivovať uložené hľadanie"},
-    {"command": "status", "description": "Aktuálne nastavenia a stavy"},
     {"command": "filter", "description": "Bazoš filtre: query, price, dist, psc"},
     {"command": "score", "description": "Min. hodnotenie inzerátov (0–100)"},
-    {"command": "show", "description": "Vyhovujúce inzeráty z posledných dní"},
     {"command": "eval", "description": "Prehodnotiť autá podľa aktívneho searchu"},
+    {"command": "queue", "description": "⏳ Fronta AI vyhodnocovania"},
+    {"command": "stats", "description": "📊 Štatistiky katalógu a trhu"},
+    {"command": "health", "description": "🩺 Zdravie pipeline (posledný beh)"},
+    {"command": "dashboard", "description": "📱 Otvoriť webový dashboard"},
+    {"command": "export", "description": "📄 Stiahnuť inzeráty ako CSV"},
+    {"command": "status", "description": "Aktuálne nastavenia a stavy"},
     {"command": "photos", "description": "Fotky pri inzerátoch on/off"},
     {"command": "models", "description": "Dostupné AI modely (free/paid)"},
     {"command": "model", "description": "Zmeniť AI model"},
@@ -50,6 +64,354 @@ BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "unsave", "description": "Odstrániť uložený inzerát"},
     {"command": "help", "description": "Nápoveda — /prikaz help pre detaily"},
 ]
+
+
+# ---------------------------------------------------------------------------
+# Pure formatting helpers (unit-tested, no I/O)
+# ---------------------------------------------------------------------------
+
+CARS_PAGE_SIZE = 8
+
+# Compact tokens used in paginated /cars callback data.
+_CAR_STATUS = {"a": "all", "u": "unevaluated", "r": "rated"}
+_CAR_SORT = {"n": "newest", "c": "price_asc", "e": "price_desc", "s": "score"}
+
+_STATUS_LABELS = {"all": "všetky", "unevaluated": "bez AI", "rated": "s AI"}
+_SORT_LABELS = {
+    "newest": "najnovšie",
+    "price_asc": "najlacnejšie",
+    "price_desc": "najdrahšie",
+    "score": "najlepšie skóre",
+}
+
+_SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list[int]) -> str:
+    """Render a tiny bar sparkline (e.g. ▁▃▅█) from daily counts."""
+    if not values:
+        return ""
+    peak = max(values) or 1
+    return "".join(
+        _SPARK_BLOCKS[min(7, round(v / peak * 7))] if v else _SPARK_BLOCKS[0] for v in values
+    )
+
+
+def bar(value: int, total: int, width: int = 10) -> str:
+    """Render a unicode progress bar like ▓▓▓▓▓▓░░░░."""
+    if total <= 0:
+        return "░" * width
+    filled = round(value / total * width)
+    return "▓" * filled + "░" * (width - filled)
+
+
+def fmt_eur(value: Any) -> str:
+    """Format a price as '12 500 €' (None-safe)."""
+    if value is None:
+        return "dohodou"
+    try:
+        return f"{int(value):,} €".replace(",", " ")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def fmt_km(value: Any) -> str:
+    if value is None:
+        return "? km"
+    return f"{int(value):,} km".replace(",", " ")
+
+
+def time_ago(dt: Any) -> str:
+    """Human age of a timestamp ('pred 12 min') — accepts datetime or str."""
+    if dt is None:
+        return "nikdy"
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except ValueError:
+            return str(dt)[:16]
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=UTC)
+    seconds = max(0, (datetime.now(UTC) - dt).total_seconds())
+    if seconds < 120:
+        return "práve teraz"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"pred {minutes} min"
+    hours = minutes // 60
+    if hours < 24:
+        return f"pred {hours} h"
+    return f"pred {hours // 24} d"
+
+
+def extract_make(title: str) -> str | None:
+    """Crude make extraction: the first word of the title ('Škoda Octavia…')."""
+    match = re.match(r"[A-Za-zÁ-Žá-ž0-9]+", (title or "").strip())
+    if not match:
+        return None
+    make = match.group(0)
+    return make if len(make) >= 2 else None
+
+
+def parse_cars_args(arg: str) -> tuple[str, str, int]:
+    """Parse ``/cars [status] [sort] [days N]`` -> (status, sort, days).
+
+    "" -> ("all", "newest", 7); "unevaluated" -> ("unevaluated", "newest", 7);
+    "cheap days 30" -> ("all", "price_asc", 30). Slovak aliases included.
+    """
+    status, sort, days = "all", "newest", 7
+    tokens = (arg or "").lower().split()
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in {"unevaluated", "neohodnotene", "neohodnotené", "fresh", "nove", "nové"}:
+            status = "unevaluated"
+        elif token in {"rated", "ohodnotene", "ohodnotené", "scored"}:
+            status = "rated"
+        elif token in {"cheap", "najlacnejsie", "najlacnejšie", "lacne"}:
+            sort = "price_asc"
+        elif token in {"expensive", "najdrahsie", "najdrahšie", "drahe", "drahé"}:
+            sort = "price_desc"
+        elif token in {"score", "skore", "skóre", "best", "najlepsie", "najlepšie"}:
+            sort = "score"
+        elif token in {"newest", "najnovsie", "najnovšie"}:
+            sort = "newest"
+        elif token in {"days", "dni"} and i + 1 < len(tokens) and tokens[i + 1].isdigit():
+            days = max(1, min(int(tokens[i + 1]), 3650))
+            i += 1
+        elif token.isdigit():
+            days = max(1, min(int(token), 3650))
+        i += 1
+    return status, sort, days
+
+
+def cars_callback_encode(status: str, sort: str, days: int, offset: int) -> str:
+    s_code = next(k for k, v in _CAR_STATUS.items() if v == status)
+    o_code = next(k for k, v in _CAR_SORT.items() if v == sort)
+    return f"c:{s_code}:{o_code}:{days}:{offset}"
+
+
+def parse_cars_callback(data: str) -> tuple[str, str, int, int] | None:
+    """Decode ``c:<status>:<sort>:<days>:<offset>`` back to view parameters."""
+    try:
+        _, s_code, o_code, days, offset = data.split(":")
+        return _CAR_STATUS[s_code], _CAR_SORT[o_code], int(days), int(offset)
+    except (ValueError, KeyError):
+        return None
+
+
+def build_cars_page(
+    rows: list[dict], *, total: int, offset: int, days: int, status: str, sort: str
+) -> str:
+    """Render one page of the /cars catalog (compact, one line per ad)."""
+    head = (
+        f"<b>🚗 Autá {offset + 1}–{offset + len(rows)} z {total}</b> "
+        f"<i>({_STATUS_LABELS[status]}, {_SORT_LABELS[sort]}, {days} dní)</i>\n"
+    )
+    lines = []
+    for row in rows:
+        score = row.get("score")
+        is_car = row.get("is_car")
+        if score is None:
+            badge = "⏳"
+        elif is_car is False:
+            badge = "🛠"
+        else:
+            badge = f"⭐{score}"
+        bits = [fmt_eur(row.get("price_eur"))]
+        if row.get("year"):
+            bits.append(str(row["year"]))
+        if row.get("mileage_km") is not None:
+            bits.append(fmt_km(row["mileage_km"]))
+        if row.get("city"):
+            bits.append(_em(str(row["city"])))
+        title = _em(str(row["title"]))[:60]
+        lines.append(
+            f"{badge} <a href=\"{_em_url(row['url'])}\">{title}</a>\n"
+            f"    {' · '.join(bits)} · 🆔 {row['ad_id']}"
+        )
+    tail = "\n<i>/car &lt;id&gt; — detail · /export — CSV · /dashboard — grafy</i>"
+    return head + "\n".join(lines) + tail
+
+
+def cars_keyboard(status: str, sort: str, days: int, offset: int, total: int) -> dict:
+    """Prev/next navigation for the /cars pager (edit-in-place)."""
+    buttons = []
+    if offset > 0:
+        prev_offset = max(0, offset - CARS_PAGE_SIZE)
+        buttons.append(
+            {"text": "◀️ Predošlé", "callback_data": cars_callback_encode(status, sort, days, prev_offset)}
+        )
+    if offset + CARS_PAGE_SIZE < total:
+        next_offset = offset + CARS_PAGE_SIZE
+        buttons.append(
+            {"text": "Ďalšie ▶️", "callback_data": cars_callback_encode(status, sort, days, next_offset)}
+        )
+    return {"inline_keyboard": [buttons] if buttons else []}
+
+
+def build_car_card(row: dict, history: list[dict], bench: dict | None) -> str:
+    """Render the /car detail card (rich, with price history + benchmark)."""
+    lines = [f"<b>{_em(str(row['title']))}</b>"]
+    lines.append(f"💰 {fmt_eur(row.get('price_eur'))}")
+    meta = []
+    if row.get("year"):
+        meta.append(f"🗓 {row['year']}")
+    if row.get("mileage_km") is not None:
+        meta.append(f"🛣 {fmt_km(row['mileage_km'])}")
+    if row.get("city"):
+        meta.append(f"📍 {_em(str(row['city']))}")
+    if row.get("views") is not None:
+        meta.append(f"👁 {row['views']}")
+    if meta:
+        lines.append(" · ".join(meta))
+    if row.get("published_date"):
+        lines.append(f"📅 Inzerát z {row['published_date']}")
+
+    if row.get("score") is not None:
+        lines.append("")
+        lines.append(f"⭐ <b>{row['score']}/100</b> — {_em(row.get('why') or '')}")
+        if row.get("risk"):
+            lines.append(f"⚠️ <i>Riziko:</i> {_em(row['risk'])}")
+        if row.get("condition"):
+            lines.append(f"🔧 <i>Stav:</i> {_em(row['condition'])}")
+        if row.get("target_offer"):
+            lines.append(f"🤝 <i>Prvá ponuka:</i> {fmt_eur(row['target_offer'])}")
+        if row.get("eval_model"):
+            lines.append(f"<i>model: {_em(str(row['eval_model']))}</i>")
+    else:
+        lines.append("")
+        lines.append("⏳ <i>Zatiaľ bez AI hodnotenia — zaradím cez /eval</i>")
+
+    points = [h for h in history if h.get("price_eur") is not None]
+    if len(points) >= 2:
+        first, last = points[0], points[-1]
+        try:
+            change = round((float(last["price_eur"]) / float(first["price_eur"]) - 1) * 100)
+            arrow = "📉" if change < 0 else "📈"
+            lines.append(
+                f"{arrow} Vývoj ceny: {fmt_eur(first['price_eur'])} → "
+                f"{fmt_eur(last['price_eur'])} ({change:+d} %)"
+            )
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+
+    if bench and bench.get("n", 0) >= 3 and row.get("price_eur") is not None:
+        median = bench.get("median")
+        if median:
+            try:
+                diff = round((float(row["price_eur"]) / float(median) - 1) * 100)
+                verdict = "pod mediánom" if diff < 0 else "nad mediánom"
+                lines.append(
+                    f"📊 Trh (n={bench['n']}, rok ±2): medián {fmt_eur(int(median))} "
+                    f"— toto {abs(diff)} % {verdict}"
+                )
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+    lines.append(f"🆔 {row['ad_id']}")
+    lines.append(f"<a href=\"{_em_url(row['url'])}\">🔗 Otvoriť inzerát</a>")
+    return "\n".join(lines)
+
+
+def build_stats_text(stats: dict, p_key: str) -> str:
+    """Render the /stats message: totals, coverage, sparkline, score bands."""
+    total = stats["total"]
+    evaluated = stats["evaluated"]
+    coverage = round(evaluated / total * 100) if total else 0
+    lines = ["<b>📊 Štatistiky katalógu</b>", ""]
+    lines.append(f"📦 Inzerátov v databáze: <b>{total}</b>")
+    lines.append(
+        f"🤖 Ohodnotené (tvoj profil): <b>{evaluated}</b> "
+        f"{bar(evaluated, total)} {coverage} %"
+    )
+    price = stats.get("price") or {}
+    if price.get("median") is not None:
+        lines.append(
+            f"💰 Ceny: medián <b>{fmt_eur(int(price['median']))}</b>, "
+            f"min {fmt_eur(price.get('mn'))}, max {fmt_eur(price.get('mx'))}"
+        )
+    new_by_day = stats.get("new_by_day") or []
+    if new_by_day:
+        counts = [n for _, n in new_by_day]
+        lines.append(
+            f"🆕 Nové za 7 dní: <b>{sum(counts)}</b>  {sparkline(counts)} "
+            f"<i>({new_by_day[0][0][5:]} – {new_by_day[-1][0][5:]})</i>"
+        )
+    lines.append(f"📉 Zľavy za 7 dní: <b>{stats.get('drops_7d', 0)}</b>")
+    bands = stats.get("bands") or {}
+    band_total = sum(bands.values())
+    if band_total:
+        lines.append("")
+        lines.append("<b>Skóre (tvoj profil)</b>")
+        for label, key in (("90+", "b90"), ("80–89", "b80"), ("70–79", "b70"),
+                           ("50–69", "b50"), ("<50", "b0")):
+            value = bands.get(key, 0)
+            lines.append(f"  {label:>6} {bar(value, band_total, 12)} {value}")
+    lines.append("")
+    lines.append(f"<i>profil: {p_key} · /cars — prehľad · /dashboard — grafy</i>")
+    return "\n".join(lines)
+
+
+def build_queue_text(pending: list[dict], finished: list[dict]) -> str:
+    """Render the /queue message: running/queued tasks + recent outcomes."""
+    lines = ["<b>⏳ Fronta AI vyhodnocovania</b>", ""]
+    if not pending and not finished:
+        lines.append("Fronta je prázdna — všetko je ohodnotené. ✅")
+    for task in pending:
+        criteria = (task.get("criteria") or "bez kritérií").strip()
+        label = criteria if len(criteria) <= 40 else criteria[:37] + "…"
+        total = task.get("total") or 0
+        done = task.get("done") or 0
+        if task.get("started_at"):
+            progress = f"{bar(done, total)} {done}/{total}"
+        else:
+            progress = "čaká v rade"
+        age = time_ago(task.get("created_at"))
+        attempts = task.get("attempts") or 0
+        retry = f", pokus {attempts}" if attempts else ""
+        lines.append(f"⏳ <i>{_em(label)}</i>\n    {progress} · {age}{retry}")
+        lines.append(f"    <code>{_em(task.get('model') or '?')}</code>")
+    if finished:
+        lines.append("")
+        lines.append("<b>Posledné dokončené</b>")
+        for task in finished:
+            criteria = (task.get("criteria") or "bez kritérií").strip()
+            label = criteria if len(criteria) <= 40 else criteria[:37] + "…"
+            age = time_ago(task.get("done_at"))
+            if task.get("error"):
+                lines.append(f"⚠️ <i>{_em(label)}</i> — {_em(task['error'])} ({age})")
+            else:
+                lines.append(
+                    f"✅ <i>{_em(label)}</i> — {task.get('done') or 0}/{task.get('total') or 0} áut ({age})"
+                )
+    lines.append("")
+    lines.append("<i>Frontu spracúva cron každých ~15 min. Zrýchli: tlačidlo nižšie.</i>")
+    return "\n".join(lines)
+
+
+MENU_KEYBOARD: dict = {
+    "inline_keyboard": [
+        [
+            {"text": "🚗 Všetky autá", "callback_data": "menu:cars"},
+            {"text": "⭐ Top ponuky", "callback_data": "menu:show"},
+        ],
+        [
+            {"text": "📊 Štatistiky", "callback_data": "menu:stats"},
+            {"text": "⏳ Fronta AI", "callback_data": "menu:queue"},
+        ],
+        [
+            {"text": "📦 Šablóny", "callback_data": "menu:templates"},
+            {"text": "💾 Uložené", "callback_data": "menu:saved"},
+        ],
+        [
+            {"text": "📱 Dashboard", "callback_data": "menu:dashboard"},
+        ],
+        [
+            {"text": "⚙️ Stav", "callback_data": "menu:status"},
+            {"text": "❓ Nápoveda", "callback_data": "menu:help"},
+        ],
+    ]
+}
 
 COMMAND_HELP: dict[str, str] = {
     "/criteria": (
@@ -183,6 +545,66 @@ COMMAND_HELP: dict[str, str] = {
         "Prehľad všetkých príkazov. Detailné vysvetlenie každého: "
         "<code>/prikaz help</code> — napr. <code>/filter help</code>."
     ),
+    "/cars": (
+        "<b>/cars</b> — VŠETKY autá v databáze (aj bez AI hodnotenia)\n\n"
+        "Prehľad celého nazbieraného katalógu — na rozdiel od /show nepotrebuje "
+        "AI skóre ani /score limit. Každý riadok má stav: ⏳ bez hodnotenia, "
+        "⭐n s AI skóre, 🛠 pravdepodobne náhradný diel.\n\n"
+        "<b>Použitie:</b>\n"
+        "  <code>/cars</code> — najnovšie, 7 dní\n"
+        "  <code>/cars unevaluated</code> — len bez AI hodnotenia\n"
+        "  <code>/cars rated</code> — len ohodnotené\n"
+        "  <code>/cars cheap</code> / <code>expensive</code> / <code>score</code> — zoradenie\n"
+        "  <code>/cars days 30</code> — okno 30 dní\n\n"
+        "Stránkuješ tlačidlami ◀️ ▶️. Detail: <code>/car id</code>."
+    ),
+    "/car": (
+        "<b>/car</b> — detail jedného inzerátu\n\n"
+        "<code>/car 195357798</code> (ad_id nájdeš v /cars alebo notifikácii)\n\n"
+        "Ukáže: cenu, rok, km, mesto, dátum, AI hodnotenie (skóre, dôvod, "
+        "riziko, stav, prvú ponuku), vývoj ceny a porovnanie s trhom "
+        "(medián podobných áut s veľkosťou vzorky)."
+    ),
+    "/queue": (
+        "<b>/queue</b> — fronta AI vyhodnocovania\n\n"
+        "Čo práve čaká/beží: pre každú úlohu profil, model, progres "
+        "(x/y áut), vek a počet pokusov. Pod tým posledné dokončené a zlyhané "
+        "úlohy. Frontu spracúva cron každých ~15 min."
+    ),
+    "/stats": (
+        "<b>/stats</b> — štatistiky katalógu\n\n"
+        "Počet inzerátov, pokrytie AI hodnotením (tvoj profil), cenový medián/"
+        "min/max, nové inzeráty za 7 dní (sparkline), počet zliav a rozdelenie "
+        "skóre. Interaktívne grafy: /dashboard."
+    ),
+    "/health": (
+        "<b>/health</b> — zdravie pipeline\n\n"
+        "Posledný beh scraperu (kedy, koľko strán/nových/zliav/hodnotení/"
+        "notifikácií), stav fronty a databázy. Ak posledný beh chýba dlho, "
+        "niečo je pokazené."
+    ),
+    "/templates": (
+        "<b>/templates</b> — hotové hľadania\n\n"
+        "Vyber šablónu (rodinné, do mesta, na diaľnicu, prvé auto, príležitosť) "
+        "— nastaví kritériá, filtre a min. skóre a spustí prehodnotenie. "
+        "Potom si všetko doladíš cez /criteria a /filter."
+    ),
+    "/export": (
+        "<b>/export</b> — stiahni inzeráty ako CSV\n\n"
+        "<code>/export</code> — posledných 30 dní (max 200)\n"
+        "<code>/export 90</code> — posledných 90 dní\n\n"
+        "CSV obsahuje aj AI skóre tvojho profilu (ak existuje)."
+    ),
+    "/dashboard": (
+        "<b>/dashboard</b> — webový dashboard (Mini App)\n\n"
+        "Otvorí grafické rozhranie priamo v Telegrame: prehľad, inventár, "
+        "fronta a štatistiky s grafmi. Funguje len po nasadení na Vercel."
+    ),
+    "/menu": (
+        "<b>/menu</b> — hlavné menu\n\n"
+        "Tlačidlá na najčastejšie akcie: autá, top ponuky, štatistiky, fronta, "
+        "šablóny, uložené, stav a nápoveda."
+    ),
 }
 
 
@@ -208,7 +630,22 @@ def parse_show_args(arg: str) -> tuple[int | None, int]:
 
 
 def _row_to_listing(row: dict) -> Listing:
-    """Rebuild a Listing (+DealEvaluation) from a /show DB row."""
+    """Rebuild a Listing (+DealEvaluation when present) from a DB row.
+
+    Tolerates rows without an evaluation (catalog views): ``evaluation`` is
+    then None instead of a fabricated score.
+    """
+    evaluation = None
+    if row.get("score") is not None:
+        evaluation = DealEvaluation(
+            score=row["score"],
+            why=row.get("why") or "",
+            risk=row.get("risk") or "",
+            is_car=row.get("is_car") if row.get("is_car") is not None else True,
+            model=row.get("eval_model"),
+            condition=row.get("condition") or "",
+            target_offer=row.get("target_offer"),
+        )
     return Listing(
         ad_id=row["ad_id"],
         url=row["url"],
@@ -218,15 +655,10 @@ def _row_to_listing(row: dict) -> Listing:
         image_urls=row["image_urls"],
         year=row["year"],
         mileage_km=row["mileage_km"],
-        description_preview=row["description_preview"] or "",
-        description=row["description"],
+        description_preview=row.get("description_preview") or "",
+        description=row.get("description"),
         published_date=row.get("published_date"),
-        evaluation=DealEvaluation(
-            score=row["score"],
-            why=row["why"] or "",
-            risk=row["risk"] or "",
-            model=row["eval_model"],
-        ),
+        evaluation=evaluation,
     )
 
 
@@ -268,25 +700,31 @@ HELP_TEXT = (
     "<b>🤖 Bazcar — tvoj lovec ojazdených áut</b>\n\n"
     "Napíš mi voľne, čo hľadáš (napr. <i>\"diesel do 200t km, nad 80 kW\"</i>) "
     "a každý nový inzerát ti príde s AI skóre 0–100, dôvodom a rizikom.\n\n"
+    "<b>🚗 Katalóg</b>\n"
+    "  /cars — všetky autá (aj bez AI), stránkovanie\n"
+    "  /car id — detail: vývoj ceny + trhový medián\n"
+    "  /show — najlepšie ohodnotené ponuky\n"
+    "  /export — stiahni CSV\n\n"
     "<b>🔎 Čo hľadám</b>\n"
     "  /criteria — moje požiadavky pre AI bodovanie\n"
+    "  /templates — hotové hľadania (rodinné, mesto…)\n"
     "  /filter — Bazoš filtre (query, cena, okruh, PSČ)\n"
     "  /score — min. hodnotenie pre notifikácie\n\n"
     "<b>⭐ Search profily</b>\n"
     "  /search meno: kritériá — uložiť profil\n"
     "  /searches — zoznam profilov\n"
     "  /use meno — aktivovať profil\n\n"
-    "<b>📋 Prehľady</b>\n"
-    "  /show [n] — najlepšie inzeráty z posledných dní\n"
-    "  /eval — prehodnotiť autá podľa aktívneho searchu\n"
-    "  /status — stav a štatistiky\n\n"
+    "<b>📊 Prehľady</b>\n"
+    "  /stats — štatistiky katalógu a trhu\n"
+    "  /queue — fronta AI vyhodnocovania\n"
+    "  /health — zdravie pipeline\n"
+    "  /dashboard — webové grafy (Mini App)\n"
+    "  /eval — prehodnotiť autá podľa searchu\n\n"
     "<b>💾 Uložené</b>\n"
     "  /save ad_id · /saved · /unsave ad_id\n\n"
-    "<b>⚙️ AI</b>\n"
-    "  /models — zoznam modelov (free/paid)\n"
-    "  /model nazov — zmeniť model\n"
-    "  /photos on|off — fotky pri inzerátoch\n\n"
-    "💡 Detail každého príkazu: <code>/prikaz help</code> (napr. <code>/filter help</code>)\n"
+    "<b>⚙️ AI a nastavenia</b>\n"
+    "  /models · /model · /photos · /status · /menu\n\n"
+    "💡 Detail každého príkazu: <code>/prikaz help</code> (napr. <code>/cars help</code>)\n"
     "💡 Napíš <code>/</code> a Telegram ti sám doplní príkazy."
 )
 
@@ -325,24 +763,42 @@ class Bot:
         self.notifier = notifier
         self.export_dir = export_dir
 
-    async def reply(self, chat_id: int, text: str) -> None:
-        await self.notifier.send_message(chat_id=chat_id, text=text)
+    async def reply(self, chat_id: int, text: str | None, reply_markup: dict | None = None) -> None:
+        if text is None:
+            return
+        await self.notifier.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
+    @staticmethod
+    def _is_allowed(chat_id: int) -> bool:
+        """Access boundary: allowlist when configured, else open onboarding."""
+        allowed = get_settings().allowed_chats()
+        return allowed is None or chat_id in allowed
 
     async def handle(self, update: dict[str, Any]) -> None:
         callback = update.get("callback_query") or {}
         message = update.get("message") or {}
 
-        # Inline-button presses ("💾 Uložiť" on a deal notification).
+        # Inline-button presses (save, pager, templates, menu).
         if callback.get("data"):
             chat_id = (callback.get("message") or {}).get("chat", {}).get("id")
+            message_id = (callback.get("message") or {}).get("message_id")
             cb_query_id = callback.get("id")
             if not chat_id or not cb_query_id:
+                return
+            if not self._is_allowed(chat_id):
+                logger.info("ignoring callback from non-allowed chat %s", chat_id)
                 return
             await self.store.ensure_prefs(chat_id)
             data = callback["data"]
             if data.startswith("save:"):
                 await self._save(chat_id, data.split(":", 1)[1])
                 await self.notifier.answer_callback(cb_query_id, "💾 Uložené ✅")
+            elif data.startswith("c:"):
+                await self._cars_page(chat_id, message_id, cb_query_id, data)
+            elif data.startswith("tpl:"):
+                await self._apply_template(chat_id, data.split(":", 1)[1], cb_query_id)
+            elif data.startswith("menu:"):
+                await self._menu_action(chat_id, data.split(":", 1)[1], cb_query_id)
             else:
                 await self.notifier.answer_callback(cb_query_id, "Neznáma akcia")
             return
@@ -351,14 +807,21 @@ class Bot:
         chat_id = (message.get("chat") or {}).get("id")
         if not text or not chat_id:
             return
+        if not self._is_allowed(chat_id):
+            logger.info("ignoring message from non-allowed chat %s", chat_id)
+            return
         await self.store.ensure_prefs(chat_id)
         if text.startswith("/"):
-            reply = await self._command(chat_id, text)
+            result = await self._command(chat_id, text)
         else:
-            reply = await self._set_criteria(chat_id, text)
-        await self.reply(chat_id, reply)
+            result = await self._set_criteria(chat_id, text)
+        if isinstance(result, tuple):
+            text_out, markup = result
+            await self.reply(chat_id, text_out, reply_markup=markup)
+        else:
+            await self.reply(chat_id, result)
 
-    async def _command(self, chat_id: int, text: str) -> str:
+    async def _command(self, chat_id: int, text: str) -> str | tuple | None:
         parts = text.split(maxsplit=1)
         cmd = parts[0].split("@")[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -367,9 +830,15 @@ class Bot:
             return COMMAND_HELP[cmd]
         match cmd:
             case "/start":
-                return "Ahoj! Som Bazcar 🚗. Napíš mi, aké auto hľadáš — a nechám ti prísť nové inzeráty s AI skóre.\n\n" + HELP_TEXT
+                return (
+                    "Ahoj! Som Bazcar 🚗. Napíš mi, aké auto hľadáš — a nechám ti "
+                    "prísť nové inzeráty s AI skóre.\n\n" + HELP_TEXT,
+                    MENU_KEYBOARD,
+                )
             case "/help":
-                return HELP_TEXT
+                return HELP_TEXT, MENU_KEYBOARD
+            case "/menu":
+                return "🏠 <b>Hlavné menu</b> — vyber akciu:", MENU_KEYBOARD
             case "/status":
                 return await self._status(chat_id)
             case "/criteria":
@@ -400,6 +869,22 @@ class Bot:
                 return await self._saved(chat_id)
             case "/unsave":
                 return await self._unsave(chat_id, arg)
+            case "/cars":
+                return await self._cars(chat_id, arg)
+            case "/car":
+                return await self._car(chat_id, arg)
+            case "/queue":
+                return await self._queue(chat_id)
+            case "/stats":
+                return await self._stats(chat_id)
+            case "/health":
+                return await self._health(chat_id)
+            case "/templates":
+                return self._templates()
+            case "/export":
+                return await self._export(chat_id, arg)
+            case "/dashboard":
+                return self._dashboard()
             case _:
                 return "Neznámy príkaz. /help"
 
@@ -659,7 +1144,7 @@ class Bot:
             finally:
                 await repo.close()
 
-        created = await self._queue_rehodnotenie(chat_id, max_listings=limit)
+        created = await self._queue_rehodnotenie(chat_id, max_listings=limit, days=days)
         if not created:
             return "⏳ Toto vyhľadanie už prehodnocujem — pošli /show o pár minút."
 
@@ -725,6 +1210,326 @@ class Bot:
             f"📤 Poslal som {len(listings)} z {total} vyhovujúcich "
             f"(skóre >= {min_score}, okno {days} dní){tail}:"
         )
+
+    # ------------------------------------------------------------ new commands
+
+    async def _profile_key_for(self, chat_id: int) -> tuple[str, Any]:
+        """(profile_key, prefs) for the calling user's active search profile."""
+        prefs = await self.store.get_prefs(chat_id)
+        model = (prefs.model if prefs else None) or load_llm_config().model
+        criteria = prefs.criteria if prefs else None
+        return profile_key(criteria, model), prefs
+
+    async def _cars(self, chat_id: int, arg: str) -> tuple[str, dict] | str:
+        """Browse the whole collected catalog — evaluated or not (/cars)."""
+        settings = get_settings()
+        if not settings.database_url:
+            return "⚠️ /cars potrebuje databázu (BAZCAR_DATABASE_URL)."
+        status, sort, days = parse_cars_args(arg)
+        p_key, _ = await self._profile_key_for(chat_id)
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            total = await repo.count_catalog(p_key, days, status)
+            rows = await repo.fetch_catalog(p_key, days, CARS_PAGE_SIZE, 0, sort, status)
+        finally:
+            await repo.close()
+        if not rows:
+            return (
+                f"📭 V katalógu nič nie je ({_STATUS_LABELS[status]}, {days} dní).\n"
+                "Skús širšie okno (<code>/cars days 30</code>) alebo počkaj na ďalší scrape."
+            )
+        text = build_cars_page(rows, total=total, offset=0, days=days, status=status, sort=sort)
+        return text, cars_keyboard(status, sort, days, 0, total)
+
+    async def _cars_page(
+        self, chat_id: int, message_id: int | None, cb_query_id: str, data: str
+    ) -> None:
+        """Pager callback: re-render the catalog page by editing the message."""
+        parsed = parse_cars_callback(data)
+        if parsed is None or message_id is None:
+            await self.notifier.answer_callback(cb_query_id, "Neplatná stránka")
+            return
+        status, sort, days, offset = parsed
+        settings = get_settings()
+        if not settings.database_url:
+            await self.notifier.answer_callback(cb_query_id, "Bez databázy")
+            return
+        p_key, _ = await self._profile_key_for(chat_id)
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            total = await repo.count_catalog(p_key, days, status)
+            rows = await repo.fetch_catalog(
+                p_key, days, CARS_PAGE_SIZE, offset, sort, status
+            )
+        finally:
+            await repo.close()
+        if not rows:
+            await self.notifier.answer_callback(cb_query_id, "Žiadne ďalšie")
+            return
+        text = build_cars_page(
+            rows, total=total, offset=offset, days=days, status=status, sort=sort
+        )
+        await self.notifier.edit_message_text(
+            text,
+            message_id,
+            chat_id=chat_id,
+            reply_markup=cars_keyboard(status, sort, days, offset, total),
+        )
+        await self.notifier.answer_callback(cb_query_id)
+
+    async def _car(self, chat_id: int, arg: str) -> str | None:
+        """Rich detail card for one ad: /car <ad_id>."""
+        settings = get_settings()
+        if not settings.database_url:
+            return "⚠️ /car potrebuje databázu."
+        try:
+            ad_id = int(arg.strip())
+        except ValueError:
+            return "Použitie: <code>/car 195357798</code> (ad_id z /cars alebo notifikácie)"
+        p_key, prefs = await self._profile_key_for(chat_id)
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            row = await repo.fetch_listing_by_id(ad_id, p_key)
+            if row is None:
+                return f"Inzerát <code>{ad_id}</code> nemám v databáze. Skús /cars."
+            history = await repo.fetch_price_history(ad_id)
+            make = extract_make(str(row["title"]))
+            bench = await repo.price_benchmark(make, row.get("year")) if make else None
+        finally:
+            await repo.close()
+        text = build_car_card(row, history, bench)
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "💾 Uložiť", "callback_data": f"save:{ad_id}"},
+                    {"text": "🔗 Otvoriť inzerát", "url": row["url"]},
+                ]
+            ]
+        }
+        if prefs and prefs.show_photo and row.get("image_urls"):
+            await self.notifier.send_photo(
+                row["image_urls"][0],
+                caption=text[:1024],
+                chat_id=chat_id,
+                reply_markup=keyboard,
+            )
+        else:
+            await self.notifier.send_message(text, chat_id=chat_id, reply_markup=keyboard)
+        return None
+
+    async def _queue(self, chat_id: int) -> tuple[str, dict] | str:
+        """Live view of the AI evaluation queue (/queue)."""
+        settings = get_settings()
+        if not settings.database_url:
+            return "⚠️ /queue potrebuje databázu."
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            pending = await repo.pending_eval_tasks()
+            finished = await repo.recent_finished_eval_tasks()
+        finally:
+            await repo.close()
+        text = build_queue_text(pending, finished)
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "🔄 Spracovať teraz", "callback_data": "menu:rescrape"}]
+            ]
+        }
+        return text, keyboard
+
+    async def _stats(self, chat_id: int) -> str:
+        """Catalog + market statistics with sparkline and score bands (/stats)."""
+        settings = get_settings()
+        if not settings.database_url:
+            return "⚠️ /stats potrebuje databázu."
+        p_key, _ = await self._profile_key_for(chat_id)
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            stats = await repo.stats_overview(p_key)
+        finally:
+            await repo.close()
+        return build_stats_text(stats, p_key)
+
+    async def _health(self, chat_id: int) -> str:
+        """Pipeline health: last scrape run, queue, database (/health)."""
+        settings = get_settings()
+        if not settings.database_url:
+            return "⚠️ /health potrebuje databázu."
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            run = await repo.latest_scrape_run()
+            pending = await repo.pending_eval_tasks()
+        finally:
+            await repo.close()
+        lines = ["<b>🩺 Zdravie pipeline</b>", ""]
+        lines.append("🗄 Databáza: ✅ spojená")
+        if run:
+            age = time_ago(run.get("finished_at") or run.get("started_at"))
+            lines.append(f"🔄 Posledný beh: <b>{age}</b>")
+            lines.append(
+                f"   strán {run.get('pages', 0)}, nájdených {run.get('total', 0)}, "
+                f"nových {run.get('inserted', 0)}, zliav {run.get('price_drops', 0)}"
+            )
+            lines.append(
+                f"   ohodnotených {run.get('evaluated', 0)}, "
+                f"notifikácií {run.get('notified', 0)}"
+            )
+            if run.get("error"):
+                lines.append(f"   ⚠️ chyba: {_em(run['error'])}")
+        else:
+            lines.append("🔄 Posledný beh: <b>žiadny zaznamenaný</b> — cron ešte nebežal?")
+        running = sum(1 for t in pending if t.get("started_at"))
+        lines.append(
+            f"⏳ Fronta AI: {len(pending)} čakajúcich ({running} bežiacich) — /queue"
+        )
+        lines.append("")
+        lines.append("<i>Cron: každých ~15 min (GitHub Actions).</i>")
+        return "\n".join(lines)
+
+    def _templates(self) -> tuple[str, dict]:
+        """Preset search profiles with one-tap apply (/templates)."""
+        lines = ["<b>📦 Hotové hľadania</b> — ťukni a hneď hľadáš:", ""]
+        buttons = []
+        for template in TEMPLATES:
+            lines.append(f"{template.emoji} <b>{_em(template.name)}</b> — {_em(template.description)}")
+            buttons.append(
+                [{"text": f"{template.emoji} {template.name}", "callback_data": f"tpl:{template.key}"}]
+            )
+        lines.append("")
+        lines.append("<i>Nastaví kritériá + filtre + skóre a spustí prehodnotenie.</i>")
+        return "\n".join(lines), {"inline_keyboard": buttons}
+
+    async def _apply_template(self, chat_id: int, key: str, cb_query_id: str) -> None:
+        """Template button: set criteria+filters+score, then queue a re-eval."""
+        template = get_template(key)
+        if template is None:
+            await self.notifier.answer_callback(cb_query_id, "Neznáma šablóna")
+            return
+        await self.store.update_prefs(
+            chat_id,
+            criteria=template.criteria,
+            filters=template.filters,
+            min_score=template.min_score,
+        )
+        try:
+            await self._queue_rehodnotenie(chat_id)
+        except Exception:
+            logger.warning("template re-eval queue failed", exc_info=True)
+        await self.notifier.answer_callback(cb_query_id, f"{template.emoji} Aktivované!")
+        await self.reply(
+            chat_id,
+            f"{template.emoji} <b>{_em(template.name)}</b> aktívne:\n"
+            f"<i>{_em(template.criteria)}</i>\n"
+            f"{self._filters_summary(template.filters)}\n"
+            f"⭐ Min. skóre: {template.min_score}\n\n"
+            "➡️ Prehodnotenie beží — výsledky: /show, prehľad: /cars",
+        )
+
+    async def _menu_action(self, chat_id: int, action: str, cb_query_id: str) -> None:
+        """Main-menu button routing — runs the same logic as the commands."""
+        await self.notifier.answer_callback(cb_query_id)
+        if action == "rescrape":
+            ok = await _dispatch_scrape()
+            await self.reply(
+                chat_id,
+                "🔄 Spustil som spracovanie fronty." if ok
+                else "⚠️ Nedá sa spustiť (chýba GITHUB_WORKFLOW_TOKEN) — počkaj na cron.",
+            )
+            return
+        result: str | tuple | None
+        if action == "cars":
+            result = await self._cars(chat_id, "")
+        elif action == "show":
+            result = await self._show(chat_id, "")
+        elif action == "stats":
+            result = await self._stats(chat_id)
+        elif action == "queue":
+            result = await self._queue(chat_id)
+        elif action == "templates":
+            result = self._templates()
+        elif action == "saved":
+            result = await self._saved(chat_id)
+        elif action == "status":
+            result = await self._status(chat_id)
+        elif action == "dashboard":
+            result = self._dashboard()
+        else:
+            result = HELP_TEXT, MENU_KEYBOARD
+        if isinstance(result, tuple):
+            text_out, markup = result
+            await self.reply(chat_id, text_out, reply_markup=markup)
+        else:
+            await self.reply(chat_id, result)
+
+    async def _export(self, chat_id: int, arg: str) -> str | None:
+        """CSV export of the catalog (active profile's scores) via sendDocument."""
+        settings = get_settings()
+        if not settings.database_url:
+            return "⚠️ /export potrebuje databázu."
+        days = 30
+        if arg.strip().isdigit():
+            days = max(1, min(int(arg.strip()), 365))
+        p_key, _ = await self._profile_key_for(chat_id)
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            rows = await repo.fetch_catalog(p_key, days, limit=200, sort="newest")
+        finally:
+            await repo.close()
+        if not rows:
+            return f"📭 Nič na export za posledných {days} dní."
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, delimiter=";")
+        writer.writerow(
+            ["ad_id", "title", "price_eur", "year", "mileage_km", "city",
+             "published", "score", "url"]
+        )
+        for row in rows:
+            writer.writerow([
+                row["ad_id"],
+                row["title"],
+                row.get("price_eur") or "",
+                row.get("year") or "",
+                row.get("mileage_km") or "",
+                row.get("city") or "",
+                str(row.get("published_date") or ""),
+                row.get("score") if row.get("score") is not None else "",
+                row["url"],
+            ])
+        content = buffer.getvalue().encode("utf-8-sig")
+        filename = f"bazcar_{days}d_{datetime.now(UTC).strftime('%Y%m%d')}.csv"
+        ok = await self.notifier.send_document(
+            filename,
+            content,
+            chat_id=chat_id,
+            caption=f"📄 Export: {len(rows)} inzerátov za {days} dní",
+        )
+        return None if ok else "⚠️ Export sa nepodarilo odoslať."
+
+    def _dashboard(self) -> tuple[str, dict] | str:
+        """Mini App button (/dashboard) — web_app opens inside Telegram."""
+        settings = get_settings()
+        url = settings.webapp_url
+        if not url:
+            vercel = os.environ.get("VERCEL_URL")
+            if vercel:
+                url = f"https://{vercel}/api/dashboard"
+        if not url:
+            return (
+                "📱 Dashboard nie je nasadený. Nasaď projekt na Vercel a nastav "
+                "<code>BAZCAR_WEBAPP_URL</code> (alebo VERCEL_URL sa použije automaticky)."
+            )
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "📱 Otvoriť dashboard", "web_app": {"url": url}}]
+            ]
+        }
+        return "📱 <b>Bazcar dashboard</b> — grafy, inventár, fronta a štatistiky:", keyboard
 
     async def _models(self, chat_id: int, arg: str = "") -> str:
         from bazcar.llm.provider import list_models

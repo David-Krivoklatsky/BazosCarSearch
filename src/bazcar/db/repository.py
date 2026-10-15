@@ -127,6 +127,21 @@ CREATE TABLE IF NOT EXISTS notifications (
     PRIMARY KEY (chat_id, ad_id, profile_key)
 );
 
+-- Scrape run telemetry: one row per pipeline run, feeds /health + staleness.
+CREATE TABLE IF NOT EXISTS scrape_runs (
+    id            bigserial PRIMARY KEY,
+    started_at    timestamptz NOT NULL DEFAULT now(),
+    finished_at   timestamptz,
+    pages         int NOT NULL DEFAULT 0,
+    total         int NOT NULL DEFAULT 0,
+    inserted      int NOT NULL DEFAULT 0,
+    price_changed int NOT NULL DEFAULT 0,
+    price_drops   int NOT NULL DEFAULT 0,
+    evaluated     int NOT NULL DEFAULT 0,
+    notified      int NOT NULL DEFAULT 0,
+    error         text
+);
+
 -- Idempotent migrations for tables created before these columns existed.
 ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}'::jsonb;
@@ -140,6 +155,18 @@ ALTER TABLE eval_tasks
     ADD COLUMN IF NOT EXISTS days int NOT NULL DEFAULT 3;
 ALTER TABLE eval_tasks
     ADD COLUMN IF NOT EXISTS attempts int NOT NULL DEFAULT 0;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS total int NOT NULL DEFAULT 0;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS done int NOT NULL DEFAULT 0;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS started_at timestamptz;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS error text;
+ALTER TABLE evaluations
+    ADD COLUMN IF NOT EXISTS condition text;
+ALTER TABLE evaluations
+    ADD COLUMN IF NOT EXISTS target_offer int;
 """
 
 _UPSERT_LISTING_SQL = """
@@ -178,15 +205,17 @@ SELECT ad_id, price_eur FROM listings WHERE ad_id = ANY($1::bigint[])
 """
 
 _UPSERT_EVALUATION_SQL = """
-INSERT INTO evaluations (ad_id, profile_key, score, why, risk, is_car, model)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO evaluations (ad_id, profile_key, score, why, risk, is_car, model,
+                         condition, target_offer)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (ad_id, profile_key) DO UPDATE SET
     score = EXCLUDED.score, why = EXCLUDED.why, risk = EXCLUDED.risk,
-    is_car = EXCLUDED.is_car, model = EXCLUDED.model, evaluated_at = now()
+    is_car = EXCLUDED.is_car, model = EXCLUDED.model, evaluated_at = now(),
+    condition = EXCLUDED.condition, target_offer = EXCLUDED.target_offer
 """
 
 _FETCH_EVALUATIONS_SQL = """
-SELECT ad_id, score, why, risk, is_car, model
+SELECT ad_id, score, why, risk, is_car, model, condition, target_offer
 FROM evaluations WHERE profile_key = $1 AND ad_id = ANY($2::bigint[])
 """
 
@@ -194,7 +223,7 @@ _FETCH_RECENT_MATCHES_SQL = """
 SELECT l.ad_id, l.url, l.title, l.price_eur, l.city, l.image_urls,
        l.year, l.mileage_km, l.description_preview, l.description,
        l.published_date, l.first_seen_at,
-       e.score, e.why, e.risk, e.model AS eval_model
+       e.score, e.why, e.risk, e.model AS eval_model, e.condition, e.target_offer
 FROM listings l
 JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
 WHERE e.score >= $2
@@ -268,6 +297,8 @@ class SyncPlan:
     history: list[tuple[int, Decimal | None]] = field(default_factory=list)
     stats: SyncStats = field(default_factory=SyncStats)
     inserted_ids: list[int] = field(default_factory=list)
+    # (ad_id, old_price, new_price) for ads whose price went DOWN this sync.
+    price_drop_events: list[tuple[int, Decimal, Decimal]] = field(default_factory=list)
 
 
 @dataclass
@@ -276,29 +307,37 @@ class SyncResult:
 
     stats: SyncStats
     inserted_ids: list[int]
+    price_drop_events: list[tuple[int, Decimal, Decimal]] = field(default_factory=list)
 
 
 def plan_sync(listings: list[Listing], existing: dict[int, Decimal | None]) -> SyncPlan:
     """Classify each listing against ``existing`` (ad_id -> stored price).
 
-    Pure function (no I/O) so classification can be unit-tested offline:
+    Pure function (no I/O) so classification can be unit-tested offline.
+    IMPORTANT: an ``ad_id`` ABSENT from ``existing`` is new; an ``ad_id``
+    present with a ``None`` price is a KNOWN ad whose price is unknown —
+    these are not the same case:
       * absent            -> inserted + first price-history row,
       * price changed     -> refreshed + new price-history row,
-      * price unchanged   -> refreshed only.
+      * price unchanged   -> refreshed only (incl. known-ad/unknown-price).
     """
     plan = SyncPlan(stats=SyncStats(total=len(listings)))
     for listing in listings:
-        prev_price = existing.get(listing.ad_id)
         plan.upserts.append(_listing_record(listing))
-        if prev_price is None:
+        if listing.ad_id not in existing:
             plan.stats.inserted += 1
             plan.inserted_ids.append(listing.ad_id)
             plan.history.append((listing.ad_id, listing.price_eur))
-        elif prev_price != listing.price_eur:
+            continue
+        prev_price = existing[listing.ad_id]
+        if prev_price != listing.price_eur:
             plan.stats.price_changed += 1
             if prev_price is not None and listing.price_eur is not None:
                 if listing.price_eur < prev_price:
                     plan.stats.price_drops += 1
+                    plan.price_drop_events.append(
+                        (listing.ad_id, prev_price, listing.price_eur)
+                    )
             plan.history.append((listing.ad_id, listing.price_eur))
         else:
             plan.stats.unchanged += 1
@@ -366,7 +405,11 @@ class ListingRepository:
                 stats.price_changed,
                 stats.unchanged,
             )
-            return SyncResult(stats=stats, inserted_ids=plan.inserted_ids)
+            return SyncResult(
+                stats=stats,
+                inserted_ids=plan.inserted_ids,
+                price_drop_events=plan.price_drop_events,
+            )
         except asyncpg.PostgresError as exc:
             raise DbError(f"sync failed: {exc}") from exc
 
@@ -397,6 +440,8 @@ class ListingRepository:
                     ev.risk,
                     ev.is_car,
                     ev.model,
+                    ev.condition or None,
+                    ev.target_offer,
                 )
                 for ad_id, ev in items
             ]
@@ -420,6 +465,8 @@ class ListingRepository:
                     risk=row["risk"] or "",
                     is_car=row["is_car"],
                     model=row["model"],
+                    condition=row["condition"] or "",
+                    target_offer=row["target_offer"],
                 )
                 for row in rows
             }
@@ -585,14 +632,6 @@ class ListingRepository:
             days,
         )
 
-    async def pending_eval_tasks(self) -> list[dict]:
-        conn = self._require_conn()
-        rows = await conn.fetch(
-            "SELECT id, profile_key, criteria, model, max_listings, days, attempts FROM eval_tasks"
-            " WHERE done_at IS NULL ORDER BY id"
-        )
-        return [dict(row) for row in rows]
-
     async def bump_eval_task_attempt(self, task_id: int) -> None:
         await self._require_conn().execute(
             "UPDATE eval_tasks SET attempts = attempts + 1 WHERE id = $1", task_id
@@ -619,6 +658,305 @@ class ListingRepository:
                 record["image_urls"] = []
             listings.append(record)
         return listings
+
+    # ------------------------------------------------------- catalog browsing
+
+    _CATALOG_SORTS = {
+        "newest": "l.first_seen_at DESC",
+        "price_asc": "l.price_eur ASC NULLS LAST, l.first_seen_at DESC",
+        "price_desc": "l.price_eur DESC NULLS LAST, l.first_seen_at DESC",
+        "score": "e.score DESC NULLS LAST, l.first_seen_at DESC",
+    }
+    _CATALOG_STATUS = {
+        "all": "TRUE",
+        "unevaluated": "e.ad_id IS NULL",
+        "rated": "e.ad_id IS NOT NULL",
+    }
+
+    async def fetch_catalog(
+        self,
+        profile_key: str,
+        days: int,
+        limit: int,
+        offset: int = 0,
+        sort: str = "newest",
+        status: str = "all",
+    ) -> list[dict]:
+        """Every stored listing in the window, evaluated or not.
+
+        The evaluation (when present) is the active profile's — listings that
+        were never scored simply have NULL score fields. ``sort`` and
+        ``status`` are whitelisted keys, never raw user input.
+        """
+        order = self._CATALOG_SORTS.get(sort, self._CATALOG_SORTS["newest"])
+        cond = self._CATALOG_STATUS.get(status, "TRUE")
+        sql = f"""
+        SELECT l.ad_id, l.url, l.title, l.price_eur, l.city, l.image_urls,
+               l.year, l.mileage_km, l.description_preview,
+               l.published_date, l.first_seen_at,
+               e.score, e.why, e.risk, e.is_car, e.model AS eval_model,
+               e.condition, e.target_offer
+        FROM listings l
+        LEFT JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
+        WHERE COALESCE(l.published_date, l.first_seen_at::date)
+              >= (now() - make_interval(days => $2))::date
+          AND {cond}
+        ORDER BY {order}
+        LIMIT $3 OFFSET $4
+        """  # noqa: S608 — order/cond come from whitelists above
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(sql, profile_key, days, limit, offset)
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"catalog fetch failed: {exc}") from exc
+        return [self._decode_catalog_row(r) for r in rows]
+
+    async def count_catalog(self, profile_key: str, days: int, status: str = "all") -> int:
+        cond = self._CATALOG_STATUS.get(status, "TRUE")
+        sql = f"""
+        SELECT count(*) FROM listings l
+        LEFT JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
+        WHERE COALESCE(l.published_date, l.first_seen_at::date)
+              >= (now() - make_interval(days => $2))::date
+          AND {cond}
+        """  # noqa: S608 — cond comes from the whitelist above
+        conn = self._require_conn()
+        try:
+            value = await conn.fetchval(sql, profile_key, days)
+            return int(value or 0)
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"catalog count failed: {exc}") from exc
+
+    async def fetch_listing_by_id(self, ad_id: int, profile_key: str) -> dict | None:
+        """One listing plus the active profile's evaluation, when present."""
+        conn = self._require_conn()
+        try:
+            row = await conn.fetchrow(
+                """
+                SELECT l.ad_id, l.url, l.title, l.price_eur, l.city, l.image_urls,
+                       l.year, l.mileage_km, l.description_preview, l.description,
+                       l.published_date, l.first_seen_at, l.views,
+                       e.score, e.why, e.risk, e.is_car, e.model AS eval_model,
+                       e.condition, e.target_offer
+                FROM listings l
+                LEFT JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
+                WHERE l.ad_id = $2
+                """,
+                profile_key,
+                ad_id,
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"listing fetch failed: {exc}") from exc
+        return self._decode_catalog_row(row) if row else None
+
+    @staticmethod
+    def _decode_catalog_row(row) -> dict:
+        record = dict(row)
+        try:
+            record["image_urls"] = json.loads(record["image_urls"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            record["image_urls"] = []
+        return record
+
+    async def fetch_price_history(self, ad_id: int, limit: int = 10) -> list[dict]:
+        """Chronological price points for one ad (oldest first)."""
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(
+                "SELECT price_eur, seen_at FROM ("
+                "  SELECT price_eur, seen_at FROM price_history"
+                "  WHERE ad_id = $1 ORDER BY id DESC LIMIT $2"
+                ") t ORDER BY seen_at, t.price_eur",
+                ad_id,
+                limit,
+            )
+            return [dict(r) for r in rows]
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"price history fetch failed: {exc}") from exc
+
+    # ------------------------------------------------------------- statistics
+
+    async def stats_overview(self, profile_key: str) -> dict:
+        """Aggregate numbers for /stats and the dashboard overview."""
+        conn = self._require_conn()
+        try:
+            total = int(await conn.fetchval("SELECT count(*) FROM listings") or 0)
+            evaluated = int(
+                await conn.fetchval(
+                    "SELECT count(*) FROM evaluations WHERE profile_key = $1", profile_key
+                )
+                or 0
+            )
+            price = await conn.fetchrow(
+                "SELECT min(price_eur) AS mn, max(price_eur) AS mx,"
+                " avg(price_eur)::int AS avg,"
+                " percentile_cont(0.5) WITHIN GROUP (ORDER BY price_eur) AS median"
+                " FROM listings WHERE price_eur IS NOT NULL"
+            )
+            bands = await conn.fetchrow(
+                "SELECT"
+                " count(*) FILTER (WHERE score >= 90) AS b90,"
+                " count(*) FILTER (WHERE score >= 80 AND score < 90) AS b80,"
+                " count(*) FILTER (WHERE score >= 70 AND score < 80) AS b70,"
+                " count(*) FILTER (WHERE score >= 50 AND score < 70) AS b50,"
+                " count(*) FILTER (WHERE score < 50) AS b0"
+                " FROM evaluations WHERE profile_key = $1",
+                profile_key,
+            )
+            new_by_day = await conn.fetch(
+                "SELECT d::date AS day, count(*) AS n FROM ("
+                "  SELECT COALESCE(published_date, first_seen_at::date) AS d FROM listings"
+                ") t WHERE d >= (now() - make_interval(days => 7))::date"
+                " GROUP BY 1 ORDER BY 1"
+            )
+            drops_7d = int(
+                await conn.fetchval(
+                    "SELECT count(*) FROM ("
+                    "  SELECT ad_id, price_eur,"
+                    "    lag(price_eur) OVER (PARTITION BY ad_id ORDER BY id) AS prev,"
+                    "    seen_at FROM price_history"
+                    ") t WHERE prev IS NOT NULL AND price_eur IS NOT NULL"
+                    "  AND price_eur < prev"
+                    "  AND seen_at >= now() - make_interval(days => 7)"
+                )
+                or 0
+            )
+            return {
+                "total": total,
+                "evaluated": evaluated,
+                "price": dict(price) if price else {},
+                "bands": {k: int(v) for k, v in dict(bands).items()} if bands else {},
+                "new_by_day": [(str(r["day"]), int(r["n"])) for r in new_by_day],
+                "drops_7d": drops_7d,
+            }
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"stats overview failed: {exc}") from exc
+
+    async def price_benchmark(self, make: str, year: int | None) -> dict | None:
+        """Asking-price benchmark for comparable listings (same make, ±2 years).
+
+        This is a distribution of OBSERVED asking prices on Bazoš, not a
+        verified market value — the caller must show the sample size.
+        """
+        conn = self._require_conn()
+        try:
+            row = await conn.fetchrow(
+                "SELECT count(*) AS n,"
+                " percentile_cont(0.5) WITHIN GROUP (ORDER BY price_eur) AS median,"
+                " percentile_cont(0.1) WITHIN GROUP (ORDER BY price_eur) AS p10,"
+                " percentile_cont(0.9) WITHIN GROUP (ORDER BY price_eur) AS p90"
+                " FROM listings"
+                " WHERE price_eur IS NOT NULL AND title ILIKE $1"
+                " AND ($2::int IS NULL OR year BETWEEN $2 - 2 AND $2 + 2)",
+                f"{make}%",
+                year,
+            )
+            if not row or not row["n"]:
+                return None
+            return dict(row)
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"price benchmark failed: {exc}") from exc
+
+    # --------------------------------------------------------- price alerts
+
+    async def fetch_chats_saving(self, ad_ids: list[int]) -> dict[int, list[int]]:
+        """ad_id -> [chat_id, ...] for users who saved any of these ads."""
+        if not ad_ids:
+            return {}
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(
+                "SELECT chat_id, ad_id FROM saved_listings WHERE ad_id = ANY($1::bigint[])",
+                ad_ids,
+            )
+            result: dict[int, list[int]] = {}
+            for row in rows:
+                result.setdefault(row["ad_id"], []).append(row["chat_id"])
+            return result
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"saved-by fetch failed: {exc}") from exc
+
+    # ------------------------------------------------------------ scrape runs
+
+    async def record_scrape_run(
+        self,
+        *,
+        pages: int,
+        total: int,
+        inserted: int,
+        price_changed: int,
+        price_drops: int,
+        evaluated: int,
+        notified: int,
+        error: str | None = None,
+    ) -> None:
+        conn = self._require_conn()
+        try:
+            await conn.execute(
+                "INSERT INTO scrape_runs (pages, total, inserted, price_changed,"
+                " price_drops, evaluated, notified, error, finished_at)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())",
+                pages,
+                total,
+                inserted,
+                price_changed,
+                price_drops,
+                evaluated,
+                notified,
+                error,
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"scrape run record failed: {exc}") from exc
+
+    async def latest_scrape_run(self) -> dict | None:
+        conn = self._require_conn()
+        try:
+            row = await conn.fetchrow(
+                "SELECT * FROM scrape_runs ORDER BY id DESC LIMIT 1"
+            )
+            return dict(row) if row else None
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"latest scrape run failed: {exc}") from exc
+
+    # ------------------------------------------------- eval task progress
+
+    async def start_eval_task(self, task_id: int, total: int) -> None:
+        await self._require_conn().execute(
+            "UPDATE eval_tasks SET started_at = now(), total = $2, done = 0 WHERE id = $1",
+            task_id,
+            total,
+        )
+
+    async def set_eval_task_progress(self, task_id: int, done: int) -> None:
+        await self._require_conn().execute(
+            "UPDATE eval_tasks SET done = $2 WHERE id = $1", task_id, done
+        )
+
+    async def fail_eval_task(self, task_id: int, error: str) -> None:
+        """Abandon a task: mark it finished with an explanatory error."""
+        await self._require_conn().execute(
+            "UPDATE eval_tasks SET done_at = now(), error = $2 WHERE id = $1",
+            task_id,
+            error,
+        )
+
+    async def pending_eval_tasks(self) -> list[dict]:
+        conn = self._require_conn()
+        rows = await conn.fetch(
+            "SELECT id, profile_key, criteria, model, max_listings, days, attempts,"
+            " total, done, started_at, created_at FROM eval_tasks"
+            " WHERE done_at IS NULL ORDER BY id"
+        )
+        return [dict(row) for row in rows]
+
+    async def recent_finished_eval_tasks(self, limit: int = 3) -> list[dict]:
+        conn = self._require_conn()
+        rows = await conn.fetch(
+            "SELECT id, profile_key, criteria, model, total, done, error, done_at"
+            " FROM eval_tasks WHERE done_at IS NOT NULL ORDER BY done_at DESC LIMIT $1",
+            limit,
+        )
+        return [dict(row) for row in rows]
 
     def _require_conn(self) -> asyncpg.Connection:
         if self._conn is None:

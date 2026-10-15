@@ -52,6 +52,34 @@ def test_plan_price_to_none_counts_as_change():
     assert plan.history == [(1, None)]
 
 
+def test_plan_existing_unknown_price_is_not_new():
+    """An ad stored with NULL price must NOT be counted as inserted again."""
+    plan = plan_sync([_listing(1, None)], existing={1: None})
+    assert plan.stats.inserted == 0
+    assert plan.stats.unchanged == 1
+    assert plan.history == []
+    assert plan.inserted_ids == []
+
+
+def test_plan_unknown_price_to_known_counts_as_change():
+    plan = plan_sync([_listing(1, Decimal("5000"))], existing={1: None})
+    assert plan.stats.inserted == 0
+    assert plan.stats.price_changed == 1
+    assert plan.history == [(1, Decimal("5000"))]
+
+
+def test_plan_price_drop_events():
+    plan = plan_sync([_listing(1, Decimal("5500"))], existing={1: Decimal("6000")})
+    assert plan.price_drop_events == [(1, Decimal("6000"), Decimal("5500"))]
+
+
+def test_plan_no_drop_event_on_increase_or_new():
+    up = plan_sync([_listing(1, Decimal("6000"))], existing={1: Decimal("5500")})
+    assert up.price_drop_events == []
+    new = plan_sync([_listing(2, Decimal("3000"))], existing={})
+    assert new.price_drop_events == []
+
+
 def test_plan_mixed_batch():
     existing = {1: Decimal("5000"), 2: Decimal("9000"), 3: Decimal("7000")}
     listings = [

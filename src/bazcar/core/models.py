@@ -36,7 +36,12 @@ class Listing(BaseModel):
 
 
 class DealEvaluation(BaseModel):
-    """LLM deal-score for one listing (Phase 3): AI ohodnotí inzerát + ``why``."""
+    """LLM deal-score for one listing (Phase 3): AI ohodnotí inzerát + ``why``.
+
+    ``condition`` and ``target_offer`` are v2 additions: a short condition
+    assessment and a suggested first offer (EUR) for negotiation. Both are
+    optional so v1 replies (score/why/risk/is_car) still parse.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +50,8 @@ class DealEvaluation(BaseModel):
     risk: str = ""
     is_car: bool = True
     model: str | None = None
+    condition: str = ""
+    target_offer: int | None = None
 
 
 class DbSyncSummary(BaseModel):

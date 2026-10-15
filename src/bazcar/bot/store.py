@@ -97,6 +97,19 @@ class UserStore:
         )
         return UserPrefs(chat_id=chat_id)
 
+    async def list_all_prefs(self) -> list[UserPrefs]:
+        """Every registered user's preferences — input for the multi-user sweep."""
+        rows = await self._require().fetch(
+            "SELECT chat_id, criteria, model, min_score, show_photo, filters, show_limit"
+            " FROM user_prefs ORDER BY chat_id"
+        )
+        prefs_list = []
+        for row in rows:
+            data = dict(row)
+            data["filters"] = json.loads(data["filters"]) if data["filters"] else {}
+            prefs_list.append(UserPrefs(**data))
+        return prefs_list
+
     async def update_prefs(self, chat_id: int, **fields) -> None:
         allowed = {"criteria", "model", "min_score", "show_photo", "filters", "show_limit"}
         updates = {key: value for key, value in fields.items() if key in allowed}

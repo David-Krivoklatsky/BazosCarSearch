@@ -56,6 +56,11 @@ def format_listing(listing: Listing) -> str:
         lines.append(f"⭐ {listing.evaluation.score}/100 — {_em(listing.evaluation.why)}")
         if listing.evaluation.risk:
             lines.append(f"⚠️ <i>Riziko:</i> {_em(listing.evaluation.risk)}")
+        if listing.evaluation.condition:
+            lines.append(f"🔧 <i>Stav:</i> {_em(listing.evaluation.condition)}")
+        if listing.evaluation.target_offer:
+            offer = f"{listing.evaluation.target_offer:,}".replace(",", " ")
+            lines.append(f"🤝 <i>Prvá ponuka:</i> {offer} €")
 
     # Age transparency: when the ad was published / first seen by us.
     stamp = listing.published_date or getattr(listing, "first_seen_at", None)

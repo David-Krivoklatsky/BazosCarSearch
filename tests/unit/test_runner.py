@@ -1,0 +1,478 @@
+"""Unit tests for the multi-user scrape pipeline (offline — no network/DB).
+
+Covers the pure/scope logic that makes one scrape serve every registered chat:
+filter-scope dedupe, YAML override semantics, the prefs loader (including its
+legacy fallback) and price-drop alert routing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from decimal import Decimal
+
+import pytest
+
+from bazcar.bot.store import UserPrefs
+from bazcar.config.settings import load_scraper_config
+from bazcar.core.models import Listing
+from bazcar.pipeline.runner import (
+    EVAL_SCHEMA_VERSION,
+    _apply_filters,
+    _distinct_scopes,
+    _legacy_prefs,
+    _load_all_prefs,
+    _notify_price_drops,
+    profile_key,
+)
+
+
+class _Settings:
+    """Minimal Settings stub — only the fields the loader reads."""
+
+    def __init__(self, **kw):
+        self.database_url = kw.get("database_url")
+        self.telegram_chat_id = kw.get("telegram_chat_id")
+        self.telegram_min_score = kw.get("telegram_min_score", 70)
+        self.telegram_bot_token = kw.get("telegram_bot_token")
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+def _user(chat_id: int, filters, criteria=None, model=None, min_score=None):
+    return {
+        "chat_id": chat_id,
+        "criteria": criteria,
+        "model": model,
+        "min_score": min_score,
+        "show_photo": False,
+        "filters": filters,
+    }
+
+
+# ------------------------------------------------------------- filter scopes
+
+
+def test_apply_filters_none_keeps_yaml_defaults():
+    """No user preference -> the YAML scrape scope is untouched."""
+    cfg = load_scraper_config()
+    before = cfg.base.search_filters.model_dump()
+    assert _apply_filters(cfg, None) is cfg
+    assert cfg.base.search_filters.model_dump() == before
+
+
+def test_apply_filters_empty_dict_means_no_filters():
+    """``/filter clear`` -> genuinely empty scope (whole catalogue)."""
+    cfg = load_scraper_config()
+    out = _apply_filters(cfg, {})
+    assert out is not cfg  # copy, never the original
+    dumped = out.base.search_filters.model_dump()
+    assert not any(dumped.values()), dumped
+
+
+def test_apply_filters_overrides_and_does_not_mutate_original():
+    cfg = load_scraper_config()
+    original = cfg.base.search_filters.model_dump()
+    out = _apply_filters(cfg, {"query": "octavia", "min_price": 1000, "max_price": 9000})
+    assert out.base.search_filters.query == "octavia"
+    assert out.base.search_filters.min_price == 1000
+    assert out.base.search_filters.max_price == 9000
+    assert cfg.base.search_filters.model_dump() == original
+
+
+def test_distinct_scopes_no_users_uses_yaml_scope():
+    assert _distinct_scopes([]) == [None]
+
+
+def test_distinct_scopes_dedupes_identical_filter_sets():
+    users = [
+        _user(1, {"query": "golf"}),
+        _user(2, {"query": "golf"}),  # same filters -> one scrape
+        _user(3, {"query": "octavia"}),
+        _user(4, None),               # YAML scope
+        _user(5, None),               # duplicate YAML scope
+    ]
+    scopes = _distinct_scopes(users)
+    assert scopes == [{"query": "golf"}, {"query": "octavia"}, None]
+
+
+def test_distinct_scopes_treats_empty_and_none_as_different():
+    """{} (no filters) and None (YAML defaults) are different scrape scopes."""
+    scopes = _distinct_scopes([_user(1, None), _user(2, {})])
+    assert scopes == [None, {}]
+
+
+# ---------------------------------------------------------------- profile key
+
+
+def test_profile_key_is_stable_and_versioned():
+    a = profile_key("diesel", "m/1")
+    b = profile_key("diesel", "m/1")
+    assert a == b
+    # the schema version is hashed in -> a prompt change invalidates old evals
+    assert a != profile_key("diesel", "m/1", "v1")
+    assert profile_key("diesel", "m/1", EVAL_SCHEMA_VERSION) == a
+    # criteria and model both matter
+    assert profile_key("diesel", "m/1") != profile_key("benzin", "m/1")
+    assert profile_key("diesel", "m/1") != profile_key("diesel", "m/2")
+    assert profile_key(None, "m/1") != profile_key("diesel", "m/1")
+
+
+# ---------------------------------------------------------------- prefs loader
+
+
+def test_legacy_prefs_shape():
+    prefs = _legacy_prefs(_Settings(telegram_chat_id="111", telegram_min_score=80))
+    assert prefs["chat_id"] == 111
+    assert prefs["criteria"] is None
+    assert prefs["min_score"] == 80
+    assert prefs["filters"] is None  # None -> YAML scope, never an override
+
+
+def test_load_all_prefs_without_db_returns_legacy_or_empty(monkeypatch):
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings", lambda: _Settings(telegram_chat_id=None)
+    )
+    assert _run(_load_all_prefs()) == []
+
+
+def test_load_all_prefs_reads_store_and_appends_legacy(monkeypatch):
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(database_url="postgres://x", telegram_chat_id="999"),
+    )
+
+    class _Store:
+        def __init__(self, dsn):
+            self.dsn = dsn
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def list_all_prefs(self):
+            return [
+                UserPrefs(chat_id=1, criteria="diesel", model="m/1", min_score=70),
+                UserPrefs(chat_id=999, criteria="benzin"),  # already registered
+            ]
+
+    monkeypatch.setattr("bazcar.bot.store.UserStore", _Store)
+    users = _run(_load_all_prefs())
+    by_id = {u["chat_id"]: u for u in users}
+    assert set(by_id) == {1, 999}
+    assert by_id[1]["criteria"] == "diesel"
+    assert by_id[1]["model"] == "m/1"
+    assert by_id[1]["min_score"] == 70
+    # the registered row wins over the synthesized legacy entry
+    assert by_id[999]["criteria"] == "benzin"
+
+
+def test_load_all_prefs_survives_store_failure(monkeypatch):
+    """A broken store must not kill the pipeline — fall back to legacy."""
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(database_url="postgres://x", telegram_chat_id="42"),
+    )
+
+    class _Broken:
+        def __init__(self, dsn):
+            raise RuntimeError("db down")
+
+    monkeypatch.setattr("bazcar.bot.store.UserStore", _Broken)
+    users = _run(_load_all_prefs())
+    assert [u["chat_id"] for u in users] == [42]
+
+
+# ------------------------------------------------------------ price-drop alerts
+
+
+class _FakeNotifier:
+    def __init__(self, token: str = "", chat_id: str = "") -> None:
+        self.sent: list[tuple[int, str]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+    async def send_message(self, text, *, chat_id=None, reply_markup=None, silent=False):
+        self.sent.append((chat_id, text))
+        return True
+
+
+def _listing(ad_id: int = 1, price=Decimal("5000")) -> Listing:
+    return Listing(
+        ad_id=ad_id,
+        url=f"https://auto.bazos.sk/inzerat/{ad_id}/x.php",
+        title="Škoda Octavia 1.9 TDI",
+        price_eur=price,
+        description_preview="popis",
+    )
+
+
+def test_price_drops_noop_without_token(monkeypatch):
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(telegram_bot_token=None, database_url="postgres://x"),
+    )
+    assert _run(_notify_price_drops([_listing()], [(1, Decimal("6000"), Decimal("5000"))])) == 0
+
+
+def test_price_drops_noop_without_savers(monkeypatch):
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(telegram_bot_token="T", database_url="postgres://x"),
+    )
+
+    class _Repo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def fetch_chats_saving(self, ad_ids):
+            return {}  # nobody saved it
+
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    monkeypatch.setattr("bazcar.notify.TelegramNotifier", _FakeNotifier)
+    assert _run(_notify_price_drops([_listing()], [(1, Decimal("6000"), Decimal("5000"))])) == 0
+
+
+def test_price_drops_notify_savers_with_delta(monkeypatch):
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(telegram_bot_token="T", database_url="postgres://x"),
+    )
+
+    class _Repo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def fetch_chats_saving(self, ad_ids):
+            assert ad_ids == [1]
+            return {1: [7, 8]}  # two users saved this ad
+
+    notifier = _FakeNotifier()
+    notifier.sent = []
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    monkeypatch.setattr("bazcar.notify.TelegramNotifier", lambda *a, **kw: notifier)
+    sent = _run(_notify_price_drops([_listing()], [(1, Decimal("6000"), Decimal("5000"))]))
+    assert sent == 2
+    assert [chat for chat, _ in notifier.sent] == [7, 8]
+    text = notifier.sent[0][1]
+    assert "Zľava o 17 %" in text  # 6000 -> 5000
+    assert "6 000 €" in text and "5 000 €" in text
+
+
+def test_price_drops_skips_event_for_unknown_listing(monkeypatch):
+    """A drop for an ad not in this scrape batch has nothing to render."""
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(telegram_bot_token="T", database_url="postgres://x"),
+    )
+
+    class _Repo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def fetch_chats_saving(self, ad_ids):
+            return {1: [7]}
+
+    notifier = _FakeNotifier()
+    notifier.sent = []
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    monkeypatch.setattr("bazcar.notify.TelegramNotifier", lambda *a, **kw: notifier)
+    sent = _run(_notify_price_drops([_listing(ad_id=99)], [(1, Decimal("6000"), Decimal("5000"))]))
+    assert sent == 0
+    assert notifier.sent == []
+
+
+@pytest.mark.parametrize("total", [0])
+def test_bar_total_zero_is_safe(total: int) -> None:
+    from bazcar.bot.daemon import bar
+
+    assert len(bar(1, total)) == 10
+
+
+# ------------------------------------------------- per-user match sweep
+
+
+def _match_row(ad_id: int, score: int = 90, is_car: bool = True) -> dict:
+    """Row shaped like ``fetch_recent_matches`` output."""
+    return {
+        "ad_id": ad_id,
+        "url": f"https://auto.bazos.sk/inzerat/{ad_id}/x.php",
+        "title": f"Škoda Octavia {ad_id}",
+        "price_eur": Decimal("8000"),
+        "city": "BA",
+        "image_urls": [],
+        "year": 2019,
+        "mileage_km": 150000,
+        "description_preview": "popis",
+        "published_date": None,
+        "score": score,
+        "why": "ok",
+        "risk": None,
+        "is_car": is_car,
+        "eval_model": "m/1",
+    }
+
+
+class _SweepNotifier(_FakeNotifier):
+    def __init__(self, token: str = "", chat_id: str = "") -> None:
+        super().__init__()
+
+    async def send_listings(self, listings, *, chat_id=None):
+        self.sent.append((chat_id, ",".join(str(li.ad_id) for li in listings)))
+        return len(listings)
+
+    async def send_listings_with_photos(self, listings, *, chat_id=None):
+        return await self.send_listings(listings, chat_id=chat_id)
+
+
+class _SweepRepo:
+    """Repo stub: returns rows per profile and remembers what was recorded."""
+
+    rows_by_profile: dict[str, list[dict]] = {}
+    already: set[tuple[int, str, int]] = set()
+    recorded: list[tuple[int, str, list[int]]] = []
+
+    def __init__(self, dsn: str) -> None:
+        pass
+
+    async def connect(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        pass
+
+    async def fetch_recent_matches(self, profile_key, min_score, days, limit):
+        return list(self.rows_by_profile.get(profile_key, []))
+
+    async def fetch_notified_ids(self, chat_id, profile_key, ad_ids):
+        return {ad for (c, p, ad) in self.already if c == chat_id and p == profile_key and ad in ad_ids}
+
+    async def record_notifications(self, chat_id, profile_key, ad_ids):
+        type(self).recorded.append((chat_id, profile_key, list(ad_ids)))
+
+
+def _sweep_settings(monkeypatch):
+    _SweepRepo.rows_by_profile = {}
+    _SweepRepo.already = set()
+    _SweepRepo.recorded = []
+    notifier = _SweepNotifier()
+    notifier.sent = []
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(
+            telegram_bot_token="T",
+            telegram_chat_id="0",
+            database_url="postgres://x",
+            telegram_min_score=70,
+        ),
+    )
+    monkeypatch.setattr("bazcar.db.ListingRepository", _SweepRepo)
+    monkeypatch.setattr("bazcar.notify.TelegramNotifier", lambda *a, **kw: notifier)
+    return notifier
+
+
+def test_match_sweep_sends_only_unseen_per_user(monkeypatch):
+    from bazcar.pipeline.runner import _notify_unseen_matches
+
+    notifier = _sweep_settings(monkeypatch)
+    user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
+    p_key = profile_key("diesel", "m/1")
+    _SweepRepo.rows_by_profile[p_key] = [_match_row(1), _match_row(2)]
+    _SweepRepo.already = {(7, p_key, 1)}  # ad 1 already pushed
+
+    sent = _run(_notify_unseen_matches([user], enabled=True))
+    assert sent == 1
+    assert notifier.sent == [(7, "2")]
+    assert _SweepRepo.recorded == [(7, p_key, [2])]
+
+
+def test_match_sweep_isolates_users_by_profile(monkeypatch):
+    """Two users with different criteria get their own alerts, not each other's."""
+    from bazcar.pipeline.runner import _notify_unseen_matches
+
+    notifier = _sweep_settings(monkeypatch)
+    diesel = _user(7, None, criteria="diesel", model="m/1", min_score=70)
+    benzin = _user(8, None, criteria="benzin", model="m/1", min_score=70)
+    key_d, key_b = profile_key("diesel", "m/1"), profile_key("benzin", "m/1")
+    _SweepRepo.rows_by_profile[key_d] = [_match_row(1)]
+    _SweepRepo.rows_by_profile[key_b] = [_match_row(2)]
+    sent = _run(_notify_unseen_matches([diesel, benzin], enabled=True))
+    assert sent == 2
+    assert (7, "1") in notifier.sent and (8, "2") in notifier.sent
+    recorded = {(c, p): ads for c, p, ads in _SweepRepo.recorded}
+    assert recorded[(7, key_d)] == [1]
+    assert recorded[(8, key_b)] == [2]
+
+
+def test_match_sweep_skips_parts(monkeypatch):
+    from bazcar.pipeline.runner import _notify_unseen_matches
+
+    notifier = _sweep_settings(monkeypatch)
+    user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
+    p_key = profile_key("diesel", "m/1")
+    _SweepRepo.rows_by_profile[p_key] = [
+        _match_row(1, is_car=False),  # flagged as a part by the LLM
+        _match_row(2, is_car=True),
+    ]
+    sent = _run(_notify_unseen_matches([user], enabled=True))
+    assert sent == 1
+    assert notifier.sent == [(7, "2")]
+
+
+def test_match_sweep_respects_per_run_cap(monkeypatch):
+    from bazcar.pipeline.runner import NOTIFY_CAP_PER_RUN, _notify_unseen_matches
+
+    notifier = _sweep_settings(monkeypatch)
+    user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
+    p_key = profile_key("diesel", "m/1")
+    _SweepRepo.rows_by_profile[p_key] = [_match_row(i) for i in range(1, 60)]
+    sent = _run(_notify_unseen_matches([user], enabled=True))
+    assert sent == NOTIFY_CAP_PER_RUN
+    # the batch is capped, and only the delivered ads are recorded
+    _chat, pushed = notifier.sent[0]
+    assert len(pushed.split(",")) == NOTIFY_CAP_PER_RUN
+    assert _SweepRepo.recorded == [(7, p_key, [int(a) for a in pushed.split(",")])]
+
+
+def test_match_sweep_no_users_is_zero(monkeypatch):
+    from bazcar.pipeline.runner import _notify_unseen_matches
+
+    _sweep_settings(monkeypatch)
+    assert _run(_notify_unseen_matches([], enabled=True)) == 0
+
+
+def test_match_sweep_respects_show_photo(monkeypatch):
+    from bazcar.pipeline.runner import _notify_unseen_matches
+
+    notifier = _sweep_settings(monkeypatch)
+    user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
+    user["show_photo"] = True
+    p_key = profile_key("diesel", "m/1")
+    _SweepRepo.rows_by_profile[p_key] = [_match_row(1)]
+    assert _run(_notify_unseen_matches([user], enabled=True)) == 1
+    assert notifier.sent == [(7, "1")]

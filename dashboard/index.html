@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bazcar dashboard</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #0f1420; --card: #1a2132; --card2: #222b40; --text: #e8ecf4;
+    --muted: #8b94a9; --accent: #4f8cff; --good: #3ddc84; --warn: #ffb648;
+    --bad: #ff6b6b; --line: #2a3450;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 12px 12px 40px;
+  }
+  h1 { font-size: 19px; margin: 4px 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tab {
+    background: var(--card); border: 1px solid var(--line); color: var(--muted);
+    padding: 8px 13px; border-radius: 999px; font-size: 13px; cursor: pointer;
+  }
+  .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .kpi .num { font-size: 24px; font-weight: 700; }
+  .kpi .lbl { color: var(--muted); font-size: 12px; }
+  .section { margin-top: 16px; }
+  .section h2 { font-size: 15px; margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  a { color: var(--accent); text-decoration: none; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .b-wait { background: #3a3f52; color: var(--muted); }
+  .b-score { background: #1d3a2b; color: var(--good); }
+  .b-part { background: #40262a; color: var(--bad); }
+  .spark { display: flex; align-items: flex-end; gap: 3px; height: 40px; margin-top: 6px; }
+  .spark div { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; opacity: .85; }
+  .bars .row { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 12px; }
+  .bars .row .lab { width: 48px; color: var(--muted); text-align: right; }
+  .bars .track { flex: 1; background: var(--card2); border-radius: 6px; height: 14px; overflow: hidden; }
+  .bars .fill { height: 100%; background: var(--accent); border-radius: 6px; }
+  .bars .val { width: 30px; }
+  .q-item { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+  .q-item .crit { font-weight: 600; }
+  .q-item .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .prog { background: var(--card2); border-radius: 6px; height: 10px; overflow: hidden; margin-top: 6px; }
+  .prog .fill { height: 100%; background: var(--good); }
+  .err { background: #40262a; border: 1px solid var(--bad); padding: 10px 14px; border-radius: 10px; margin-top: 10px; }
+  .muted { color: var(--muted); }
+  .pager { display: flex; gap: 8px; margin-top: 10px; }
+  .pager button {
+    background: var(--card); border: 1px solid var(--line); color: var(--text);
+    padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  .pager button:disabled { opacity: .4; cursor: default; }
+  .mini {
+    background: var(--card2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 4px 9px; cursor: pointer; font-size: 13px;
+  }
+  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .kv:last-child { border-bottom: 0; }
+  .kv .k { color: var(--muted); }
+  .hist { display: flex; align-items: flex-end; gap: 3px; height: 54px; margin: 8px 0 4px; }
+  .hist div { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 3px; opacity: .85; }
+  .trend-down { color: var(--good); } .trend-up { color: var(--bad); }
+  #loading { color: var(--muted); margin-top: 20px; }
+</style>
+</head>
+<body>
+<h1>🚗 Bazcar dashboard</h1>
+<div class="sub">Živé dáta z Neon · tvoj aktívny profil</div>
+<div class="tabs">
+  <button class="tab active" data-view="overview">Prehľad</button>
+  <button class="tab" data-view="inventory">Inzeráty</button>
+  <button class="tab" data-view="queue">Fronta AI</button>
+  <button class="tab" data-view="stats">Štatistiky</button>
+</div>
+<div id="loading">Načítavam…</div>
+<div id="content"></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const initData = tg ? tg.initData : "";
+const content = document.getElementById("content");
+const loading = document.getElementById("loading");
+let currentView = "overview";
+let invPage = 0, invDays = 30;
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+}
+function eur(v) {
+  if (v == null || v === "") return "dohodou";
+  return Number(v).toLocaleString("sk-SK").replace(/,/g, " ") + " €";
+}
+function km(v) { return v == null ? "? km" : Number(v).toLocaleString("sk-SK") + " km"; }
+function ago(iso) {
+  if (!iso) return "nikdy";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 120) return "práve teraz";
+  if (s < 3600) return "pred " + Math.floor(s/60) + " min";
+  if (s < 86400) return "pred " + Math.floor(s/3600) + " h";
+  return "pred " + Math.floor(s/86400) + " d";
+}
+function spark(counts) {
+  const max = Math.max(...counts, 1);
+  return '<div class="spark">' + counts.map(c =>
+    `<div style="height:${Math.max(5, Math.round(c / max * 100))}%"></div>`).join("") + "</div>";
+}
+function bars(bands) {
+  const rows = [["90+","b90"],["80–89","b80"],["70–79","b70"],["50–69","b50"],["<50","b0"]];
+  const total = rows.reduce((s, [,k]) => s + (bands[k]||0), 0) || 1;
+  return '<div class="bars">' + rows.map(([lab, k]) => {
+    const v = bands[k] || 0;
+    return `<div class="row"><span class="lab">${lab}</span>` +
+      `<div class="track"><div class="fill" style="width:${Math.round(v/total*100)}%"></div></div>` +
+      `<span class="val">${v}</span></div>`;
+  }).join("") + "</div>";
+}
+function badge(row) {
+  if (row.score == null) return '<span class="badge b-wait">⏳ bez AI</span>';
+  if (row.is_car === false) return '<span class="badge b-part">🛠 diel</span>';
+  return `<span class="badge b-score">⭐ ${row.score}</span>`;
+}
+
+function showErr(html) {
+  loading.style.display = "none";
+  content.innerHTML = '<div class="err">' + html + "</div>";
+}
+
+async function get(params) {
+  try {
+    const resp = await fetch("/api/webapp?" + params.toString(), {
+      headers: { "X-Telegram-Init-Data": initData }
+    });
+    if (resp.status === 401) {
+      showErr("🔒 Otvor dashboard cez tlačidlo /dashboard v bote — " +
+        "priamy prístup cez prehliadač nie je povolený.");
+      return null;
+    }
+    return await resp.json();
+  } catch (e) {
+    showErr("⚠️ Chyba načítania: " + esc(e.message));
+    return null;
+  }
+}
+
+async function load(view) {
+  currentView = view;
+  document.querySelectorAll(".tab").forEach(t =>
+    t.classList.toggle("active", t.dataset.view === view));
+  loading.style.display = "block";
+  content.innerHTML = "";
+  const params = new URLSearchParams({ view });
+  if (view === "inventory") { params.set("page", invPage); params.set("days", invDays); }
+  const data = await get(params);
+  if (data == null) return;
+  loading.style.display = "none";
+  if (view === "overview") renderOverview(data);
+  else if (view === "inventory") renderInventory(data);
+  else if (view === "queue") renderQueue(data);
+  else if (view === "stats") renderStats(data);
+}
+
+async function openListing(id) {
+  currentView = "listing";
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  loading.style.display = "block";
+  content.innerHTML = "";
+  const data = await get(new URLSearchParams({ view: "listing", id: String(id) }));
+  if (data == null) return;
+  loading.style.display = "none";
+  renderListing(data);
+}
+
+function renderOverview(d) {
+  const s = d.stats || {};
+  const run = d.last_run || {};
+  const cov = s.total ? Math.round((s.evaluated || 0) / s.total * 100) : 0;
+  const counts = (s.new_by_day || []).map(x => x[1]);
+  content.innerHTML = `
+    <div class="grid">
+      <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 inzerátov v DB</div></div>
+      <div class="card kpi"><div class="num">${cov} %</div><div class="lbl">🤖 AI pokrytie</div></div>
+      <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 zliav za 7 dní</div></div>
+      <div class="card kpi"><div class="num">${d.queue_pending ?? 0}</div><div class="lbl">⏳ vo fronte</div></div>
+    </div>
+    <div class="section card">
+      <h2>Nové inzeráty za 7 dní (${counts.reduce((a,b)=>a+b,0)})</h2>${spark(counts)}
+    </div>
+    <div class="section card">
+      <h2>Posledný beh</h2>
+      <div class="muted">${run.finished_at ? ago(run.finished_at) : "žiadny zaznamenaný"} ·
+        nových ${run.inserted ?? "?"} · ohodnotených ${run.evaluated ?? "?"} ·
+        notifikácií ${run.notified ?? "?"}</div>
+    </div>`;
+}
+
+function renderInventory(d) {
+  const items = d.items || [];
+  const from = d.page * d.page_size + 1;
+  const to = d.page * d.page_size + items.length;
+  const rows = items.map(r => `
+    <tr>
+      <td>${badge(r)}</td>
+      <td><a href="${esc(r.url)}" target="_blank">${esc(r.title)}</a><br>
+        <span class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)} · ${esc(r.city || "")}</span></td>
+      <td class="muted">${esc((r.published_date || "").slice(5))}</td>
+      <td><button class="mini" onclick="openListing(${r.ad_id})">🔎</button></td>
+    </tr>`).join("");
+  content.innerHTML = `
+    <div class="section card">
+      <h2>Inzeráty ${items.length ? from + "–" + to : 0} z ${d.total} (posledných ${invDays} dní)</h2>
+      <table><tr><th>AI</th><th>Inzerát</th><th>Dátum</th><th></th></tr>${rows}</table>
+      <div class="pager">
+        <button ${d.page === 0 ? "disabled" : ""} onclick="invPage--;load('inventory')">◀️</button>
+        <button ${to >= d.total ? "disabled" : ""} onclick="invPage++;load('inventory')">▶️</button>
+        <button onclick="invDays = invDays === 30 ? 90 : (invDays === 90 ? 7 : 30); invPage = 0; load('inventory')">okno: ${invDays} d</button>
+      </div>
+    </div>`;
+}
+
+function renderListing(d) {
+  if (d.error) { showErr("⚠️ Inzerát sa nenašiel."); return; }
+  const r = d.listing || {};
+  const hist = (d.history || []).filter(h => h.price_eur != null);
+  const bench = d.benchmark;
+  let spark = "";
+  if (hist.length >= 2) {
+    const vals = hist.map(h => Number(h.price_eur));
+    const max = Math.max(...vals, 1), min = Math.min(...vals);
+    spark = '<div class="hist">' + vals.map(v =>
+      `<div style="height:${Math.max(8, Math.round((v - min) / (max - min || 1) * 100))}%"></div>`
+    ).join("") + "</div>";
+  }
+  const first = hist[0], last = hist[hist.length - 1];
+  let trend = "";
+  if (hist.length >= 2) {
+    const diff = Math.round((Number(last.price_eur) / Number(first.price_eur) - 1) * 100);
+    trend = `<div class="kv"><span class="k">vývoj ceny</span>` +
+      `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${eur(first.price_eur)} → ${eur(last.price_eur)} (${diff > 0 ? "+" : ""}${diff} %)</span></div>`;
+  }
+  const ai = r.score != null
+    ? `<div class="kv"><span class="k">AI skóre</span><span>⭐ ${r.score}/100</span></div>` +
+      (r.why ? `<div class="kv"><span class="k">prečo</span><span>${esc(r.why)}</span></div>` : "") +
+      (r.risk ? `<div class="kv"><span class="k">riziko</span><span>${esc(r.risk)}</span></div>` : "") +
+      (r.condition ? `<div class="kv"><span class="k">stav</span><span>${esc(r.condition)}</span></div>` : "") +
+      (r.target_offer ? `<div class="kv"><span class="k">prvá ponuka</span><span>${eur(r.target_offer)}</span></div>` : "")
+    : `<div class="kv"><span class="k">AI</span><span class="muted">⏳ zatiaľ bez hodnotenia</span></div>`;
+  let market = "";
+  if (bench && bench.n >= 3 && r.price_eur != null && bench.median) {
+    const diff = Math.round((Number(r.price_eur) / Number(bench.median) - 1) * 100);
+    const verdict = diff < 0 ? "pod mediánom" : "nad mediánom";
+    market = `<div class="section card"><h2>📊 Trh (n=${bench.n}, rok ±2)</h2>` +
+      `<div class="kv"><span class="k">medián asking cien</span><span>${eur(bench.median)}</span></div>` +
+      `<div class="kv"><span class="k">tento inzerát</span>` +
+      `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${Math.abs(diff)} % ${verdict}</span></div>` +
+      `<div class="kv"><span class="k">p10 – p90</span><span>${eur(bench.p10)} – ${eur(bench.p90)}</span></div></div>`;
+  }
+  content.innerHTML = `
+    <div class="section">
+      <button class="mini" onclick="load('inventory')">◀️ späť na inzeráty</button>
+    </div>
+    <div class="section card">
+      <h2>${esc(r.title)}</h2>
+      <div class="kv"><span class="k">cena</span><span>💰 ${eur(r.price_eur)}</span></div>
+      <div class="kv"><span class="k">rok · km</span><span>${r.year ?? "?"} · ${km(r.mileage_km)}</span></div>
+      <div class="kv"><span class="k">lokalita</span><span>${esc(r.city || "?")}</span></div>
+      ${r.views != null ? `<div class="kv"><span class="k">zobrazenia</span><span>👁 ${r.views}</span></div>` : ""}
+      <div class="kv"><span class="k">inzerát z</span><span>${esc(r.published_date || "?")}</span></div>
+      ${trend}
+      ${spark}
+    </div>
+    <div class="section card"><h2>🤖 AI hodnotenie</h2>${ai}</div>
+    ${market}
+    <div class="section">
+      <a href="${esc(r.url)}" target="_blank">🔗 Otvoriť inzerát na Bazoši</a>
+    </div>`;
+}
+
+function renderQueue(d) {
+  const pend = (d.pending || []).map(t => {
+    const pct = t.total ? Math.round((t.done || 0) / t.total * 100) : 0;
+    return `<div class="q-item">
+      <div class="crit">⏳ ${esc((t.criteria || "bez kritérií").slice(0, 60))}</div>
+      <div class="meta">${esc(t.model || "?")} · ${t.started_at ? t.done + "/" + t.total : "čaká v rade"} · ${ago(t.created_at)}</div>
+      <div class="prog"><div class="fill" style="width:${pct}%"></div></div>
+    </div>`;
+  }).join("");
+  const fin = (d.finished || []).map(t => `
+    <div class="q-item">
+      <div class="crit">${t.error ? "⚠️" : "✅"} ${esc((t.criteria || "bez kritérií").slice(0, 60))}</div>
+      <div class="meta">${t.error ? esc(t.error) : (t.done || 0) + "/" + (t.total || 0) + " áut"} · ${ago(t.done_at)}</div>
+    </div>`).join("");
+  content.innerHTML = `
+    <div class="section"><h2>Čaká / beží (${(d.pending || []).length})</h2>${pend || '<div class="muted">Fronta je prázdna ✅</div>'}</div>
+    <div class="section"><h2>Posledné dokončené</h2>${fin || '<div class="muted">Zatiaľ nič</div>'}</div>`;
+}
+
+function renderStats(d) {
+  const s = d.stats || {};
+  const counts = (s.new_by_day || []).map(x => x[1]);
+  const p = s.price || {};
+  content.innerHTML = `
+    <div class="grid">
+      <div class="card kpi"><div class="num">${s.total ?? "?"}</div><div class="lbl">📦 inzerátov</div></div>
+      <div class="card kpi"><div class="num">${s.evaluated ?? 0}</div><div class="lbl">🤖 ohodnotených</div></div>
+      <div class="card kpi"><div class="num">${eur(p.median)}</div><div class="lbl">💰 medián cien</div></div>
+      <div class="card kpi"><div class="num">${s.drops_7d ?? 0}</div><div class="lbl">📉 zliav / 7 dní</div></div>
+    </div>
+    <div class="section card"><h2>Nové za 7 dní</h2>${spark(counts)}</div>
+    <div class="section card"><h2>Rozdelenie AI skóre</h2>${bars(s.bands || {})}</div>
+    <div class="section card"><h2>Ceny</h2>
+      <div class="muted">min ${eur(p.mn)} · medián ${eur(p.median)} · max ${eur(p.mx)}</div></div>`;
+}
+
+document.querySelectorAll(".tab").forEach(t =>
+  t.addEventListener("click", () => load(t.dataset.view)));
+load("overview");
+</script>
+</body>
+</html>

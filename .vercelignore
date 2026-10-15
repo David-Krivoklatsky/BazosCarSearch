@@ -1,0 +1,18 @@
+# Keep the Vercel upload lean; runtime needs only src/, api/, dashboard/, config/,
+# requirements.txt and vercel.json.
+.venv/
+venv/
+.git/
+.github/
+data/
+logs/
+tests/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.playwright-mcp/
+.vercel/
+__pycache__/
+*.pyc
+.env*
+# NOTE: do NOT ignore *.md — hatchling needs README.md (pyproject `readme`).

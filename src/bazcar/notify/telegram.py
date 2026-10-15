@@ -100,6 +100,54 @@ class TelegramNotifier:
             payload["text"] = text
         return await self._post("answerCallbackQuery", payload)
 
+    async def edit_message_text(
+        self,
+        text: str,
+        message_id: int,
+        *,
+        chat_id: int | None = None,
+        reply_markup: dict | None = None,
+    ) -> bool:
+        """Edit an existing message in place (Telegram 'editMessageText').
+
+        Used for paginated views so navigation does not spam the chat.
+        """
+        payload: dict[str, Any] = {
+            "chat_id": chat_id or self._chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        return await self._post("editMessageText", payload)
+
+    async def send_document(
+        self,
+        filename: str,
+        content: bytes,
+        *,
+        chat_id: int | None = None,
+        caption: str = "",
+    ) -> bool:
+        """Send a file (Telegram 'sendDocument', multipart upload)."""
+        try:
+            resp = await self._client.post(
+                f"{self._base}/bot{self._token}/sendDocument",
+                data={
+                    "chat_id": str(chat_id or self._chat_id),
+                    "caption": caption[:1024],
+                    "parse_mode": "HTML",
+                },
+                files={"document": (filename, content, "text/csv")},
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError as exc:
+            logger.warning("telegram sendDocument failed: %s", exc)
+            return False
+
     async def send_listings(
         self, listings: list[Listing], *, chat_id: int | None = None, silent: bool = False
     ) -> int:
