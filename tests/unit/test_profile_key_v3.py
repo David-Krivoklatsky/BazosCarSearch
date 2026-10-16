@@ -86,15 +86,17 @@ def test_migration_rewrites_all_three_tables_and_dedupes_first() -> None:
     conn = _MigrationConn(legacy_left=True)
     mapping = {"old1": "new1", "old2": "new1"}
     counts = asyncio.run(_repo(conn).migrate_profile_keys(mapping))
-    kinds = [s.split()[0] + " " + s.split()[2] if s.startswith("DELETE") else s.split()[1] for s in conn.statements]
-    # dedupe (DELETE) happens before each rename (UPDATE), per table
-    assert conn.statements[0].startswith("SELECT 1 FROM evaluations")
-    assert conn.statements[1].startswith("DELETE FROM evaluations")
-    assert any("UPDATE evaluations" in s for s in conn.statements)
-    assert any("UPDATE notifications" in s for s in conn.statements)
-    assert any("UPDATE eval_tasks" in s for s in conn.statements)
-    assert counts["evaluations"] == 2 and counts["notifications"] == 2 and counts["eval_tasks"] == 2
-    assert kinds  # statements were issued
+    sql = conn.statements
+    # the existence check comes first, then per table: dedupe (DELETE) before rename (UPDATE)
+    assert sql[0].startswith("SELECT 1 FROM evaluations")
+    assert sql[1].startswith("DELETE FROM evaluations")
+    assert sql[2].startswith("UPDATE evaluations") and "unnest" in sql[2]
+    assert sql.index(next(s for s in sql if s.startswith("DELETE FROM notifications"))) < \
+        sql.index(next(s for s in sql if s.startswith("UPDATE notifications")))
+    assert any(s.startswith("UPDATE eval_tasks") and "unnest" in s for s in sql)
+    # one statement per table regardless of how many keys are mapped
+    assert sum(1 for s in sql if s.startswith("UPDATE")) == 3
+    assert counts["evaluations"] == 1 and counts["notifications"] == 1 and counts["eval_tasks"] == 1
 
 
 def test_migration_is_a_noop_once_legacy_keys_are_gone() -> None:

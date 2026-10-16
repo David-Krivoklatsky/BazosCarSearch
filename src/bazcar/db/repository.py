@@ -889,23 +889,33 @@ class ListingRepository:
 
         ``mapping`` = {legacy_key: spec_key}. Per car (and per chat+car for
         notifications) only the most recent row survives across all legacy and
-        spec keys, so the primary keys stay unique. Idempotent: once the legacy
-        keys are gone it is a no-op. Returns row counts touched.
+        spec keys, so the primary keys stay unique. Each table is rewritten with a
+        single set-based statement. Idempotent: once no legacy key remains it is a
+        no-op. Returns row counts touched.
         """
+        zero = {"evaluations": 0, "notifications": 0, "eval_tasks": 0}
         if not mapping:
-            return {"evaluations": 0, "notifications": 0, "eval_tasks": 0}
+            return zero
         conn = self._require_conn()
         keys = sorted(set(mapping) | set(mapping.values()))
-        zero = {"evaluations": 0, "notifications": 0, "eval_tasks": 0}
         legacy_left = await conn.fetchval(
             "SELECT 1 FROM evaluations WHERE profile_key = ANY($1::text[]) LIMIT 1",
             list(mapping),
         )
         if legacy_left is None:
             return zero  # already migrated: nothing bound to a legacy key remains
-        counts = {}
+        olds, news = list(mapping.keys()), list(mapping.values())
+        counts: dict[str, int] = {}
+
+        def _n(status: str) -> int:
+            try:
+                return int(str(status).split()[-1])
+            except (ValueError, IndexError):
+                return 0
+
         async with conn.transaction():
-            status = await conn.execute(
+            # 1) keep only the newest row per car across all keys in play
+            await conn.execute(
                 "DELETE FROM evaluations e WHERE e.profile_key = ANY($1::text[])"
                 " AND EXISTS (SELECT 1 FROM evaluations x WHERE x.ad_id = e.ad_id"
                 "   AND x.profile_key = ANY($1::text[])"
@@ -913,16 +923,15 @@ class ListingRepository:
                 "     OR (x.evaluated_at = e.evaluated_at AND x.profile_key > e.profile_key)))",
                 keys,
             )
-            counts["evaluations_dropped"] = int(str(status).split()[-1])
-            moved = 0
-            for old, new in mapping.items():
-                status = await conn.execute(
-                    "UPDATE evaluations SET profile_key = $2 WHERE profile_key = $1", old, new
-                )
-                moved += int(str(status).split()[-1])
-            counts["evaluations"] = moved
+            # 2) rename the survivors to their spec key (one statement)
+            counts["evaluations"] = _n(await conn.execute(
+                "UPDATE evaluations t SET profile_key = m.new"
+                " FROM unnest($1::text[], $2::text[]) AS m(old, new)"
+                " WHERE t.profile_key = m.old",
+                olds, news,
+            ))
 
-            status = await conn.execute(
+            await conn.execute(
                 "DELETE FROM notifications n WHERE n.profile_key = ANY($1::text[])"
                 " AND EXISTS (SELECT 1 FROM notifications x WHERE x.chat_id = n.chat_id"
                 "   AND x.ad_id = n.ad_id AND x.profile_key = ANY($1::text[])"
@@ -930,22 +939,18 @@ class ListingRepository:
                 "     OR (x.notified_at = n.notified_at AND x.profile_key > n.profile_key)))",
                 keys,
             )
-            counts["notifications_dropped"] = int(str(status).split()[-1])
-            moved = 0
-            for old, new in mapping.items():
-                status = await conn.execute(
-                    "UPDATE notifications SET profile_key = $2 WHERE profile_key = $1", old, new
-                )
-                moved += int(str(status).split()[-1])
-            counts["notifications"] = moved
-
-            moved = 0
-            for old, new in mapping.items():
-                status = await conn.execute(
-                    "UPDATE eval_tasks SET profile_key = $2 WHERE profile_key = $1", old, new
-                )
-                moved += int(str(status).split()[-1])
-            counts["eval_tasks"] = moved
+            counts["notifications"] = _n(await conn.execute(
+                "UPDATE notifications t SET profile_key = m.new"
+                " FROM unnest($1::text[], $2::text[]) AS m(old, new)"
+                " WHERE t.profile_key = m.old",
+                olds, news,
+            ))
+            counts["eval_tasks"] = _n(await conn.execute(
+                "UPDATE eval_tasks t SET profile_key = m.new"
+                " FROM unnest($1::text[], $2::text[]) AS m(old, new)"
+                " WHERE t.profile_key = m.old",
+                olds, news,
+            ))
         return counts
 
     async def bump_eval_task_attempt(self, task_id: int) -> None:
