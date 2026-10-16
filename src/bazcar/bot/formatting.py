@@ -341,7 +341,11 @@ def build_queue_text(pending: list[dict], finished: list[dict]) -> str:
         label = criteria if len(criteria) <= 40 else criteria[:37] + "…"
         total = task.get("total") or 0
         done = task.get("done") or 0
-        if task.get("started_at"):
+        if task.get("confirmed") is False:
+            est = task.get("estimate_usd")
+            cost = f" (≈ ${float(est):.2f})" if est is not None else ""
+            progress = f"awaiting your cost confirmation{cost}"
+        elif task.get("started_at"):
             progress = f"{bar(done, total)} {done}/{total}"
         else:
             progress = "waiting in line"

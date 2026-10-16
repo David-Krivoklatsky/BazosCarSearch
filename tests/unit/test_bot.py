@@ -1082,13 +1082,13 @@ def test_eval_with_ids_queues_targeted_rescore() -> None:
     queued: list = []
     orig = bot._queue_rescore
 
-    async def _fake(chat_id, max_listings=100, days=3, ad_ids=None):
-        queued.append(ad_ids)
-        return True
+    async def _fake(chat_id, max_listings=100, days=3, ad_ids=None, force=False, scope_label=None):
+        queued.append((ad_ids, force))
+        return "queued"
 
     bot._queue_rescore = _fake
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/eval 195357798,195357799"}})
-    assert queued == [[195357798, 195357799]]
+    assert queued == [([195357798, 195357799], True)]  # explicit ids are forced
     assert "2 cars" in bot.notifier.sent[-1][1]
     bot._queue_rescore = orig
 
@@ -1120,3 +1120,117 @@ def test_hidden_aliases_include_prompt_and_fallbacks() -> None:
     from bazcar.bot.daemon import _HIDDEN_COMMANDS
 
     assert {"prompt", "fallbacks"} <= _HIDDEN_COMMANDS
+
+
+# ------------------------------------------------ v3: cost gate + queue controls
+
+
+class _GateRepo:
+    def __init__(self):
+        self.calls: list = []
+
+    async def connect(self):
+        pass
+
+    async def close(self):
+        pass
+
+    async def confirm_eval_task(self, task_id, chat_id=None):
+        self.calls.append(("confirm", task_id, chat_id))
+        return task_id != 99  # 99 = already handled
+
+    async def cancel_eval_task(self, task_id, chat_id=None):
+        self.calls.append(("cancel", task_id, chat_id))
+        return True
+
+    async def clear_eval_tasks(self, chat_id):
+        self.calls.append(("clear", chat_id))
+        return 2
+
+
+class _DbOn:
+    database_url = "postgres://fake"
+    telegram_bot_token = "T"
+    telegram_chat_id = "42"
+    allowed_chat_ids = None
+    monthly_budget_usd = None
+
+    def allowed_chats(self):
+        return None
+
+
+@pytest.fixture()
+def gate_repo(monkeypatch):
+    repo = _GateRepo()
+
+    async def _noop():
+        return True
+
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", lambda: _DbOn())
+    monkeypatch.setattr("bazcar.bot.daemon.ListingRepository", lambda dsn: repo)
+    monkeypatch.setattr("bazcar.bot.daemon._dispatch_scrape", _noop)
+    return repo
+
+
+def _callback(data: str, message_id: int = 55) -> dict:
+    return {"callback_query": {
+        "id": "cb-ev", "data": data,
+        "message": {"chat": {"id": 42}, "message_id": message_id},
+    }}
+
+
+def test_confirm_callback_releases_task_and_edits_prompt(gate_repo) -> None:
+    bot = _bot_with_prefs()
+    _run(bot.handle, _callback("ev:ok:7"))
+    assert ("confirm", 7, 42) in gate_repo.calls
+    assert bot.notifier.answered == [("cb-ev", "Confirmed — scoring starts on the next run")]
+    assert bot.notifier.edited and bot.notifier.edited[0][1] == 55
+
+
+def test_cancel_callback_closes_task(gate_repo) -> None:
+    bot = _bot_with_prefs()
+    _run(bot.handle, _callback("ev:no:8"))
+    assert ("cancel", 8, 42) in gate_repo.calls
+    assert bot.notifier.answered == [("cb-ev", "Cancelled")]
+
+
+def test_confirm_of_handled_task_says_so(gate_repo) -> None:
+    bot = _bot_with_prefs()
+    _run(bot.handle, _callback("ev:ok:99"))
+    assert bot.notifier.answered == [("cb-ev", "Already handled")]
+    assert bot.notifier.edited == []  # nothing to edit when nothing changed
+
+
+def test_malformed_gate_callback_is_rejected(gate_repo) -> None:
+    bot = _bot_with_prefs()
+    _run(bot.handle, _callback("ev:maybe:7"))
+    _run(bot.handle, _callback("ev:ok:notanumber"))
+    assert gate_repo.calls == []
+    assert [a[1] for a in bot.notifier.answered] == ["Unknown action", "Unknown action"]
+
+
+def test_queue_clear_command_and_button(gate_repo) -> None:
+    bot = _bot_with_prefs()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/queue clear"}})
+    assert ("clear", 42) in gate_repo.calls
+    assert "Cleared 2 queued tasks" in bot.notifier.sent[-1][1]
+    _run(bot.handle, _callback("queue:clear"))
+    assert gate_repo.calls.count(("clear", 42)) == 2
+
+
+def test_queue_view_shows_parked_tasks_as_awaiting() -> None:
+    from bazcar.bot.formatting import build_queue_text
+
+    text = build_queue_text(
+        [{"criteria": "diesel", "model": "x/paid", "confirmed": False, "estimate_usd": 1.5,
+          "created_at": None, "total": 0, "done": 0}],
+        [],
+    )
+    assert "awaiting your cost confirmation" in text and "1.50" in text
+
+
+def test_hidden_aliases_cover_new_commands_only_once() -> None:
+    from bazcar.bot.commands import BOT_COMMANDS
+
+    names = [c["command"] for c in BOT_COMMANDS]
+    assert len(names) == len(set(names))  # no duplicate menu entries

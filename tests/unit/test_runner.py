@@ -115,16 +115,25 @@ def test_distinct_scopes_treats_empty_and_none_as_different():
 
 
 def test_profile_key_is_stable_and_versioned():
-    a = profile_key("diesel", "m/1")
-    b = profile_key("diesel", "m/1")
-    assert a == b
-    # the schema version is hashed in -> a prompt change invalidates old evals
-    assert a != profile_key("diesel", "m/1", "v1")
-    assert profile_key("diesel", "m/1", EVAL_SCHEMA_VERSION) == a
-    # criteria and model both matter
-    assert profile_key("diesel", "m/1") != profile_key("benzin", "m/1")
-    assert profile_key("diesel", "m/1") != profile_key("diesel", "m/2")
-    assert profile_key(None, "m/1") != profile_key("diesel", "m/1")
+    a = profile_key("diesel")
+    assert a == profile_key("diesel")
+    # the schema version is hashed in -> a contract change invalidates old evals
+    assert a != profile_key("diesel", schema_version="v1")
+    assert profile_key("diesel", schema_version=EVAL_SCHEMA_VERSION) == a
+    # criteria matters (and None differs from a real criteria string)
+    assert profile_key("diesel") != profile_key("benzin")
+    assert profile_key(None) != profile_key("diesel")
+
+
+def test_profile_key_is_model_independent() -> None:
+    """Switching the AI model must NOT fork the score cache (scores are reused)."""
+    from bazcar.core.profiles import legacy_profile_key
+
+    # the model argument is gone from the key entirely: same spec, same key
+    assert profile_key("diesel") == profile_key("diesel")
+    # the legacy (model-bound) key is still computable for the migration
+    assert legacy_profile_key("diesel", "m/1") != legacy_profile_key("diesel", "m/2")
+    assert legacy_profile_key("diesel", "m/1") != profile_key("diesel")
 
 
 # ---------------------------------------------------------------- prefs loader
@@ -409,7 +418,7 @@ def test_match_sweep_sends_only_unseen_per_user(monkeypatch):
 
     notifier = _sweep_settings(monkeypatch)
     user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
-    p_key = profile_key("diesel", "m/1")
+    p_key = profile_key("diesel")
     _SweepRepo.rows_by_profile[p_key] = [_match_row(1), _match_row(2)]
     _SweepRepo.already = {(7, p_key, 1)}  # ad 1 already pushed
 
@@ -426,7 +435,7 @@ def test_match_sweep_isolates_users_by_profile(monkeypatch):
     notifier = _sweep_settings(monkeypatch)
     diesel = _user(7, None, criteria="diesel", model="m/1", min_score=70)
     benzin = _user(8, None, criteria="benzin", model="m/1", min_score=70)
-    key_d, key_b = profile_key("diesel", "m/1"), profile_key("benzin", "m/1")
+    key_d, key_b = profile_key("diesel"), profile_key("benzin")
     _SweepRepo.rows_by_profile[key_d] = [_match_row(1)]
     _SweepRepo.rows_by_profile[key_b] = [_match_row(2)]
     sent = _run(_notify_unseen_matches([diesel, benzin], enabled=True))
@@ -442,7 +451,7 @@ def test_match_sweep_skips_parts(monkeypatch):
 
     notifier = _sweep_settings(monkeypatch)
     user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
-    p_key = profile_key("diesel", "m/1")
+    p_key = profile_key("diesel")
     _SweepRepo.rows_by_profile[p_key] = [
         _match_row(1, is_car=False),  # flagged as a part by the LLM
         _match_row(2, is_car=True),
@@ -457,7 +466,7 @@ def test_match_sweep_respects_per_run_cap(monkeypatch):
 
     notifier = _sweep_settings(monkeypatch)
     user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
-    p_key = profile_key("diesel", "m/1")
+    p_key = profile_key("diesel")
     _SweepRepo.rows_by_profile[p_key] = [_match_row(i) for i in range(1, 60)]
     sent = _run(_notify_unseen_matches([user], enabled=True))
     assert sent == NOTIFY_CAP_PER_RUN
@@ -480,7 +489,7 @@ def test_match_sweep_respects_show_photo(monkeypatch):
     notifier = _sweep_settings(monkeypatch)
     user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
     user["show_photo"] = True
-    p_key = profile_key("diesel", "m/1")
+    p_key = profile_key("diesel")
     _SweepRepo.rows_by_profile[p_key] = [_match_row(1)]
     assert _run(_notify_unseen_matches([user], enabled=True)) == 1
     assert notifier.sent == [(7, "1")]
@@ -500,8 +509,8 @@ def test_sweep_profiles_dedupes_active_and_searches():
         ],
     }
     profiles = _sweep_profiles(user, _S(), "m/1")
-    assert profiles[0] == (profile_key("diesel", "m/1"), 80)
-    assert (profile_key("benzin", "m/1"), 70) in profiles
+    assert profiles[0] == (profile_key("diesel"), 80)
+    assert (profile_key("benzin"), 70) in profiles
     assert len(profiles) == 2  # duplicate diesel collapsed
 
 
@@ -511,7 +520,7 @@ def test_match_sweep_skips_notify_disabled_user(monkeypatch):
     notifier = _sweep_settings(monkeypatch)
     user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
     user["notify_enabled"] = False
-    p_key = profile_key("diesel", "m/1")
+    p_key = profile_key("diesel")
     _SweepRepo.rows_by_profile[p_key] = [_match_row(1)]
     assert _run(_notify_unseen_matches([user], enabled=True)) == 0
     assert notifier.sent == []
@@ -523,8 +532,8 @@ def test_match_sweep_covers_enabled_searches(monkeypatch):
     notifier = _sweep_settings(monkeypatch)
     user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
     user["searches"] = [{"name": "b", "criteria": "benzin", "min_score": 60}]
-    p_active = profile_key("diesel", "m/1")
-    p_search = profile_key("benzin", "m/1")
+    p_active = profile_key("diesel")
+    p_search = profile_key("benzin")
     _SweepRepo.rows_by_profile[p_active] = []
     _SweepRepo.rows_by_profile[p_search] = [_match_row(2)]
     assert _run(_notify_unseen_matches([user], enabled=True)) == 1
@@ -611,9 +620,9 @@ def test_evaluate_pauses_when_budget_exhausted(monkeypatch):
 
 def test_profile_key_prompt_forks_cache() -> None:
     # standard reproduces the historical key (existing caches keep hitting)
-    assert profile_key("c", "m") == profile_key("c", "m", prompt="standard")
-    assert profile_key("c", "m") != profile_key("c", "m", prompt="bargain")
-    assert profile_key("c", "m", prompt="bargain") != profile_key("c", "m", prompt="family")
+    assert profile_key("c") == profile_key("c", prompt="standard")
+    assert profile_key("c") != profile_key("c", prompt="bargain")
+    assert profile_key("c", prompt="bargain") != profile_key("c", prompt="family")
 
 
 def test_evaluate_profile_falls_back_to_next_model(monkeypatch):
@@ -695,9 +704,9 @@ def test_evaluate_profile_uses_prompt_in_cache_key(monkeypatch):
                          "stream": False})()
     _run(_evaluate_profile([_listing()], criteria="c", model="m", cfg=cfg,
                            repo=_Repo(), prompt_name="family"))
-    expected = profile_key("c", "m", prompt="family")
+    expected = profile_key("c", prompt="family")
     assert keys[0] == expected
-    assert expected != profile_key("c", "m")
+    assert expected != profile_key("c")
 
 def test_process_eval_tasks_targeted_ids_score_fresh(monkeypatch):
     """ad_ids tasks: fetch by ids, drop cached evals, score with prompt+fallbacks."""
@@ -724,6 +733,7 @@ def test_process_eval_tasks_targeted_ids_score_fresh(monkeypatch):
                 "id": 9, "profile_key": "pk", "criteria": "diesel", "model": "m/1",
                 "max_listings": 2, "days": 365, "attempts": 0, "total": 0, "done": 0,
                 "prompt_name": "bargain", "fallback_models": ["f/1"], "ad_ids": [7, 8],
+                "force": True, "confirmed": True,
             }]
 
         async def fetch_listings_by_ids(self, ad_ids):
@@ -766,8 +776,8 @@ def test_process_eval_tasks_targeted_ids_score_fresh(monkeypatch):
     )
     assert _run(_process_eval_tasks()) == 1
     assert ("fetch_ids", [7, 8]) in calls
-    assert any(c[0] == "delete" and c[1] == [7, 8] for c in calls)
     assert ("complete", 9) in calls
+    assert evaluated_kwargs.get("force") is True  # explicit re-score overwrites the cache
     assert evaluated_kwargs.get("prompt_name") == "bargain"
     assert evaluated_kwargs.get("fallback_models") == ["f/1"]
 

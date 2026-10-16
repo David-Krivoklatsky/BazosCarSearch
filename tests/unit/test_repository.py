@@ -137,20 +137,25 @@ def test_upsert_evaluation_sql_matches_usage_columns():
         assert column in _UPSERT_EVALUATION_SQL
 
 class _RecordingConn:
-    """Minimal asyncpg stand-in: records execute/fetch calls."""
+    """Minimal asyncpg stand-in: records execute/fetch/fetchrow calls."""
 
     def __init__(self, rows=None):
         self.rows = rows or []
         self.executes: list = []
         self.fetches: list = []
+        self.fetchrows: list = []
 
     async def execute(self, sql, *args):
         self.executes.append((sql, args))
-        return "DELETE 1" if sql.strip().upper().startswith("DELETE") else "INSERT 0 1"
+        return "UPDATE 1"
 
     async def fetch(self, sql, *args):
         self.fetches.append((sql, args))
         return self.rows
+
+    async def fetchrow(self, sql, *args):
+        self.fetchrows.append((sql, args))
+        return {"id": 42}
 
 
 def _repo_with(conn) -> object:
@@ -163,17 +168,18 @@ def _repo_with(conn) -> object:
 
 def test_create_eval_task_defaults_survive_none_ids() -> None:
     """Regression: queueing without ad_ids must not raise (model/prompt/eval)."""
-    conn = _RecordingConn()
-    repo = _repo_with(conn)
     import asyncio
 
-    asyncio.run(repo.create_eval_task("pk", "crit", "m/1", 100))
-    assert len(conn.executes) == 1
-    sql, args = conn.executes[0]
-    assert "prompt_name" in sql and "ad_ids" in sql
-    # (profile_key, criteria, model, max_listings, days, prompt, fallbacks, ad_ids)
+    conn = _RecordingConn()
+    repo = _repo_with(conn)
+    task_id = asyncio.run(repo.create_eval_task("pk", "crit", "m/1", 100))
+    assert task_id == 42
+    sql, args = conn.fetchrows[0]
+    assert "prompt_name" in sql and "confirmed" in sql and "force" in sql
+    # (pk, criteria, model, max, days, prompt, fallbacks, ad_ids, chat, force, confirmed, est)
     assert args[5] == "standard"
     assert args[7] is None  # NULL ad_ids = whole-window task
+    assert args[9] is False and args[10] is True  # not forced, not parked
 
 
 def test_create_eval_task_targeted_ids_prompt_and_fallbacks() -> None:
@@ -186,27 +192,27 @@ def test_create_eval_task_targeted_ids_prompt_and_fallbacks() -> None:
         repo.create_eval_task(
             "pk", "crit", "m/1", 20, days=365, prompt_name="bargain",
             fallback_models=["a/1", "b/2"], ad_ids=[7, 0, 8],
+            chat_id=5, force=True, confirmed=False, estimate_usd=0.5,
         )
     )
-    _, args = conn.executes[0]
+    _, args = conn.fetchrows[0]
     assert args[5] == "bargain"
     assert json.loads(args[6]) == ["a/1", "b/2"]
     assert args[7] == [7, 8]  # non-positive ids dropped
+    assert args[8] == 5 and args[9] is True and args[10] is False
+    assert args[11] == 0.5
 
 
-def test_fetch_and_delete_by_ids_tolerate_none() -> None:
+def test_range_ids_and_ratings_tolerate_empty_input() -> None:
     import asyncio
 
     class _ExplodingConn(_RecordingConn):
-        async def execute(self, sql, *args):
-            raise AssertionError("no SQL expected")
-
         async def fetch(self, sql, *args):
             raise AssertionError("no SQL expected")
 
     repo = _repo_with(_ExplodingConn())
     assert asyncio.run(repo.fetch_listings_by_ids(None)) == []
-    assert asyncio.run(repo.delete_evaluations(None, "pk")) == 0
+    assert asyncio.run(repo.fetch_listings_by_ids([])) == []
 
 
 def test_pending_tasks_parse_null_json_columns() -> None:
@@ -243,3 +249,19 @@ def test_recent_scrape_runs_parse_detail() -> None:
     assert runs[0]["detail"] == {"scopes": [{"cards": 3}]}
     assert runs[1]["detail"] is None
     assert conn.fetches[0][1] == (5,)
+
+
+def test_clear_queue_includes_legacy_tasks_without_chat() -> None:
+    """Tasks created before chat ownership (chat_id NULL) must be clearable too."""
+    import asyncio
+
+    seen: dict = {}
+
+    class _Conn:
+        async def execute(self, sql, *args):
+            seen["sql"] = sql
+            return "UPDATE 5"
+
+    repo = _repo_with(_Conn())
+    assert asyncio.run(repo.clear_eval_tasks(42)) == 5
+    assert "chat_id IS NULL" in seen["sql"] and "done_at IS NULL" in seen["sql"]

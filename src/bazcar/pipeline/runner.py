@@ -20,6 +20,7 @@ from bazcar.config.settings import (
 from bazcar.core.exceptions import ConfigError, LlmError
 from bazcar.core.models import DbSyncSummary, DealEvaluation, Listing, ScrapeSummary
 from bazcar.core.profiles import EVAL_SCHEMA_VERSION, profile_key  # noqa: F401  (re-export)
+from bazcar.llm.costgate import model_price
 from bazcar.scrapers.factory import get_scraper
 
 if TYPE_CHECKING:
@@ -121,6 +122,7 @@ async def run_scrape(
     settings = get_settings()
     cfg = config or load_scraper_config()
 
+    await _migrate_profile_keys(settings)
     users = await _load_all_prefs()
     scopes = _distinct_scopes(users)
 
@@ -169,6 +171,13 @@ async def run_scrape(
             await _notify_price_drops(listings, sync_result.price_drop_events)
         except Exception:
             logger.warning("price drop alerts failed", exc_info=True)
+
+    removal_stats: dict = {}
+    if db_summary is not None:
+        try:
+            removal_stats = await _sweep_removed()
+        except Exception:
+            logger.warning("removal sweep failed", exc_info=True)
 
     evaluated = 0
     if evaluate is not False:
@@ -224,7 +233,7 @@ async def run_scrape(
                     price_drops=db_summary.price_drops,
                     evaluated=evaluated,
                     notified=notified,
-                    detail={"scopes": scope_details},
+                    detail={"scopes": scope_details, "removal": removal_stats},
                 )
         except Exception:
             logger.warning("scrape run telemetry failed", exc_info=True)
@@ -314,6 +323,7 @@ async def _evaluate_profile(
     delay: float = 0.0,
     prompt_name: str = "standard",
     fallback_models: list[str] | None = None,
+    force: bool = False,
 ) -> tuple[int, int]:
     """Score ``listings`` under one search profile (criteria + model + prompt).
 
@@ -328,10 +338,10 @@ async def _evaluate_profile(
     if not listings:
         return 0, 0
     settings = get_settings()
-    p_key = profile_key(criteria, model, prompt=prompt_name)
+    p_key = profile_key(criteria, prompt=prompt_name)
 
     cached: dict[int, DealEvaluation] = {}
-    if repo is not None:
+    if repo is not None and not force:
         try:
             cached = await repo.fetch_evaluations(p_key, [listing.ad_id for listing in listings])
         except Exception:
@@ -424,20 +434,32 @@ async def _process_eval_tasks() -> int:
     await repo.connect()
     try:
         await repo.init_schema()
+        prices = await _model_prices(settings, repo)
+        budget = getattr(settings, "monthly_budget_usd", None)
+        spent = await _monthly_spend(repo) if budget is not None else 0.0
         for task in await repo.pending_eval_tasks():
-            task_ids = [int(a) for a in (task.get("ad_ids") or []) if int(a) > 0][:50]
+            if not task.get("confirmed", True):
+                continue  # parked until the user confirms the cost in Telegram
             prompt_name = task.get("prompt_name") or "standard"
             fallbacks = [m for m in (task.get("fallback_models") or []) if m][:3]
-            task_key = profile_key(task.get("criteria"), task["model"], prompt=prompt_name)
+            price = model_price(prices, task["model"])
+            paid = price is None or price[0] + price[1] > 0
+            if paid and budget is not None and spent >= budget:
+                logger.warning(
+                    "eval task %d held: monthly AI budget reached ($%.2f >= $%.2f)",
+                    task["id"], spent, budget,
+                )
+                continue
+            task_ids = [int(a) for a in (task.get("ad_ids") or []) if int(a) > 0]
             if task_ids:
-                # Targeted re-score: drop cached scores so these evaluate fresh.
                 rows = await repo.fetch_listings_by_ids(task_ids)
-                await repo.delete_evaluations(task_ids, task_key)
             else:
                 rows = await repo.fetch_recent_listings(
                     days=task.get("days") or 3, limit=task["max_listings"]
                 )
-            listings = [Listing(**row) for row in rows]
+            # DB rows carry extra columns (removed_at ...); Listing forbids them.
+            fields = set(Listing.model_fields)
+            listings = [Listing(**{k: v for k, v in row.items() if k in fields}) for row in rows]
             await repo.start_eval_task(task["id"], total=len(listings))
             attached, fresh = await _evaluate_profile(
                 listings,
@@ -448,6 +470,7 @@ async def _process_eval_tasks() -> int:
                 delay=2.0,  # stay under free-tier rate limits during backfill
                 prompt_name=prompt_name,
                 fallback_models=fallbacks,
+                force=bool(task.get("force")),
             )
             await repo.set_eval_task_progress(task["id"], attached)
             if fresh == 0 and len(listings) > attached:
@@ -541,42 +564,157 @@ def _tg_escape(text: str) -> str:
 
 
 async def _auto_backfill_missing(users: list[dict] | None) -> None:
-    """Self-healing: queue backfills for profiles whose ads lack a score.
+    """Self-healing: queue backfills for specs whose ads lack any score.
 
-    Covers ads whose first-run LLM eval failed (flaky free tier) and ads
-    inserted before the profile switch. Skips when a task for the profile is
-    already pending. Tasks converge over a few runs (cached evals skip).
+    A spec is judged model-independently: an ad already scored under ANY model
+    counts as rated, so switching models never floods the queue. Paid backfills
+    go through the cost gate (parked until the user confirms); a spec the user
+    cancelled is not asked again for a week.
     """
     settings = get_settings()
     if not settings.database_url or not getattr(settings, "llm_api_key", None) or not users:
         return
     from bazcar.db import ListingRepository
+    from bazcar.llm.costgate import enqueue_evaluation
 
     repo = ListingRepository(settings.database_url)
     await repo.connect()
     try:
+        prices = await _model_prices(settings, repo)
+        notifier = _make_notifier(settings)
         pending = await repo.pending_eval_tasks()
         pending_keys = {t["profile_key"] for t in pending}
         seen_keys: set[str] = set()
         for user in users:
             model = user.get("model") or load_llm_config().model
             prompt = user.get("prompt_name") or "standard"
-            p_key = profile_key(user.get("criteria"), model, prompt=prompt)
+            p_key = profile_key(user.get("criteria"), prompt=prompt)
             if p_key in seen_keys or p_key in pending_keys:
                 continue
             seen_keys.add(p_key)
+            if await repo.was_recently_cancelled(p_key, days=7):
+                continue
             missing, total = await repo.count_missing_evaluations(p_key, days=30, limit=500)
             if missing <= 0:
                 continue
-            await repo.create_eval_task(
-                p_key, user.get("criteria"), model, max_listings=min(total or 500, 500), days=30,
-                prompt_name=prompt, fallback_models=user.get("fallback_models"),
+            result = await enqueue_evaluation(
+                repo,
+                notifier=notifier,
+                chat_id=user.get("chat_id"),
+                profile_key=p_key,
+                criteria=user.get("criteria"),
+                model=model,
+                prompt_name=prompt,
+                fallback_models=user.get("fallback_models"),
+                max_listings=min(total or 500, 500),
+                days=30,
+                ad_ids=None,
+                force=False,
+                cars=missing,
+                prices=prices,
+                scope_label="auto backfill, last 30 days",
             )
             logger.info(
-                "auto-backfill queued: %d/%d ads missing eval for %s", missing, total, p_key
+                "auto-backfill %s: %d/%d ads missing eval for %s",
+                result["status"], missing, total, p_key,
             )
     finally:
         await repo.close()
+
+
+async def _migrate_profile_keys(settings) -> dict:
+    """One-time (idempotent) v3 migration: model-bound score keys -> spec keys."""
+    if not settings.database_url:
+        return {}
+    from bazcar.core.profiles import legacy_key_mapping
+    from bazcar.db import ListingRepository
+
+    repo = ListingRepository(settings.database_url)
+    await repo.connect()
+    try:
+        await repo.init_schema()
+        criteria, models = await repo.legacy_key_inputs()
+        models = sorted(set(models) | {load_llm_config().model})
+        mapping = legacy_key_mapping(criteria, models)
+        if not mapping:
+            return {}
+        counts = await repo.migrate_profile_keys(mapping)
+        logger.info("profile key migration: %s", counts)
+        return counts
+    except Exception:
+        logger.warning("profile key migration failed", exc_info=True)
+        return {}
+    finally:
+        await repo.close()
+
+
+REMOVAL_CHECKS_PER_RUN = 15   # ad pages verified per pipeline run (paced, ~20 s)
+REMOVAL_CHECK_DELAY_S = 1.5
+
+
+async def _sweep_removed(limit: int = REMOVAL_CHECKS_PER_RUN) -> dict:
+    """Verify stale listings against Bazoš and soft-remove the sold/unlisted ones.
+
+    A listing not seen for a day is fetched directly: if Bazoš no longer serves
+    the ad (redirect to a category page) it is marked ``removed_at`` — hidden
+    from the catalog, kept for saved lists and history. Live ads get
+    ``verified_at``. Unreachable pages are retried in a later run, never removed.
+    """
+    stats = {"checked": 0, "removed": 0, "alive": 0, "unreachable": 0}
+    settings = get_settings()
+    if not settings.database_url:
+        return stats
+    import httpx
+
+    from bazcar.core.adpage import fetch_ad_page
+    from bazcar.db import ListingRepository
+
+    repo = ListingRepository(settings.database_url)
+    await repo.connect()
+    try:
+        candidates = await repo.removal_candidates(limit)
+        if not candidates:
+            return stats
+        async with httpx.AsyncClient(
+            timeout=20.0, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}
+        ) as client:
+            for row in candidates:
+                state = await fetch_ad_page(row["ad_id"], client=client)
+                stats["checked"] += 1
+                if state is None:
+                    stats["unreachable"] += 1
+                elif state.get("gone"):
+                    await repo.mark_listing_removed(row["ad_id"])
+                    stats["removed"] += 1
+                    logger.info("removed (sold/unlisted): ad %s %s", row["ad_id"], row.get("title"))
+                else:
+                    await repo.mark_listing_verified(row["ad_id"])
+                    stats["alive"] += 1
+                await asyncio.sleep(REMOVAL_CHECK_DELAY_S)
+    finally:
+        await repo.close()
+    return stats
+
+
+async def _model_prices(settings, repo) -> list[dict]:
+    """Cached OpenRouter model list (with numeric prices); [] when unavailable."""
+    from bazcar.llm.provider import list_models_cached
+
+    try:
+        models, _ = await list_models_cached(getattr(settings, "llm_api_key", None), repo)
+        return models
+    except Exception:
+        logger.warning("model price lookup failed", exc_info=True)
+        return []
+
+
+def _make_notifier(settings):
+    """Telegram notifier for confirmation prompts; None when not configured."""
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        return None
+    from bazcar.notify import TelegramNotifier
+
+    return TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
 
 
 async def _notify_price_drops(
@@ -767,14 +905,13 @@ def _sweep_profiles(user: dict, settings, default_model: str) -> list[tuple[str,
     Duplicates collapse so shared criteria cost one sweep; the active profile
     always runs first.
     """
-    model = user.get("model") or default_model
     prompt = user.get("prompt_name") or "standard"
     profiles: list[tuple[str, int]] = []
     seen: set[str] = set()
 
     def _add(criteria: str | None, min_score: int | None) -> None:
         score = min_score if min_score is not None else (settings.telegram_min_score or 0)
-        key = profile_key(criteria, model, prompt=prompt)
+        key = profile_key(criteria, prompt=prompt)
         if key not in seen:
             seen.add(key)
             profiles.append((key, score))

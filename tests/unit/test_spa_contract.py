@@ -27,7 +27,7 @@ def test_spa_covers_all_backend_views() -> None:
     assert "openListing" in HTML  # listing detail
     assert "openCompare" in HTML  # compare
     # full-command parity views (every bot command lives in the Mini App)
-    for view in ("bounds", "models", "templates", "health", "digest", "scraper"):
+    for view in ("bounds", "models", "templates", "health", "digest", "scraper", "rescore_preview"):
         assert f'"{view}"' in HTML, f"SPA never requests view {view}"
 
 
@@ -38,7 +38,8 @@ def test_spa_actions_match_backend() -> None:
     for action in ("save", "unsave", "note", "alert", "criteria", "use",
                    "toggle_search", "notify", "score", "photos",
                    "model", "prompt", "fallbacks", "filters", "search_create",
-                   "search_delete", "template", "eval", "rescore", "check_ad"):
+                   "search_delete", "template", "eval", "rescore", "check_ad",
+                   "queue_clear", "queue_confirm", "queue_cancel", "rescore_range"):
         assert f'"{action}"' in src, f"backend missing action {action}"
         assert action in HTML, f"SPA never calls action {action}"
 
@@ -164,3 +165,10 @@ def test_spa_scraper_transparency_surface() -> None:
     assert "Find a missing car" in HTML
     assert "checkad-in" in HTML and "checkAd" in HTML
     assert "scopeLabel" in HTML
+
+
+def test_spa_v3_cost_range_and_queue_controls() -> None:
+    assert "ratedBy" in HTML and "removedBadge" in HTML  # which AI rated it / removed
+    assert "rangePreview" in HTML and "rangeRescore" in HTML  # date-range re-score
+    assert "queueConfirm" in HTML and "queueCancel" in HTML and "queueClear" in HTML
+    assert "Clear queue" in HTML and "Confirm and score" in HTML

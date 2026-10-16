@@ -391,6 +391,15 @@ class _RichRepo(_FakeListRepo):
     async def count_missing_evaluations(self, p_key, days, limit):
         return (6, 40)
 
+    async def count_removed(self):
+        return 3
+
+    async def count_range_ratings(self, p_key, current_model, date_from, date_to):
+        return {"total": 10, "rated": 6, "rated_current": 4, "rated_other": 2, "unscored": 4}
+
+    async def listing_ids_in_range(self, date_from, date_to, cap=2000):
+        return [101, 102, 103]
+
     async def fetch_listings_by_ids(self, ad_ids):
         return [{
             "ad_id": 1, "url": "https://x/1", "title": "A",
@@ -651,6 +660,7 @@ def test_scraper_view_transparency_bundle(_rich_deps) -> None:
     assert status == 200
     assert payload["db_total"] == 10  # stats_overview total
     assert payload["unscored"] == {"missing": 6, "total": 40}
+    assert payload["removed"] == 3
     assert payload["scope_source"] == "custom"
     assert payload["scope"]["query"] == "octavia"
     run = payload["runs"][0]
@@ -708,7 +718,9 @@ def test_diagnose_missing_pure() -> None:
 
 
 def test_post_model_queues_rescore_end_to_end(_fresh_settings, _rich_deps, monkeypatch) -> None:
-    """The model action must queue a task (regression: ad_ids=None crashed it)."""
+    """Queueing goes through the cost gate: free model queues, paid model parks."""
+    import datetime
+
     created: list = []
 
     class _QueueRepo:
@@ -727,27 +739,47 @@ def test_post_model_queues_rescore_end_to_end(_fresh_settings, _rich_deps, monke
         async def pending_eval_tasks(self):
             return []
 
-        async def create_eval_task(self, p_key, criteria, model, limit, days,
-                                   prompt_name="standard", fallback_models=None,
-                                   ad_ids=None):
-            created.append({
-                "model": model, "prompt": prompt_name,
-                "fallbacks": fallback_models, "ad_ids": ad_ids,
-            })
+        async def eval_cost(self, p_key=None, days=30):
+            return {"total": {"cost_usd": 0.0}}
+
+        async def count_missing_evaluations(self, p_key, days, limit):
+            return (12, 40)
+
+        async def fetch_evaluations(self, p_key, ids):
+            return {i: object() for i in ids if i == 7}  # car 7 already has a score
+
+        async def get_model_cache(self):
+            return {
+                "models": [
+                    {"id": "x/model", "name": "X", "supported_parameters": ["response_format"],
+                     "pricing": {"prompt": "0", "completion": "0"}, "per_request_limits": {},
+                     "context_length": 8000},
+                    {"id": "paid/model", "name": "P", "supported_parameters": ["response_format"],
+                     "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+                     "per_request_limits": {}, "context_length": 8000},
+                ],
+                "fetched_at": datetime.datetime.now(datetime.UTC),
+            }
+
+        async def create_eval_task(self, p_key, criteria, model, limit, days, **kw):
+            created.append({"model": model, **kw})
+            return len(created)
 
     monkeypatch.setattr("bazcar.db.ListingRepository", _QueueRepo)
+    monkeypatch.setattr("bazcar.llm.costgate.notifier_for", lambda token, chat_id: None)
     init_data = _make_init_data(user_id=42)
     _, payload = _call_post({"action": "model", "id": "x/model"}, init_data)
-    assert payload["ok"] is True and payload["queued"] is True
-    assert created[0]["model"] == "x/model"
-    assert created[0]["ad_ids"] is None
+    assert payload["ok"] is True and payload["status"] == "queued" and payload["queued"] is True
+    assert created[0]["confirmed"] is True
+    _, payload = _call_post({"action": "model", "id": "paid/model"}, init_data)
+    assert payload["status"] == "queued"  # switching to a paid model asks nothing for new cars
+    assert created[1]["confirmed"] is True
     _, payload = _call_post({"action": "prompt", "name": "family"}, init_data)
-    assert payload["ok"] is True and payload["queued"] is True
-    assert created[1]["prompt"] == "family"
+    assert payload["status"] == "queued" and created[2]["prompt_name"] == "family"
+    # re-scoring cars that already have a score (car 7 is scored) asks on a paid model
     _, payload = _call_post({"action": "rescore", "ids": [7]}, init_data)
-    assert payload["ok"] is True and payload["queued"] is True
-    assert created[2]["ad_ids"] == [7]
-
+    assert payload["status"] == "awaiting" and payload["queued"] is False
+    assert created[-1]["confirmed"] is False and created[-1]["ad_ids"] == [7]
 
 def test_profile_alias_resolves_to_profiles(_rich_deps) -> None:
     """The SPA Profile tab requests view=profile — must not 400."""
@@ -865,3 +897,146 @@ def test_post_actions_filters_searches_template_eval_rescore(
     assert payload["ok"] is True and payload["ids"] == [7, 8]
     _, payload = _call_post({"action": "rescore", "ids": []}, init_data)
     assert payload["error"] == "ids required"
+
+
+# ----------------------------------------------- v3: ranges, queue controls, flags
+
+
+def test_parse_range_validates_dates() -> None:
+    from api.webapp import _parse_range
+
+    d1, d2, err = _parse_range("2026-10-01", "2026-10-10")
+    assert err is None and d1.isoformat() == "2026-10-01" and d2.isoformat() == "2026-10-10"
+    assert _parse_range("01.10.2026", "2026-10-10")[2] == "dates must be YYYY-MM-DD"
+    assert _parse_range("2026-10-10", "2026-10-01")[2] == "'to' is before 'from'"
+    assert _parse_range("2024-01-01", "2026-01-01")[2] == "range is limited to one year"
+
+
+def test_rescore_preview_counts_and_cost_flag(_rich_deps) -> None:
+    payload, status = _run_view("rescore_preview", {"date_from": "2026-10-01", "date_to": "2026-10-10"})
+    assert status == 200
+    assert payload["total"] == 10 and payload["rated_current"] == 4 and payload["rated_other"] == 2
+    assert payload["unscored"] == 4 and payload["model"] == "m/1"
+    assert payload["paid"] is True and payload["estimate"] is None  # m/1 price unknown here
+
+
+def test_rescore_preview_rejects_bad_dates(_rich_deps) -> None:
+    payload, status = _run_view("rescore_preview", {"date_from": "nope", "date_to": "2026-10-10"})
+    assert status == 400 and "YYYY-MM-DD" in payload["error"]
+
+
+def test_date_range_query_params_reach_the_view(_fresh_settings) -> None:
+    import api.webapp as webapp
+
+    seen = {}
+
+    async def _capture(view, chat_id, page, days, ad_id=None, extra=None):
+        seen.update(extra or {})
+        return {"ok": True}, webapp.HTTPStatus.OK
+
+    orig = webapp._load_view
+    webapp._load_view = _capture
+    try:
+        import urllib.parse
+
+        init = urllib.parse.quote(_make_init_data(user_id=42), safe="")
+        status, _ = _call_wsgi(f"view=rescore_preview&from=2026-10-01&to=2026-10-02&initData={init}")
+    finally:
+        webapp._load_view = orig
+    assert seen.get("date_from") == "2026-10-01" and seen.get("date_to") == "2026-10-02"
+
+
+def _queue_fake_repo(monkeypatch, calls):
+    class _QRepo:
+        def __init__(self, dsn, conn=None):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def init_schema(self):
+            pass
+
+        async def clear_eval_tasks(self, chat_id):
+            calls.append(("clear", chat_id))
+            return 3
+
+        async def confirm_eval_task(self, task_id, chat_id=None):
+            calls.append(("confirm", task_id, chat_id))
+            return True
+
+        async def cancel_eval_task(self, task_id, chat_id=None):
+            calls.append(("cancel", task_id, chat_id))
+            return True
+
+        async def listing_ids_in_range(self, d1, d2, cap=2000):
+            calls.append(("ids", d1.isoformat(), d2.isoformat()))
+            return [101, 102, 103]
+
+        async def fetch_evaluations(self, p_key, ids):
+            return {}  # nothing scored yet -> nothing is overwritten -> no prompt
+
+        async def get_model_cache(self):
+            return None
+
+        async def save_model_cache(self, data):
+            pass
+
+        async def pending_eval_tasks(self):
+            return []
+
+        async def eval_cost(self, p_key=None, days=30):
+            return {"total": {"cost_usd": 0}}
+
+        async def create_eval_task(self, p_key, criteria, model, limit, days, **kw):
+            calls.append(("create", kw.get("force"), kw.get("ad_ids"), kw.get("confirmed")))
+            return 9
+
+    async def _noop_dispatch():
+        return True
+
+    monkeypatch.setattr("bazcar.db.ListingRepository", _QRepo)
+    monkeypatch.setattr("bazcar.bot.daemon._dispatch_scrape", _noop_dispatch)
+    return _QRepo
+
+
+def test_queue_clear_confirm_cancel_actions(_fresh_settings, _rich_deps, monkeypatch) -> None:
+    calls: list = []
+    _queue_fake_repo(monkeypatch, calls)
+    init_data = _make_init_data(user_id=42)
+    _, payload = _call_post({"action": "queue_clear"}, init_data)
+    assert payload == {"ok": True, "cleared": 3}
+    _, payload = _call_post({"action": "queue_confirm", "id": 5}, init_data)
+    assert payload == {"ok": True, "updated": True}
+    _, payload = _call_post({"action": "queue_cancel", "id": 6}, init_data)
+    assert payload == {"ok": True, "updated": True}
+    assert ("clear", 42) in calls and ("confirm", 5, 42) in calls and ("cancel", 6, 42) in calls
+    _, payload = _call_post({"action": "queue_confirm"}, init_data)
+    assert payload["error"] == "id required"
+
+
+def test_rescore_range_action_forces_and_gates(_fresh_settings, _rich_deps, monkeypatch) -> None:
+    calls: list = []
+    _queue_fake_repo(monkeypatch, calls)
+    init_data = _make_init_data(user_id=42)
+    _, payload = _call_post({"action": "rescore_range", "from": "2026-10-01", "to": "2026-10-10"}, init_data)
+    assert payload["cars"] == 3 and payload["ok"] is True
+    creates = [c for c in calls if c[0] == "create"]
+    assert creates and creates[0][1] is True and creates[0][2] == [101, 102, 103]  # forced, ids
+    assert ("ids", "2026-10-01", "2026-10-10") in calls
+    _, payload = _call_post({"action": "rescore_range", "from": "2026-10-10", "to": "2026-10-01"}, init_data)
+    assert payload["error"] == "'to' is before 'from'"
+
+
+def test_saved_items_expose_removed_flag(_fresh_settings, _rich_deps, monkeypatch) -> None:
+    async def _removed_row(self, ad_ids):
+        return [{"ad_id": 1, "image_urls": [], "year": 2019, "mileage_km": 1, "city": "BA",
+                 "removed_at": "2026-10-01T00:00:00+00:00"}]
+
+    monkeypatch.setattr(_RichRepo, "fetch_listings_by_ids", _removed_row, raising=False)
+    payload, status = _run_view("saved")
+    assert status == 200
+    assert payload["items"][0]["removed"] is True

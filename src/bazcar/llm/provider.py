@@ -135,43 +135,8 @@ def _fmt_price(per_token: str) -> str:
 
 
 async def list_models(api_key: str | None = None) -> list[dict]:
-    """OpenRouter models that can output strict JSON, with key parameters.
-
-    Each entry: ``id``, ``name``, ``free``, ``price_in``/``price_out``
-    (per 1M tokens), ``rpm`` (requests/min limit — None = unlimited),
-    ``ctx`` (context length). Only models advertising ``response_format`` or
-    ``structured_outputs`` are included (our prompt requires JSON).
-    """
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        resp = await client.get(
-            f"{DEFAULT_BASE_URL.rstrip('/')}/models", headers=headers
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-    models: list[dict] = []
-    for model in data:
-        supports_json = bool(
-            {"response_format", "structured_outputs"}
-            & set(model.get("supported_parameters") or [])
-        )
-        if not supports_json:
-            continue
-        pricing = model.get("pricing") or {}
-        prompt_cost = pricing.get("prompt", "1")
-        limits = model.get("per_request_limits") or {}
-        models.append(
-            {
-                "id": model.get("id", ""),
-                "name": model.get("name") or model.get("id", ""),
-                "free": prompt_cost == "0",
-                "price_in": _fmt_price(prompt_cost),
-                "price_out": _fmt_price(pricing.get("completion", "1")),
-                "rpm": limits.get("requests_per_minute"),
-                "ctx": model.get("context_length"),
-            }
-        )
-    return models
+    """Live OpenRouter JSON-capable models (no cache). See ``_filter_json_models``."""
+    return _filter_json_models(await _fetch_models_raw(api_key))
 
 
 async def list_models_cached(
@@ -233,7 +198,11 @@ async def _cache_stamp(repo) -> object | None:
 
 
 def _filter_json_models(data: list[dict]) -> list[dict]:
-    """Keep the JSON-capable entries of a raw OpenRouter /models payload."""
+    """Keep the JSON-capable entries of a raw OpenRouter /models payload.
+
+    Each entry carries display strings (``price_in``/``price_out``) and numeric
+    USD-per-1M prices (``in_per_m``/``out_per_m``) used for cost estimates.
+    """
     models: list[dict] = []
     for model in data:
         supports_json = bool(
@@ -244,19 +213,29 @@ def _filter_json_models(data: list[dict]) -> list[dict]:
             continue
         pricing = model.get("pricing") or {}
         prompt_cost = pricing.get("prompt", "1")
+        completion_cost = pricing.get("completion", "1")
         limits = model.get("per_request_limits") or {}
         models.append(
             {
                 "id": model.get("id", ""),
                 "name": model.get("name") or model.get("id", ""),
-                "free": prompt_cost == "0",
+                "free": prompt_cost == "0" and completion_cost == "0",
                 "price_in": _fmt_price(prompt_cost),
-                "price_out": _fmt_price(pricing.get("completion", "1")),
+                "price_out": _fmt_price(completion_cost),
+                "in_per_m": _per_million(prompt_cost),
+                "out_per_m": _per_million(completion_cost),
                 "rpm": limits.get("requests_per_minute"),
                 "ctx": model.get("context_length"),
             }
         )
     return models
+
+
+def _per_million(per_token) -> float | None:
+    try:
+        return float(per_token) * 1_000_000
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_evaluation(content: str | None) -> DealEvaluation | None:

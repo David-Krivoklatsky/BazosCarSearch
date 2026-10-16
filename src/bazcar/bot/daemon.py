@@ -154,6 +154,12 @@ class Bot:
                 await self._cars_page(chat_id, message_id, cb_query_id, data)
             elif data.startswith("tpl:"):
                 await self._apply_template(chat_id, data.split(":", 1)[1], cb_query_id)
+            elif data.startswith("ev:"):
+                await self._eval_confirm(chat_id, message_id, cb_query_id, data)
+            elif data == "queue:clear":
+                reply = await self._queue_clear(chat_id)
+                await self.notifier.answer_callback(cb_query_id, "Queue cleared")
+                await self.reply(chat_id, reply)
             elif data.startswith("menu:"):
                 await self._menu_action(chat_id, data.split(":", 1)[1], cb_query_id)
             else:
@@ -243,7 +249,7 @@ class Bot:
             case "/car":
                 return await self._car(chat_id, arg)
             case "/queue":
-                return await self._queue(chat_id)
+                return await self._queue(chat_id, arg)
             case "/stats":
                 return await self._stats(chat_id)
             case "/health":
@@ -601,39 +607,61 @@ class Bot:
         return "✅ Photos with listings: " + ("on" if on else "off")
 
     async def _queue_rescore(
-        self, chat_id: int, max_listings: int = 100, days: int = 3,
+        self,
+        chat_id: int,
+        max_listings: int = 100,
+        days: int = 3,
         ad_ids: list[int] | None = None,
-    ) -> bool:
-        """Queue an eval backfill for the active profile and trigger a scrape.
+        force: bool = False,
+        scope_label: str | None = None,
+    ) -> str:
+        """Plan and queue a re-score through the cost gate. Returns the status.
 
-        Skip-safe: scoring runs only for ads whose (criteria, model, prompt)
-        evaluation does not exist yet — cached profiles cost nothing.
-        ``ad_ids`` targets explicit listings (forced fresh).
+        ``queued`` (runs on the next pipeline run), ``awaiting`` (paid model:
+        Telegram asks the user to confirm the cost), ``nothing``, ``already`` or
+        ``error``. Skip-safe unless ``force``: cached scores are never recomputed.
         """
+        from bazcar.llm.costgate import month_spend, queue_evaluation
+        from bazcar.llm.provider import normalize_prompt_name
+
         settings = get_settings()
         if not settings.database_url:
-            return False
+            return "error"
         prefs = await self.store.get_prefs(chat_id)
         if prefs is None:
-            return False
+            return "error"
         model = prefs.model or load_llm_config().model
-        prompt = prefs.prompt_name or "standard"
         fallbacks = [m for m in (prefs.fallback_models or []) if m][:3]
-        p_key = profile_key(prefs.criteria, model, prompt=prompt)
+        try:
+            prices, _ = await self._cached_models()
+        except Exception:
+            logger.warning("model price lookup failed in bot", exc_info=True)
+            prices = []
         repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
-            pending = await repo.pending_eval_tasks()
-            if any(t["profile_key"] == p_key for t in pending):
-                return False  # already queued for this exact profile
-            await repo.create_eval_task(
-                p_key, prefs.criteria, model, max_listings, days,
-                prompt_name=prompt, fallback_models=fallbacks, ad_ids=ad_ids,
+            result = await queue_evaluation(
+                repo,
+                token=settings.telegram_bot_token,
+                chat_id=chat_id,
+                criteria=prefs.criteria,
+                model=model,
+                prompt_name=normalize_prompt_name(prefs.prompt_name),
+                fallback_models=fallbacks,
+                max_listings=max_listings,
+                days=days,
+                ad_ids=ad_ids,
+                force=force,
+                prices=prices,
+                scope_label=scope_label or f"last {days} days",
+                spent_usd=await month_spend(repo),
+                budget_usd=settings.monthly_budget_usd,
             )
         finally:
             await repo.close()
-        await _dispatch_scrape()
-        return True
+        if result["status"] == "queued":
+            await _dispatch_scrape()
+        return result["status"]
 
     @staticmethod
     def _parse_eval_ids(arg: str) -> list[int]:
@@ -652,11 +680,16 @@ class Bot:
     async def _eval(self, chat_id: int, arg: str) -> str:
         ids = self._parse_eval_ids(arg)
         if ids:
-            created = await self._queue_rescore(
-                chat_id, max_listings=len(ids), days=365, ad_ids=ids
+            status = await self._queue_rescore(
+                chat_id, max_listings=len(ids), days=365, ad_ids=ids, force=True,
+                scope_label=f"{len(ids)} selected cars",
             )
-            if not created:
-                return "⏳ Already re-scoring this search — send /show in a few minutes."
+            if status == "awaiting":
+                return "💸 Paid model — I sent the cost estimate to Telegram. Confirm there to start."
+            if status == "already":
+                return "⏳ These cars are already queued for re-scoring — send /show in a few minutes."
+            if status == "error":
+                return "Set up your profile first: /start."
             shown = ", ".join(f"<code>{i}</code>" for i in ids[:10])
             more = f" (+{len(ids) - 10} more)" if len(ids) > 10 else ""
             return (
@@ -672,10 +705,8 @@ class Bot:
         if prefs is not None and settings.database_url:
             from bazcar.llm.provider import normalize_prompt_name
 
-            model = prefs.model or load_llm_config().model
             p_key = profile_key(
-                prefs.criteria, model,
-                prompt=normalize_prompt_name(prefs.prompt_name),
+                prefs.criteria, prompt=normalize_prompt_name(prefs.prompt_name)
             )
             repo = ListingRepository(settings.database_url)
             await repo.connect()
@@ -686,11 +717,14 @@ class Bot:
             finally:
                 await repo.close()
 
-        created = await self._queue_rescore(chat_id, max_listings=limit, days=days)
-        if not created:
+        status = await self._queue_rescore(chat_id, max_listings=limit, days=days)
+        if status == "awaiting":
+            return "💸 Paid model — I sent the cost estimate to Telegram. Confirm there to start."
+        if status == "already":
             return "⏳ Already re-scoring this search — send /show in a few minutes."
-
-        if to_eval == 0:
+        if status == "error":
+            return "Set up your profile first: /start."
+        if status == "nothing" or to_eval == 0:
             return "✅ All cars in range are already scored for this search+model — nothing to score. /show"
         minutes = max(1, round(to_eval * EST_SECONDS_PER_EVAL / 60))
         return (
@@ -718,8 +752,7 @@ class Bot:
         limit = arg_limit or max(1, min(prefs.show_limit, 20))
         if arg_limit is not None and arg_limit != prefs.show_limit:
             await self.store.update_prefs(chat_id, show_limit=arg_limit)  # remember default
-        model = prefs.model or (load_llm_config().model)
-        p_key = profile_key(prefs.criteria, model)
+        p_key = profile_key(prefs.criteria)
         min_score = prefs.min_score or 0
 
         repo = ListingRepository(settings.database_url)
@@ -758,9 +791,8 @@ class Bot:
     async def _profile_key_for(self, chat_id: int) -> tuple[str, Any]:
         """(profile_key, prefs) for the calling user's active search profile."""
         prefs = await self.store.get_prefs(chat_id)
-        model = (prefs.model if prefs else None) or load_llm_config().model
         criteria = prefs.criteria if prefs else None
-        return profile_key(criteria, model), prefs
+        return profile_key(criteria), prefs
 
     async def _cars(self, chat_id: int, arg: str) -> tuple[str, dict] | str:
         """Browse the whole collected catalog — evaluated or not (/cars)."""
@@ -868,8 +900,10 @@ class Bot:
             await self.notifier.send_message(text, chat_id=chat_id, reply_markup=keyboard)
         return None
 
-    async def _queue(self, chat_id: int) -> tuple[str, dict] | str:
-        """Live view of the AI evaluation queue (/queue)."""
+    async def _queue(self, chat_id: int, arg: str = "") -> tuple[str, dict] | str:
+        """Live view of the AI evaluation queue (/queue, /queue clear)."""
+        if arg.strip().lower() in {"clear", "reset", "stop"}:
+            return await self._queue_clear(chat_id)
         settings = get_settings()
         if not settings.database_url:
             return "⚠️ /queue needs a database."
@@ -883,10 +917,54 @@ class Bot:
         text = build_queue_text(pending, finished)
         keyboard = {
             "inline_keyboard": [
-                [{"text": "🔄 Process now", "callback_data": "menu:rescrape"}]
+                [{"text": "🔄 Process now", "callback_data": "menu:rescrape"}],
+                [{"text": "🧹 Clear queue", "callback_data": "queue:clear"}],
             ]
         }
         return text, keyboard
+
+    async def _queue_clear(self, chat_id: int) -> str:
+        """Close this chat's open evaluation tasks (already-scored cars keep their scores)."""
+        settings = get_settings()
+        if not settings.database_url:
+            return "⚠️ /queue needs a database."
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            closed = await repo.clear_eval_tasks(chat_id)
+        finally:
+            await repo.close()
+        if not closed:
+            return "The queue is already empty."
+        return f"🧹 Cleared {closed} queued task{'s' if closed != 1 else ''}. Scored cars keep their scores."
+
+    async def _eval_confirm(self, chat_id: int, message_id, cb_query_id: str, data: str) -> None:
+        """Confirm or cancel a paid evaluation parked by the cost gate (ev:ok|no:<id>)."""
+        parts = data.split(":")
+        if len(parts) != 3 or not parts[2].isdigit() or parts[1] not in {"ok", "no"}:
+            await self.notifier.answer_callback(cb_query_id, "Unknown action")
+            return
+        task_id = int(parts[2])
+        settings = get_settings()
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            if parts[1] == "ok":
+                done = await repo.confirm_eval_task(task_id, chat_id)
+                note = "Confirmed — scoring starts on the next run" if done else "Already handled"
+            else:
+                done = await repo.cancel_eval_task(task_id, chat_id)
+                note = "Cancelled" if done else "Already handled"
+        finally:
+            await repo.close()
+        if done and parts[1] == "ok":
+            await _dispatch_scrape()
+        await self.notifier.answer_callback(cb_query_id, note)
+        if message_id and done:
+            await self.notifier.edit_message_text(
+                f"<b>{note}.</b>", message_id, chat_id=chat_id,
+                reply_markup={"inline_keyboard": []},
+            )
 
     async def _stats(self, chat_id: int) -> str:
         """Catalog + market statistics with sparkline and score bands (/stats)."""
@@ -1326,7 +1404,7 @@ class Bot:
         if prefs is None:
             return "No settings yet. /help"
         model = prefs.model or load_llm_config().model
-        p_key = profile_key(prefs.criteria, model)
+        p_key = profile_key(prefs.criteria)
         lines = [
             "<b>⚙️ Settings & status</b>",
             f"Criteria: {_em(prefs.criteria or '—')}",

@@ -121,6 +121,7 @@
   .item .specs { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
   .item .side { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-end; gap: 6px; align-self: stretch; }
   .item .price { font-weight: 700; font-size: 15.5px; white-space: nowrap; }
+  .b-model { color: var(--muted); border-color: var(--line); }
   .iconbtns { display: flex; gap: 6px; }
   .dual { position: relative; height: 34px; margin: 2px 0 0; }
   .dual input[type="range"] {
@@ -322,6 +323,15 @@ function scopeLabel(f) {
   if (f.psc) parts.push(f.psc + (num(f.distance_km) != null ? ` +${f.distance_km} km` : ""));
   return parts.join(" · ") || "custom";
 }
+function ratedBy(r) {
+  // Which AI produced the score on this card (kept even after switching models).
+  if (!r || !r.eval_model) return "";
+  const short = String(r.eval_model).split("/").pop().replace(/:free$/, "");
+  return `<span class="badge b-model" title="${esc(r.eval_model)}">AI: ${esc(short)}</span> `;
+}
+function removedBadge(r) {
+  return r && r.removed ? ` <span class="badge b-warn">removed from Bazoš</span>` : "";
+}
 function staleBadge(iso) {
   if (!iso) return "";
   const d = Math.floor(Math.max(0, Date.now() - new Date(iso).getTime()) / 86400000);
@@ -483,7 +493,7 @@ function scraperHtml(sc) {
   }).join("");
   return `<div class="section"><h2>Scrape scope</h2><div class="card">
     <div class="kv"><span class="k">Active filters</span><span class="v">${esc(sc.scope_source === "custom" ? scopeLabel(scope) : scopeLabel(null))} (${esc(srcNote)})</span></div>
-    <div class="kv"><span class="k">In database</span><span class="v">${sc.db_total ?? "?"}</span></div>
+    <div class="kv"><span class="k">In database</span><span class="v">${sc.db_total ?? "?"}${sc.removed ? ` (${sc.removed} removed from Bazoš)` : ""}</span></div>
     <div class="kv"><span class="k">No AI score (30 d)</span><span class="v">${un.missing ?? "?"} of ${un.total ?? "?"} — unscored, use Re-score in Profile</span></div>
     <div class="muted">A car missing here entirely was filtered out, beyond page depth, or removed — check it below.</div>
   </div></div>
@@ -795,7 +805,7 @@ function cardHtml(r, o) {
       </div>
       <div class="body">
         <div class="specs">${r.year ?? "?"} · ${fmtKmK(r.mileage_km)} · ${esc(r.city || "")} · ${date}</div>
-        <div class="specs">${staleBadge(r.last_seen_at)}</div>
+        <div class="specs">${ratedBy(r)}${removedBadge(r)}${staleBadge(r.last_seen_at)}</div>
         ${o.afterSpecs || ""}
       </div>
       <div class="side">
@@ -1012,7 +1022,7 @@ function renderListing(d, from) {
       `<span class="${diff < 0 ? "trend-down" : "trend-up"}">${Math.abs(diff)} % ${verdict}</span></div>` +
       `<div class="kv"><span class="k">p10 – p90</span><span class="v">${eur(bench.p10)} – ${eur(bench.p90)}</span></div></div></div>`;
   }
-  const stale = staleBadge(r.last_seen_at);
+  const stale = staleBadge(r.last_seen_at) + removedBadge({ removed: !!r.removed_at });
   const backBtn = from === "compare"
     ? `<button class="mini" onclick="backToCompare()">‹ Back</button>`
     : `<button class="mini" onclick="backTo('${from || "listings"}')">‹ Back</button>`;
@@ -1030,7 +1040,7 @@ function renderListing(d, from) {
       ${trend}
       ${sparkHtml}
     </div>
-    <div class="section"><h2>AI review</h2><div class="card">${ai}</div></div>
+    <div class="section"><h2>AI review</h2><div class="card">${ai}${r.eval_model ? `<div class="kv"><span class="k">Rated by</span><span class="v">${esc(r.eval_model)}</span></div>` : ""}</div></div>
     ${market}
     ${descBlock(r.description || r.description_preview)}`;
 }
@@ -1073,12 +1083,23 @@ function renderInsights(d) {
   const ct = cost.total || {};
   const covPct = s.total ? Math.round((s.evaluated || 0) / s.total * 100) : 0;
   const counts = (s.new_by_day || []).map(x => x[1]);
-  const pendHtml = pend.slice(0, 3).map(t => `
-    <div class="q-item">
+  const pendHtml = pend.slice(0, 8).map(t => {
+    const awaiting = t.confirmed === false;
+    const est = t.estimate_usd != null ? ` · ≈ $${Number(t.estimate_usd).toFixed(2)}` : "";
+    const actions = awaiting
+      ? `<div class="rowbtn" style="margin-top:6px"><button class="mini on" onclick="queueConfirm(${t.id})">Confirm and score</button><button class="mini" onclick="queueCancel(${t.id})">Cancel</button></div>`
+      : "";
+    const status = awaiting
+      ? `awaiting your confirmation${est}`
+      : (t.started_at ? (t.done || 0) + "/" + (t.total || 0) : "waiting in line");
+    const bar = awaiting ? "" : `<div class="prog"><div class="fill" style="width:${t.total ? Math.round((t.done || 0) / t.total * 100) : 0}%"></div></div>`;
+    return `<div class="q-item">
       <div class="crit">${esc((t.criteria || "no criteria").slice(0, 60))}</div>
-      <div class="meta">${esc(t.model || "?")} · ${t.started_at ? t.done + "/" + t.total : "waiting in line"} · ${ago(t.created_at)}</div>
-      <div class="prog"><div class="fill" style="width:${t.total ? Math.round((t.done || 0) / t.total * 100) : 0}%"></div></div>
-    </div>`).join("");
+      <div class="meta">${esc(t.model || "?")} · ${status} · ${ago(t.created_at)}</div>
+      ${bar}${actions}
+    </div>`;
+  }).join("");
+  const clearBtn = pend.length ? `<div class="rowbtn" style="margin-bottom:8px"><button class="mini" onclick="queueClear()">Clear queue (${pend.length})</button></div>` : "";
   const finHtml = fin.slice(0, 3).map(t => `
     <div class="q-item">
       <div class="crit">${esc((t.criteria || "no criteria").slice(0, 50))}</div>
@@ -1121,7 +1142,7 @@ function renderInsights(d) {
       <div class="muted">Old scores without token data count as “unknown”.</div>
     </div></div>
     <div class="section"><h2>AI queue (${pend.length} waiting)</h2><div class="card">
-      ${pendHtml || '<div class="muted">Queue is empty — everything is scored.</div>'}
+      ${clearBtn}${pendHtml || '<div class="muted">Queue is empty — everything is scored.</div>'}
       ${finHtml ? `<div class="muted" style="margin-top:8px">Recently: ${fin.length} finished</div>` + finHtml : ""}
     </div></div>
     <div class="section"><h2>Last run</h2><div class="card"><div class="muted">
@@ -1183,6 +1204,10 @@ function renderProfile(d) {
         <button class="mini on" onclick="createSearch()">Save</button>
       </div></div></div>
     <div class="section"><h2>Templates</h2><div class="card" id="tpl-list"><div class="muted">Loading…</div></div></div>
+    <div class="section"><h2>Date-range re-score</h2><div class="card">
+      <div class="toolbar" style="margin:0"><input type="date" id="rr-from"><input type="date" id="rr-to"><button class="mini on" onclick="rangePreview()">Count</button></div>
+      <div id="rr-out" class="muted" style="margin-top:8px">Pick a date range, then count the cars and see what re-scoring would cost.</div>
+    </div></div>
     <div class="section"><h2>Re-score</h2><div class="card">
       <div class="rowbtn" style="margin-top:0"><button class="mini on" onclick="queueEval()">Re-score newest 100 (3 days)</button></div>
       <div class="toolbar" style="margin:10px 0 0">
@@ -1193,6 +1218,10 @@ function renderProfile(d) {
     </div></div>`;
   loadModelsIntoPicker(a.model);
   loadTemplates();
+  const _today = new Date(); const _from = new Date(Date.now() - 30 * 86400000);
+  const _rf = document.getElementById("rr-from"), _rt = document.getElementById("rr-to");
+  if (_rf && !_rf.value) _rf.value = _isoDay(_from);
+  if (_rt && !_rt.value) _rt.value = _isoDay(_today);
 }
 function editCriteria(btn, current) {
   const line = document.getElementById("crit-line");
@@ -1306,6 +1335,51 @@ async function loadTemplates() {
 async function applyTemplate(key) {
   const r = await post("template", { key });
   if (r && r.ok) { buzz("ok"); toast(r.queued ? "Template applied — re-score queued." : ("Note: " + (r.note || "already queued."))); load("profile"); }
+  else if (r && r.error) { toast(r.error); }
+}
+function _isoDay(d) { return d.toISOString().slice(0, 10); }
+async function rangePreview() {
+  const from = _fv("rr-from"), to = _fv("rr-to");
+  const out = document.getElementById("rr-out");
+  if (!out) return;
+  if (!from || !to) { out.textContent = "Pick both dates."; return; }
+  out.textContent = "Counting…";
+  const d = await get(new URLSearchParams({ view: "rescore_preview", from, to }));
+  if (!d) return;
+  if (d.error) { out.innerHTML = `<span class="trend-up">${esc(d.error)}</span>`; return; }
+  const rerate = (d.rated_current || 0) + (d.rated_other || 0);
+  const askNote = !d.paid ? "Free model — no cost."
+    : (rerate > 0 ? "Re-scoring existing cars with a paid model — you'll confirm the cost in Telegram."
+      : "Only new cars — scored without a prompt.");
+  const cost = d.estimate
+    ? `Estimated cost ≈ $${d.estimate.usd.toFixed(2)} (range $${d.estimate.usd_low.toFixed(2)}–$${d.estimate.usd_high.toFixed(2)}), ~${d.estimate.minutes} min. ${askNote}`
+    : askNote;
+  out.innerHTML = `<div class="kv"><span class="k">Cars in range</span><span class="v">${d.total}</span></div>` +
+    `<div class="kv"><span class="k">Rated by ${esc(d.model)}</span><span class="v">${d.rated_current}</span></div>` +
+    `<div class="kv"><span class="k">Rated by other models</span><span class="v">${d.rated_other}</span></div>` +
+    `<div class="kv"><span class="k">Unscored</span><span class="v">${d.unscored}</span></div>` +
+    `<div class="muted" style="margin:8px 0">${cost}</div>` +
+    `<div class="rowbtn" style="margin-top:0"><button class="mini on" onclick="rangeRescore()" ${d.total ? "" : "disabled"}>Re-score all ${d.total} with ${esc(d.model.split("/").pop())}</button></div>`;
+}
+async function rangeRescore() {
+  const from = _fv("rr-from"), to = _fv("rr-to");
+  const r = await post("rescore_range", { from, to });
+  if (r && r.ok) { buzz("ok"); toast(r.note || (r.queued ? "Queued." : "Done.")); load("insights"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function queueConfirm(id) {
+  const r = await post("queue_confirm", { id });
+  if (r && r.ok) { buzz("ok"); toast(r.updated ? "Confirmed — scoring starts on the next run." : "Already handled."); load("insights"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function queueCancel(id) {
+  const r = await post("queue_cancel", { id });
+  if (r && r.ok) { buzz("ok"); toast(r.updated ? "Cancelled." : "Already handled."); load("insights"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function queueClear() {
+  const r = await post("queue_clear", {});
+  if (r && r.ok) { buzz("ok"); toast(`Cleared ${r.cleared} queued task${r.cleared === 1 ? "" : "s"}. Scored cars keep their scores.`); load("insights"); }
   else if (r && r.error) { toast(r.error); }
 }
 async function queueEval() {

@@ -39,6 +39,8 @@ import bazcar.bot.store  # noqa: E402,F401
 import bazcar.core.profiles  # noqa: E402,F401
 import bazcar.db.repository  # noqa: E402,F401
 import bazcar.notify.telegram  # noqa: E402,F401
+import bazcar.core.adpage  # noqa: E402,F401
+import bazcar.llm.costgate  # noqa: E402,F401
 
 # Load the single Vercel entrypoint by path (as the runtime does) and route
 # every surface through it.

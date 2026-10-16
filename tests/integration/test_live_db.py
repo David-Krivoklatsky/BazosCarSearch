@@ -70,7 +70,7 @@ async def test_claim_update_dedupes(repo: ListingRepository) -> None:
 @pytest.mark.asyncio
 async def test_eval_tasks_flow(repo: ListingRepository) -> None:
     """Backfill queue: create -> pending -> complete -> gone."""
-    await repo.create_eval_task("testprofile", "test criteria", "test/model", 42)
+    task_id = await repo.create_eval_task("testprofile", "test criteria", "test/model", 42)
     tasks = await repo.pending_eval_tasks()
     task = next((t for t in tasks if t["profile_key"] == "testprofile"), None)
     assert task is not None
@@ -80,6 +80,8 @@ async def test_eval_tasks_flow(repo: ListingRepository) -> None:
     await repo.complete_eval_task(task["id"])
     tasks = await repo.pending_eval_tasks()
     assert all(t["profile_key"] != "testprofile" for t in tasks)
+    # leave no queue residue in the real database
+    await repo.cancel_eval_task(task_id)
 
 
 @pytest.mark.asyncio

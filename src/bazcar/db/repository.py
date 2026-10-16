@@ -20,6 +20,9 @@ from bazcar.core.models import DealEvaluation, Listing
 
 logger = logging.getLogger(__name__)
 
+# Upper bound for explicit / date-range evaluation tasks (ids per task).
+TASK_MAX_IDS = 2000
+
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS listings (
@@ -207,6 +210,21 @@ ALTER TABLE eval_tasks
     ADD COLUMN IF NOT EXISTS fallback_models jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE eval_tasks
     ADD COLUMN IF NOT EXISTS ad_ids bigint[];
+-- v3: one score per (car, search spec) regardless of model; the model is recorded.
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS confirmed boolean NOT NULL DEFAULT true;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS chat_id bigint;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS force boolean NOT NULL DEFAULT false;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS estimate_usd numeric(12, 6);
+-- Sold / unlisted detection: soft-removal (saved lists keep their history).
+ALTER TABLE listings
+    ADD COLUMN IF NOT EXISTS removed_at timestamptz;
+ALTER TABLE listings
+    ADD COLUMN IF NOT EXISTS verified_at timestamptz;
+CREATE INDEX IF NOT EXISTS idx_listings_removed ON listings (removed_at);
 """
 
 _UPSERT_LISTING_SQL = """
@@ -233,7 +251,8 @@ ON CONFLICT (ad_id) DO UPDATE SET
     year                = EXCLUDED.year,
     mileage_km          = EXCLUDED.mileage_km,
     last_seen_at        = now(),
-    updated_at          = now()
+    updated_at          = now(),
+    removed_at          = NULL
 """
 
 _INSERT_PRICE_HISTORY_SQL = """
@@ -271,7 +290,7 @@ SELECT l.ad_id, l.url, l.title, l.price_eur, l.city, l.image_urls,
        e.score, e.why, e.risk, e.model AS eval_model, e.condition, e.target_offer
 FROM listings l
 JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
-WHERE e.score >= $2
+WHERE e.score >= $2 AND l.removed_at IS NULL
   AND COALESCE(l.published_date, l.first_seen_at::date)
       >= (now() - make_interval(days => $3))::date
 ORDER BY e.score DESC,
@@ -284,7 +303,7 @@ _FETCH_RECENT_LISTINGS_SQL = """
 SELECT ad_id, url, title, price_eur, city, image_urls,
        year, mileage_km, description_preview, description
 FROM listings
-WHERE last_seen_at >= now() - make_interval(days => $1)
+WHERE last_seen_at >= now() - make_interval(days => $1) AND removed_at IS NULL
 ORDER BY last_seen_at DESC
 LIMIT $2
 """
@@ -686,18 +705,25 @@ class ListingRepository:
         prompt_name: str = "standard",
         fallback_models: list[str] | None = None,
         ad_ids: list[int] | None = None,
-    ) -> None:
-        """Queue a backfill: score recent ads under this search profile.
+        *,
+        chat_id: int | None = None,
+        force: bool = False,
+        confirmed: bool = True,
+        estimate_usd: float | None = None,
+    ) -> int:
+        """Queue an evaluation task and return its id.
 
-        ``ad_ids`` targets explicit listings (forced fresh — cached scores for
-        them are dropped when the task runs); otherwise the recent window is
-        scored skip-safe.
+        ``ad_ids`` targets explicit listings (or a date range resolved to ids).
+        ``force`` ignores cached scores and overwrites them with ``model``.
+        ``confirmed=False`` parks the task until the user approves the cost.
         """
+        ids = [int(a) for a in (ad_ids or []) if int(a) > 0][:TASK_MAX_IDS]
         conn = self._require_conn()
-        await conn.execute(
+        row = await conn.fetchrow(
             "INSERT INTO eval_tasks (profile_key, criteria, model, max_listings, days,"
-            " prompt_name, fallback_models, ad_ids)"
-            " VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::bigint[])",
+            " prompt_name, fallback_models, ad_ids, chat_id, force, confirmed, estimate_usd)"
+            " VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::bigint[], $9, $10, $11, $12)"
+            " RETURNING id",
             profile_key,
             criteria,
             model,
@@ -705,12 +731,227 @@ class ListingRepository:
             days,
             prompt_name or "standard",
             json.dumps([m for m in (fallback_models or []) if m][:3]),
-            ([int(a) for a in (ad_ids or []) if int(a) > 0][:50] or None),
+            ids or None,
+            chat_id,
+            bool(force),
+            bool(confirmed),
+            estimate_usd,
         )
+        return int(row["id"])
+
+    async def get_eval_task(self, task_id: int) -> dict | None:
+        row = await self._require_conn().fetchrow(
+            "SELECT id, profile_key, criteria, model, prompt_name, chat_id, confirmed,"
+            " done_at, estimate_usd, force FROM eval_tasks WHERE id = $1",
+            task_id,
+        )
+        return dict(row) if row else None
+
+    async def confirm_eval_task(self, task_id: int, chat_id: int | None = None) -> bool:
+        """Approve a parked task (only if still open and owned by ``chat_id``)."""
+        status = await self._require_conn().execute(
+            "UPDATE eval_tasks SET confirmed = true WHERE id = $1 AND done_at IS NULL"
+            " AND confirmed = false AND ($2::bigint IS NULL OR chat_id = $2)",
+            task_id,
+            chat_id,
+        )
+        return status.endswith("1")
+
+    async def cancel_eval_task(self, task_id: int, chat_id: int | None = None) -> bool:
+        """Close an open task without scoring (owner-checked when chat_id given)."""
+        status = await self._require_conn().execute(
+            "UPDATE eval_tasks SET done_at = now(), error = 'cancelled'"
+            " WHERE id = $1 AND done_at IS NULL AND ($2::bigint IS NULL OR chat_id = $2)",
+            task_id,
+            chat_id,
+        )
+        return status.endswith("1")
+
+    async def was_recently_cancelled(self, profile_key: str, days: int = 7) -> bool:
+        """True when the user cancelled a task for this spec recently (don't re-ask)."""
+        value = await self._require_conn().fetchval(
+            "SELECT 1 FROM eval_tasks WHERE profile_key = $1"
+            " AND error IN ('cancelled', 'cleared by user')"
+            " AND done_at >= now() - make_interval(days => $2) LIMIT 1",
+            profile_key,
+            max(1, int(days)),
+        )
+        return value is not None
+
+    async def clear_eval_tasks(self, chat_id: int) -> int:
+        """Close every open task of this chat (queue clear). Returns how many."""
+        status = await self._require_conn().execute(
+            "UPDATE eval_tasks SET done_at = now(), error = 'cleared by user'"
+            " WHERE done_at IS NULL AND (chat_id = $1 OR chat_id IS NULL)",
+            chat_id,
+        )
+        try:
+            return int(status.split()[-1])
+        except (ValueError, IndexError):
+            return 0
+
+    async def count_range_ratings(
+        self,
+        profile_key: str,
+        current_model: str,
+        date_from,
+        date_to,
+    ) -> dict:
+        """Cars in a publish-date range and how each is rated under this spec.
+
+        ``rated_current`` = scored by ``current_model``; ``rated_other`` = scored
+        by a different model (kept, shown as "rated by ..."); ``unscored``.
+        """
+        conn = self._require_conn()
+        try:
+            row = await conn.fetchrow(
+                "SELECT count(*) AS total,"
+                " count(e.ad_id) AS rated,"
+                " count(*) FILTER (WHERE e.model = $4) AS rated_current,"
+                " count(*) FILTER (WHERE e.ad_id IS NOT NULL AND e.model IS DISTINCT FROM $4)"
+                "   AS rated_other,"
+                " count(*) FILTER (WHERE e.ad_id IS NULL) AS unscored"
+                " FROM listings l"
+                " LEFT JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1"
+                " WHERE l.removed_at IS NULL"
+                "   AND COALESCE(l.published_date, l.first_seen_at::date) BETWEEN $2 AND $3",
+                profile_key,
+                date_from,
+                date_to,
+                current_model,
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"range count failed: {exc}") from exc
+        return {k: int(row[k] or 0) for k in ("total", "rated", "rated_current", "rated_other", "unscored")}
+
+    async def listing_ids_in_range(self, date_from, date_to, cap: int = TASK_MAX_IDS) -> list[int]:
+        """Ad ids published (or first seen) in the range, newest first, capped."""
+        rows = await self._require_conn().fetch(
+            "SELECT l.ad_id FROM listings l WHERE l.removed_at IS NULL"
+            " AND COALESCE(l.published_date, l.first_seen_at::date) BETWEEN $1 AND $2"
+            " ORDER BY COALESCE(l.published_date, l.first_seen_at::date) DESC, l.ad_id DESC"
+            " LIMIT $3",
+            date_from,
+            date_to,
+            max(1, min(int(cap), TASK_MAX_IDS)),
+        )
+        return [int(r["ad_id"]) for r in rows]
+
+    async def count_removed(self) -> int:
+        value = await self._require_conn().fetchval(
+            "SELECT count(*) FROM listings WHERE removed_at IS NOT NULL"
+        )
+        return int(value or 0)
+
+    async def mark_listing_removed(self, ad_id: int) -> None:
+        await self._require_conn().execute(
+            "UPDATE listings SET removed_at = now(), verified_at = now() WHERE ad_id = $1",
+            ad_id,
+        )
+
+    async def mark_listing_verified(self, ad_id: int) -> None:
+        await self._require_conn().execute(
+            "UPDATE listings SET verified_at = now() WHERE ad_id = $1", ad_id
+        )
+
+    async def removal_candidates(self, limit: int, stale_days: int = 1) -> list[dict]:
+        """Listings not seen recently and not verified recently (verify, then remove)."""
+        rows = await self._require_conn().fetch(
+            "SELECT ad_id, url, title FROM listings WHERE removed_at IS NULL"
+            " AND last_seen_at < now() - make_interval(days => $2)"
+            " AND (verified_at IS NULL OR verified_at < now() - make_interval(days => $2))"
+            " ORDER BY verified_at NULLS FIRST, last_seen_at LIMIT $1",
+            max(1, min(int(limit), 200)),
+            max(1, int(stale_days)),
+        )
+        return [dict(r) for r in rows]
+
+    async def legacy_key_inputs(self) -> tuple[list[str | None], list[str]]:
+        """Criteria strings and models that may have produced legacy-keyed rows."""
+        conn = self._require_conn()
+        criteria = await conn.fetch(
+            "SELECT DISTINCT criteria FROM user_prefs"
+            " UNION SELECT DISTINCT criteria FROM user_searches"
+            " UNION SELECT DISTINCT criteria FROM eval_tasks"
+        )
+        models = await conn.fetch(
+            "SELECT DISTINCT model FROM evaluations"
+            " UNION SELECT DISTINCT model FROM user_prefs"
+            " UNION SELECT DISTINCT model FROM eval_tasks"
+        )
+        return (
+            [row["criteria"] for row in criteria],
+            [row["model"] for row in models if row["model"]],
+        )
+
+    async def migrate_profile_keys(self, mapping: dict[str, str]) -> dict:
+        """One-time v3 migration: rewrite model-bound keys to spec keys.
+
+        ``mapping`` = {legacy_key: spec_key}. Per car (and per chat+car for
+        notifications) only the most recent row survives across all legacy and
+        spec keys, so the primary keys stay unique. Idempotent: once the legacy
+        keys are gone it is a no-op. Returns row counts touched.
+        """
+        if not mapping:
+            return {"evaluations": 0, "notifications": 0, "eval_tasks": 0}
+        conn = self._require_conn()
+        keys = sorted(set(mapping) | set(mapping.values()))
+        zero = {"evaluations": 0, "notifications": 0, "eval_tasks": 0}
+        legacy_left = await conn.fetchval(
+            "SELECT 1 FROM evaluations WHERE profile_key = ANY($1::text[]) LIMIT 1",
+            list(mapping),
+        )
+        if legacy_left is None:
+            return zero  # already migrated: nothing bound to a legacy key remains
+        counts = {}
+        async with conn.transaction():
+            status = await conn.execute(
+                "DELETE FROM evaluations e WHERE e.profile_key = ANY($1::text[])"
+                " AND EXISTS (SELECT 1 FROM evaluations x WHERE x.ad_id = e.ad_id"
+                "   AND x.profile_key = ANY($1::text[])"
+                "   AND (x.evaluated_at > e.evaluated_at"
+                "     OR (x.evaluated_at = e.evaluated_at AND x.profile_key > e.profile_key)))",
+                keys,
+            )
+            counts["evaluations_dropped"] = int(str(status).split()[-1])
+            moved = 0
+            for old, new in mapping.items():
+                status = await conn.execute(
+                    "UPDATE evaluations SET profile_key = $2 WHERE profile_key = $1", old, new
+                )
+                moved += int(str(status).split()[-1])
+            counts["evaluations"] = moved
+
+            status = await conn.execute(
+                "DELETE FROM notifications n WHERE n.profile_key = ANY($1::text[])"
+                " AND EXISTS (SELECT 1 FROM notifications x WHERE x.chat_id = n.chat_id"
+                "   AND x.ad_id = n.ad_id AND x.profile_key = ANY($1::text[])"
+                "   AND (x.notified_at > n.notified_at"
+                "     OR (x.notified_at = n.notified_at AND x.profile_key > n.profile_key)))",
+                keys,
+            )
+            counts["notifications_dropped"] = int(str(status).split()[-1])
+            moved = 0
+            for old, new in mapping.items():
+                status = await conn.execute(
+                    "UPDATE notifications SET profile_key = $2 WHERE profile_key = $1", old, new
+                )
+                moved += int(str(status).split()[-1])
+            counts["notifications"] = moved
+
+            moved = 0
+            for old, new in mapping.items():
+                status = await conn.execute(
+                    "UPDATE eval_tasks SET profile_key = $2 WHERE profile_key = $1", old, new
+                )
+                moved += int(str(status).split()[-1])
+            counts["eval_tasks"] = moved
+        return counts
 
     async def bump_eval_task_attempt(self, task_id: int) -> None:
         await self._require_conn().execute(
             "UPDATE eval_tasks SET attempts = attempts + 1 WHERE id = $1", task_id
+
         )
 
     async def complete_eval_task(self, task_id: int) -> None:
@@ -823,7 +1064,7 @@ class ListingRepository:
         LEFT JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
         WHERE COALESCE(l.published_date, l.first_seen_at::date)
               >= (now() - make_interval(days => $2))::date
-          AND {cond}{extra}
+          AND l.removed_at IS NULL AND {cond}{extra}
         ORDER BY {order}
         LIMIT $3 OFFSET $4
         """  # noqa: S608 — order/cond come from whitelists above
@@ -854,7 +1095,7 @@ class ListingRepository:
         LEFT JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
         WHERE COALESCE(l.published_date, l.first_seen_at::date)
               >= (now() - make_interval(days => $2))::date
-          AND {cond}{extra}
+          AND l.removed_at IS NULL AND {cond}{extra}
         """  # noqa: S608 — cond comes from the whitelist above
         conn = self._require_conn()
         try:
@@ -886,7 +1127,7 @@ class ListingRepository:
         LEFT JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
         WHERE COALESCE(l.published_date, l.first_seen_at::date)
               >= (now() - make_interval(days => $2))::date
-          AND {cond}{extra}
+          AND l.removed_at IS NULL AND {cond}{extra}
         """  # noqa: S608 — cond comes from the whitelist above
         conn = self._require_conn()
         try:
@@ -910,6 +1151,7 @@ class ListingRepository:
                 SELECT l.ad_id, l.url, l.title, l.price_eur, l.city, l.image_urls,
                        l.year, l.mileage_km, l.description_preview, l.description,
                        l.published_date, l.first_seen_at, l.last_seen_at, l.views,
+                       l.removed_at,
                        e.score, e.why, e.risk, e.is_car, e.model AS eval_model,
                        e.condition, e.target_offer
                 FROM listings l
@@ -925,14 +1167,14 @@ class ListingRepository:
 
     async def fetch_listings_by_ids(self, ad_ids: list[int] | None) -> list[dict]:
         """Raw listing rows for explicit ad ids (targeted re-score input)."""
-        ids = [int(a) for a in (ad_ids or []) if int(a) > 0][:50]
+        ids = [int(a) for a in (ad_ids or []) if int(a) > 0][:TASK_MAX_IDS]
         if not ids:
             return []
         conn = self._require_conn()
         try:
             rows = await conn.fetch(
                 "SELECT ad_id, url, title, price_eur, city, image_urls,"
-                " year, mileage_km, description_preview, description"
+                " year, mileage_km, description_preview, description, removed_at"
                 " FROM listings WHERE ad_id = ANY($1::bigint[])",
                 ids,
             )
@@ -947,34 +1189,6 @@ class ListingRepository:
                 record["image_urls"] = []
             out.append(record)
         return out
-
-    async def delete_evaluations(self, ad_ids: list[int] | None, profile_key: str) -> int:
-        """Drop cached scores so a targeted re-score evaluates fresh, not skipped."""
-        ids = [int(a) for a in (ad_ids or []) if int(a) > 0][:50]
-        if not ids:
-            return 0
-        conn = self._require_conn()
-        try:
-            status = await conn.execute(
-                "DELETE FROM evaluations WHERE profile_key = $1 AND ad_id = ANY($2::bigint[])",
-                profile_key,
-                ids,
-            )
-        except asyncpg.PostgresError as exc:
-            raise DbError(f"evaluation delete failed: {exc}") from exc
-        try:
-            return int(str(status).split()[-1])
-        except (ValueError, IndexError):
-            return 0
-
-    @staticmethod
-    def _decode_catalog_row(row) -> dict:
-        record = dict(row)
-        try:
-            record["image_urls"] = json.loads(record["image_urls"])
-        except (TypeError, ValueError, json.JSONDecodeError):
-            record["image_urls"] = []
-        return record
 
     async def fetch_price_history(self, ad_id: int, limit: int = 10) -> list[dict]:
         """Chronological price points for one ad (oldest first)."""
@@ -1221,7 +1435,7 @@ class ListingRepository:
                 "  lag(price_eur) OVER (PARTITION BY ad_id ORDER BY id) AS prev,"
                 "  seen_at FROM price_history) t"
                 " JOIN listings l ON l.ad_id = t.ad_id"
-                " WHERE t.prev IS NOT NULL AND t.price_eur IS NOT NULL"
+                " WHERE l.removed_at IS NULL AND t.prev IS NOT NULL AND t.price_eur IS NOT NULL"
                 "  AND t.price_eur < t.prev AND t.prev > 0"
                 "  AND t.seen_at >= now() - make_interval(days => $2)"
                 " ORDER BY pct DESC LIMIT $1",
@@ -1437,8 +1651,8 @@ class ListingRepository:
         conn = self._require_conn()
         rows = await conn.fetch(
             "SELECT id, profile_key, criteria, model, max_listings, days, attempts,"
-            " total, done, started_at, created_at, prompt_name, fallback_models, ad_ids"
-            " FROM eval_tasks"
+            " total, done, started_at, created_at, prompt_name, fallback_models, ad_ids,"
+            " confirmed, chat_id, force, estimate_usd FROM eval_tasks"
             " WHERE done_at IS NULL ORDER BY id"
         )
         out = []

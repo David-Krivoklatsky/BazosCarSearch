@@ -23,6 +23,7 @@ SLOVAK_ALLOWLIST = {
     "src/bazcar/llm/provider.py",  # SYSTEM_PROMPT — Slovak listings need it
     "src/bazcar/bot/classify.py",  # part-marker detection on Slovak text
     "src/bazcar/scrapers/bazos.py",  # Slovak page parsing
+    "src/bazcar/core/adpage.py",  # Bazoš ad-page meta parsing (quotes site text)
     "src/bazcar/bot/formatting.py",  # backward-compat input aliases + Škoda example
     "src/bazcar/bot/daemon.py",  # input aliases only (checked separately)
     "src/bazcar/db/repository.py",  # make stoplist for Slovak titles

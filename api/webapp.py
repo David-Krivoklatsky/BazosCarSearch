@@ -37,6 +37,9 @@ from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl
 
+from bazcar.core.adpage import diagnose_missing as _diagnose_missing
+from bazcar.core.adpage import fetch_ad_page as _fetch_ad_page
+
 _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -125,6 +128,22 @@ async def _listing_payload(repo, ad_id: int, p_key: str) -> dict:
     return {"listing": row, "history": history, "benchmark": bench}
 
 
+def _parse_range(raw_from, raw_to):
+    """(date_from, date_to, error) for a YYYY-MM-DD range (max one year)."""
+    import datetime
+
+    try:
+        d_from = datetime.date.fromisoformat(str(raw_from or ""))
+        d_to = datetime.date.fromisoformat(str(raw_to or ""))
+    except ValueError:
+        return None, None, "dates must be YYYY-MM-DD"
+    if d_to < d_from:
+        return None, None, "'to' is before 'from'"
+    if (d_to - d_from).days > 366:
+        return None, None, "range is limited to one year"
+    return d_from, d_to, None
+
+
 async def _load_view(
     view: str, chat_id: int, page: int, days: int, ad_id: int | None = None,
     extra: dict | None = None,
@@ -170,7 +189,7 @@ async def _load_view(
                         logger.warning("saved-ids load failed in webapp", exc_info=True)
         except Exception:
             logger.warning("prefs load failed in webapp", exc_info=True)
-        p_key = profile_key(criteria, model, prompt=prompt_name)
+        p_key = profile_key(criteria, prompt=prompt_name)
 
         if view == "overview":
             stats = await repo.stats_overview(p_key)
@@ -288,6 +307,7 @@ async def _load_view(
                         "city": det.get("city"),
                         "score": ev.score if ev is not None else None,
                         "is_car": ev.is_car if ev is not None else None,
+                        "removed": det.get("removed_at") is not None,
                     }
                 )
             return {"items": items, "saved_ids": sorted(saved_ids)}, HTTPStatus.OK
@@ -489,8 +509,38 @@ async def _load_view(
                 "runs": runs,
                 "db_total": (stats or {}).get("total"),
                 "unscored": {"missing": missing, "total": window_total},
+                "removed": await repo.count_removed(),
                 "scope": scope,
                 "scope_source": source,
+            }, HTTPStatus.OK
+        if view == "rescore_preview":
+            # What a date-range re-score would do under the current model.
+            from bazcar.llm.costgate import estimate_cost, model_price
+            from bazcar.llm.provider import list_models_cached
+
+            d_from, d_to, err = _parse_range(extra.get("date_from"), extra.get("date_to"))
+            if err:
+                return {"error": err}, HTTPStatus.BAD_REQUEST
+            counts = await repo.count_range_ratings(p_key, model, d_from, d_to)
+            try:
+                prices, _ = await list_models_cached(getattr(settings, "llm_api_key", None), repo)
+            except Exception:
+                prices = []
+            price = model_price(prices, model)
+            estimate, paid = None, True
+            if price is not None:
+                paid = price[0] + price[1] > 0
+                estimate = estimate_cost(
+                    counts["total"], in_per_m=price[0], out_per_m=price[1],
+                    prompt_name=prompt_name, criteria=criteria,
+                )
+            return {
+                "model": model,
+                "from": d_from.isoformat(),
+                "to": d_to.isoformat(),
+                **counts,
+                "paid": paid,
+                "estimate": estimate,
             }, HTTPStatus.OK
         return {"error": f"unknown view: {view}"}, HTTPStatus.BAD_REQUEST
     finally:
@@ -498,158 +548,74 @@ async def _load_view(
 
 
 async def _queue_eval_task(
-    chat_id: int, store, *, max_listings: int, days: int,
+    chat_id: int,
+    store,
+    *,
+    max_listings: int,
+    days: int,
     ad_ids: list[int] | None = None,
-) -> tuple[bool, str]:
-    """Queue a re-score task for the user's active profile (Mini App side).
+    force: bool = False,
+    scope_label: str | None = None,
+) -> tuple[str, str]:
+    """Queue a re-score through the cost gate. Returns ``(status, note)``.
 
-    Returns ``(created, note)`` — False when a task for the exact profile is
-    already pending. The cron picks the task up (~15 min); there is no
-    serverless-safe way to run the scrape inline. Never raises: a queue
-    failure must not roll back the prefs change that triggered it.
+    status: "queued" (runs on the next pipeline run), "awaiting" (paid model —
+    the user confirms the cost in Telegram), "nothing", "already", "error".
     """
     from bazcar.config.settings import get_settings, load_llm_config
-    from bazcar.core.profiles import profile_key
     from bazcar.db import ListingRepository
-    from bazcar.llm.provider import normalize_prompt_name
+    from bazcar.llm.costgate import month_spend, queue_evaluation
+    from bazcar.llm.provider import list_models_cached, normalize_prompt_name
 
     try:
         settings = get_settings()
         if not settings.database_url:
-            return False, "database not configured"
+            return "error", "database not configured"
         prefs = await store.get_prefs(chat_id)
         if prefs is None:
-            return False, "no profile yet"
-        model = (prefs.model if prefs else None) or load_llm_config().model
-        prompt = normalize_prompt_name(getattr(prefs, "prompt_name", None) if prefs else None)
+            return "error", "no profile yet"
+        model = prefs.model or load_llm_config().model
         fallbacks = [m for m in (getattr(prefs, "fallback_models", None) or []) if m][:3]
-        criteria = prefs.criteria if prefs else None
-        p_key = profile_key(criteria, model, prompt=prompt)
         repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
             await repo.init_schema()
-            pending = await repo.pending_eval_tasks()
-            if any(t["profile_key"] == p_key for t in pending):
-                return False, "already queued"
-            await repo.create_eval_task(
-                p_key, criteria, model, max_listings, days,
-                prompt_name=prompt, fallback_models=fallbacks, ad_ids=ad_ids,
+            try:
+                prices, _ = await list_models_cached(getattr(settings, "llm_api_key", None), repo)
+            except Exception:
+                logger.warning("model price lookup failed in webapp", exc_info=True)
+                prices = []
+            result = await queue_evaluation(
+                repo,
+                token=settings.telegram_bot_token,
+                chat_id=chat_id,
+                criteria=prefs.criteria,
+                model=model,
+                prompt_name=normalize_prompt_name(getattr(prefs, "prompt_name", None)),
+                fallback_models=fallbacks,
+                max_listings=max_listings,
+                days=days,
+                ad_ids=ad_ids,
+                force=force,
+                prices=prices,
+                scope_label=scope_label or f"last {days} days",
+                spent_usd=await month_spend(repo),
+                budget_usd=settings.monthly_budget_usd,
             )
         finally:
             await repo.close()
-        return True, "queued — the pipeline picks it up within ~15 min"
     except Exception as exc:
         logger.warning("webapp queue failed", exc_info=True)
-        return False, f"queue failed: {exc}"
+        return "error", f"queue failed: {exc}"
+    return result["status"], _GATE_NOTES.get(result["status"], "")
 
 
-async def _fetch_ad_page(ad_id: int) -> dict | None:
-    """Fetch a Bazoš ad page without bs4 (regex on the meta description).
-
-    Returns None (unreachable), ``{"gone": True}`` (Bazoš redirects the id
-    to a category page — sold/removed), or ``{"title", "price_raw", "price",
-    "city"}`` (price None when the page shows no parseable figure).
-    """
-    import httpx
-
-    try:
-        async with httpx.AsyncClient(
-            timeout=20.0,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0"},
-        ) as client:
-            resp = await client.get(f"https://auto.bazos.sk/inzerat/{ad_id}/")
-    except Exception:
-        logger.warning("ad page fetch failed for %s", ad_id, exc_info=True)
-        return None
-    if resp.status_code != 200:
-        return {"gone": True}
-    html = resp.text
-    match = re.search(
-        r"Inzer.t \S+?\s+(\d+):\s*(.*?), Cena:\s*(.*?), Lokalita:\s*(.*?)\.",
-        html,
-        re.S,
-    )
-    if not match or int(match.group(1)) != ad_id:
-        # Category/search page (or foreign content) — not our ad.
-        return {"gone": True}
-    title = re.sub(r"\s+", " ", match.group(2)).strip()[:200]
-    price_raw = re.sub(r"\s+", " ", match.group(3)).strip()[:40]
-    city = re.sub(r"\s+", " ", match.group(4)).strip()[:80]
-    digits = re.sub(r"[^\d]", "", price_raw)
-    return {
-        "title": title or None,
-        "price_raw": price_raw or None,
-        "price": int(digits) if digits else None,
-        "city": city or None,
-    }
-
-
-def _diagnose_missing(ad: dict, scope: dict) -> dict:
-    """Explain why an ad that exists on Bazoš is not in the database.
-
-    Pure function (no I/O) — ``ad`` holds title/price/city from the live
-    page, ``scope`` the active scrape filters. Returns checks + verdict.
-    """
-    def _num(value):
-        try:
-            return int(str(value).strip())
-        except (TypeError, ValueError, AttributeError):
-            return None
-
-    title = ad.get("title") or ""
-    price = ad.get("price")
-    checks: list[dict] = []
-    query = str(scope.get("query") or "").strip()
-    if query:
-        passes = query.lower() in title.lower()
-        checks.append({
-            "key": "query",
-            "label": f"search text “{query}” in title",
-            "passes": passes,
-            "approx": True,
-        })
-    min_price, max_price = _num(scope.get("min_price")), _num(scope.get("max_price"))
-    if min_price is not None:
-        checks.append({
-            "key": "min_price",
-            "label": f"price ≥ €{min_price:,}".replace(",", " "),
-            "passes": None if price is None else price >= min_price,
-        })
-    if max_price is not None:
-        checks.append({
-            "key": "max_price",
-            "label": f"price ≤ €{max_price:,}".replace(",", " "),
-            "passes": None if price is None else price <= max_price,
-        })
-    failed = [c for c in checks if c["passes"] is False]
-    unknown = [c for c in checks if c["passes"] is None]
-    if failed:
-        worst = failed[0]
-        detail = ""
-        if worst["key"] == "query":
-            detail = "The title does not contain your search text."
-        elif worst["key"] == "min_price":
-            detail = f"The ad costs {('€' + str(price)) if price else 'less'} — below your minimum."
-        elif worst["key"] == "max_price":
-            detail = f"The ad costs €{price} — above your maximum."
-        return {
-            "verdict": "excluded",
-            "reason": f"Excluded by your {worst['key']} filter ({worst['label']}). {detail}",
-            "checks": checks,
-        }
-    if unknown:
-        return {
-            "verdict": "uncertain",
-            "reason": "The ad price could not be read automatically — compare it against your filters manually.",
-            "checks": checks,
-        }
-    return {
-        "verdict": "in_scope_unseen",
-        "reason": "Matches your scope but was never scraped — likely beyond the page depth, freshly posted, or briefly removed. It should appear within the next runs.",
-        "checks": checks,
-    }
+_GATE_NOTES = {
+    "queued": "queued — the pipeline picks it up within ~15 min",
+    "awaiting": "awaiting your confirmation — check Telegram for the cost estimate",
+    "nothing": "nothing to score — every car in scope already has a score",
+    "already": "already queued for this search",
+}
 
 
 async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
@@ -760,7 +726,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             await store.ensure_prefs(chat_id)
             await store.update_prefs(chat_id, model=model_id)
             created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
-            return {"ok": True, "queued": created, "note": note}, HTTPStatus.OK
+            return {"ok": True, "queued": created == "queued", "status": created, "note": note}, HTTPStatus.OK
         if action == "prompt":
             from bazcar.llm.provider import prompt_names
 
@@ -772,7 +738,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             await store.ensure_prefs(chat_id)
             await store.update_prefs(chat_id, prompt_name=name)
             created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
-            return {"ok": True, "queued": created, "note": note}, HTTPStatus.OK
+            return {"ok": True, "queued": created == "queued", "status": created, "note": note}, HTTPStatus.OK
         if action == "fallbacks":
             raw = body.get("models")
             if isinstance(raw, str):
@@ -845,7 +811,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
                 filters=dict(tpl.filters), min_score=tpl.min_score,
             )
             created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
-            return {"ok": True, "queued": created, "note": note}, HTTPStatus.OK
+            return {"ok": True, "queued": created == "queued", "status": created, "note": note}, HTTPStatus.OK
         if action == "eval":
             limit = _to_int(str(body.get("limit") if body.get("limit") is not None else "100"),
                             lo=1, hi=500) or 100
@@ -854,7 +820,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             created, note = await _queue_eval_task(
                 chat_id, store, max_listings=limit, days=days
             )
-            return {"ok": True, "queued": created, "note": note}, HTTPStatus.OK
+            return {"ok": True, "queued": created == "queued", "status": created, "note": note}, HTTPStatus.OK
         if action == "rescore":
             raw = body.get("ids") or []
             parts = raw if isinstance(raw, list) else str(raw).replace(",", " ").split()
@@ -867,12 +833,91 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             if not ids:
                 return {"error": "ids required"}, HTTPStatus.BAD_REQUEST
             created, note = await _queue_eval_task(
-                chat_id, store, max_listings=len(ids), days=365, ad_ids=ids
+                chat_id, store, max_listings=len(ids), days=365, ad_ids=ids,
+                force=True, scope_label=f"{len(ids)} selected cars",
             )
-            return {"ok": True, "queued": created, "ids": ids, "note": note}, HTTPStatus.OK
+            return {"ok": True, "queued": created == "queued", "status": created, "ids": ids, "note": note}, HTTPStatus.OK
+        if action in ("queue_clear", "queue_confirm", "queue_cancel"):
+            from bazcar.config.settings import get_settings as _gs2
+            from bazcar.db import ListingRepository
+
+            cfg_settings = _gs2()
+            repo = ListingRepository(cfg_settings.database_url)
+            await repo.connect()
+            try:
+                if action == "queue_clear":
+                    cleared = await repo.clear_eval_tasks(chat_id)
+                    return {"ok": True, "cleared": cleared}, HTTPStatus.OK
+                task_id = _to_int(str(body.get("id") or ""), lo=1, hi=10**12)
+                if task_id is None:
+                    return {"error": "id required"}, HTTPStatus.BAD_REQUEST
+                if action == "queue_confirm":
+                    done = await repo.confirm_eval_task(task_id, chat_id)
+                    if done:
+                        from bazcar.bot.daemon import _dispatch_scrape
+
+                        await _dispatch_scrape()
+                else:
+                    done = await repo.cancel_eval_task(task_id, chat_id)
+                return {"ok": True, "updated": done}, HTTPStatus.OK
+            finally:
+                await repo.close()
+        if action == "rescore_range":
+            from bazcar.config.settings import get_settings as _gs
+            from bazcar.config.settings import load_llm_config
+            from bazcar.db import ListingRepository
+            from bazcar.llm.costgate import month_spend, queue_evaluation
+            from bazcar.llm.provider import list_models_cached, normalize_prompt_name
+
+            d_from, d_to, err = _parse_range(body.get("from"), body.get("to"))
+            if err:
+                return {"error": err}, HTTPStatus.BAD_REQUEST
+            prefs = await store.get_prefs(chat_id)
+            if prefs is None:
+                return {"error": "no profile yet"}, HTTPStatus.NOT_FOUND
+            cfg_settings = _gs()
+            repo = ListingRepository(cfg_settings.database_url)
+            await repo.connect()
+            try:
+                await repo.init_schema()
+                ids = await repo.listing_ids_in_range(d_from, d_to)
+                try:
+                    prices, _ = await list_models_cached(
+                        getattr(cfg_settings, "llm_api_key", None), repo
+                    )
+                except Exception:
+                    prices = []
+                result = await queue_evaluation(
+                    repo,
+                    token=cfg_settings.telegram_bot_token,
+                    chat_id=chat_id,
+                    criteria=prefs.criteria,
+                    model=prefs.model or load_llm_config().model,
+                    prompt_name=normalize_prompt_name(getattr(prefs, "prompt_name", None)),
+                    fallback_models=[
+                        m for m in (getattr(prefs, "fallback_models", None) or []) if m
+                    ][:3],
+                    max_listings=max(1, len(ids)),
+                    days=max(1, (d_to - d_from).days + 1),
+                    ad_ids=ids,
+                    force=True,
+                    prices=prices,
+                    scope_label=f"{d_from.isoformat()} to {d_to.isoformat()}",
+                    spent_usd=await month_spend(repo),
+                    budget_usd=cfg_settings.monthly_budget_usd,
+                )
+            finally:
+                await repo.close()
+            status = result["status"]
+            return {
+                "ok": True,
+                "queued": status == "queued",
+                "status": status,
+                "cars": len(ids),
+                "note": _GATE_NOTES.get(status, ""),
+            }, HTTPStatus.OK
         if action == "check_ad":
             # "Is this Bazoš car in my DB, and if not — why?"
-            from bazcar.config.settings import load_llm_config
             from bazcar.core.profiles import profile_key
             from bazcar.db import ListingRepository
             from bazcar.llm.provider import normalize_prompt_name
@@ -883,13 +928,10 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
                 return {"error": "ad id or Bazoš URL required"}, HTTPStatus.BAD_REQUEST
             ad_id = int(match.group(1))
             prefs = await store.get_prefs(chat_id)
-            model = (prefs.model if prefs else None) or load_llm_config().model
             prompt = normalize_prompt_name(
                 getattr(prefs, "prompt_name", None) if prefs else None
             )
-            p_key = profile_key(
-                prefs.criteria if prefs else None, model, prompt=prompt
-            )
+            p_key = profile_key(prefs.criteria if prefs else None, prompt=prompt)
             repo = ListingRepository(settings.database_url)
             await repo.connect()
             try:
@@ -1067,6 +1109,8 @@ def app(environ, start_response):  # noqa: ANN001 — WSGI callable
         "max_year": _opt_int("max_year", 1950, 2030),
         "ids": ids[:3],
         "per": (query.get("per") or ["15"])[0],
+        "date_from": (query.get("from") or [""])[0],
+        "date_to": (query.get("to") or [""])[0],
     }
 
     try:

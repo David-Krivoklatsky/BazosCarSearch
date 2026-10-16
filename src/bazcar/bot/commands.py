@@ -224,7 +224,9 @@ COMMAND_HELP: dict[str, str] = {
         "<b>/queue</b> — AI evaluation queue\n\n"
         "What's waiting/running: per task the profile, model, progress "
         "(x/y cars), age and attempt count. Below: recently finished and "
-        "failed tasks. The cron processes the queue every ~15 min."
+        "failed tasks. The cron processes the queue every ~15 min.\n"
+        "Paid re-scores wait for your OK (you get the cost estimate). "
+        "<code>/queue clear</code> empties the queue — scored cars keep their scores."
     ),
     "/stats": (
         "<b>/stats</b> — catalog stats\n\n"

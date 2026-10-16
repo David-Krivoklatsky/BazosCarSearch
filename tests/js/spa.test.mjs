@@ -227,6 +227,31 @@ test("scopeLabel summarizes filter sets", () => {
   assert.equal(scopeLabel({ query: "", min_price: "" }), "whole catalog");
 });
 
+test("ratedBy shows which AI produced the score (short name, full id in title)", () => {
+  const s = spa();
+  assert.equal(s.fn("ratedBy")({ eval_model: null }), "");
+  assert.equal(s.fn("ratedBy")({}), "");
+  const html = s.fn("ratedBy")({ eval_model: "dots-studio/dots-3-note-preview:free" });
+  assert.ok(html.includes("AI: dots-3-note-preview"), html);
+  assert.ok(html.includes('title="dots-studio/dots-3-note-preview:free"'));
+});
+
+test("removedBadge flags sold or unlisted cars", () => {
+  const s = spa();
+  assert.equal(s.fn("removedBadge")({ removed: false }), "");
+  assert.ok(s.fn("removedBadge")({ removed: true }).includes("removed from Bazoš"));
+});
+
+test("cards carry the rated-by badge and the removed flag", () => {
+  const html = spa().fn("cardHtml")({
+    ad_id: 9, title: "Skoda", url: "https://x/9", price_eur: 1000, year: 2010,
+    mileage_km: 100000, city: "BA", published_date: "2026-10-03",
+    image_urls: [], score: 70, eval_model: "a/b-model", removed: true,
+  });
+  assert.ok(html.includes("AI: b-model"));
+  assert.ok(html.includes("removed from Bazoš"));
+});
+
 test("view aliases keep legacy deep-links working", () => {
   const aliases = JSON.parse(spa().eval("JSON.stringify(VIEW_ALIASES)"));
   assert.equal(aliases.overview, "insights");
