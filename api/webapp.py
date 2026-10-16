@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import sys
 import time
 from http import HTTPStatus
@@ -454,6 +455,43 @@ async def _load_view(
                 ],
                 "queue_pending": len(pending),
             }, HTTPStatus.OK
+        if view == "scraper":
+            # Scrape transparency: recent runs with per-scope detail, the
+            # active scope, and unscored-vs-missing counts for the profile.
+            runs = await repo.recent_scrape_runs(limit=8)
+            stats = await repo.stats_overview(p_key)
+            try:
+                missing, window_total = await repo.count_missing_evaluations(
+                    p_key, 30, 500
+                )
+            except Exception:
+                logger.warning("unscored count failed in webapp", exc_info=True)
+                missing, window_total = 0, 0
+            try:
+                async with UserStore(settings.database_url, conn=conn) as store:
+                    prefs = await store.get_prefs(chat_id)
+                    filters = getattr(prefs, "filters", None) if prefs else None
+            except Exception:
+                logger.warning("scope load failed in webapp", exc_info=True)
+                filters = None
+            if filters is None:
+                try:
+                    from bazcar.config.settings import load_scraper_config
+
+                    scope = load_scraper_config().base.search_filters.model_dump()
+                except Exception:
+                    scope = {}
+                source = "defaults"
+            else:
+                scope = dict(filters)
+                source = "custom"
+            return {
+                "runs": runs,
+                "db_total": (stats or {}).get("total"),
+                "unscored": {"missing": missing, "total": window_total},
+                "scope": scope,
+                "scope_source": source,
+            }, HTTPStatus.OK
         return {"error": f"unknown view: {view}"}, HTTPStatus.BAD_REQUEST
     finally:
         await repo.close()
@@ -504,6 +542,114 @@ async def _queue_eval_task(
     except Exception as exc:
         logger.warning("webapp queue failed", exc_info=True)
         return False, f"queue failed: {exc}"
+
+
+async def _fetch_ad_page(ad_id: int) -> dict | None:
+    """Fetch a Bazoš ad page without bs4 (regex on the meta description).
+
+    Returns None (unreachable), ``{"gone": True}`` (Bazoš redirects the id
+    to a category page — sold/removed), or ``{"title", "price_raw", "price",
+    "city"}`` (price None when the page shows no parseable figure).
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=20.0,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as client:
+            resp = await client.get(f"https://auto.bazos.sk/inzerat/{ad_id}/")
+    except Exception:
+        logger.warning("ad page fetch failed for %s", ad_id, exc_info=True)
+        return None
+    if resp.status_code != 200:
+        return {"gone": True}
+    html = resp.text
+    match = re.search(
+        r"Inzer.t \S+?\s+(\d+):\s*(.*?), Cena:\s*(.*?), Lokalita:\s*(.*?)\.",
+        html,
+        re.S,
+    )
+    if not match or int(match.group(1)) != ad_id:
+        # Category/search page (or foreign content) — not our ad.
+        return {"gone": True}
+    title = re.sub(r"\s+", " ", match.group(2)).strip()[:200]
+    price_raw = re.sub(r"\s+", " ", match.group(3)).strip()[:40]
+    city = re.sub(r"\s+", " ", match.group(4)).strip()[:80]
+    digits = re.sub(r"[^\d]", "", price_raw)
+    return {
+        "title": title or None,
+        "price_raw": price_raw or None,
+        "price": int(digits) if digits else None,
+        "city": city or None,
+    }
+
+
+def _diagnose_missing(ad: dict, scope: dict) -> dict:
+    """Explain why an ad that exists on Bazoš is not in the database.
+
+    Pure function (no I/O) — ``ad`` holds title/price/city from the live
+    page, ``scope`` the active scrape filters. Returns checks + verdict.
+    """
+    def _num(value):
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+    title = ad.get("title") or ""
+    price = ad.get("price")
+    checks: list[dict] = []
+    query = str(scope.get("query") or "").strip()
+    if query:
+        passes = query.lower() in title.lower()
+        checks.append({
+            "key": "query",
+            "label": f"search text “{query}” in title",
+            "passes": passes,
+            "approx": True,
+        })
+    min_price, max_price = _num(scope.get("min_price")), _num(scope.get("max_price"))
+    if min_price is not None:
+        checks.append({
+            "key": "min_price",
+            "label": f"price ≥ €{min_price:,}".replace(",", " "),
+            "passes": None if price is None else price >= min_price,
+        })
+    if max_price is not None:
+        checks.append({
+            "key": "max_price",
+            "label": f"price ≤ €{max_price:,}".replace(",", " "),
+            "passes": None if price is None else price <= max_price,
+        })
+    failed = [c for c in checks if c["passes"] is False]
+    unknown = [c for c in checks if c["passes"] is None]
+    if failed:
+        worst = failed[0]
+        detail = ""
+        if worst["key"] == "query":
+            detail = "The title does not contain your search text."
+        elif worst["key"] == "min_price":
+            detail = f"The ad costs {('€' + str(price)) if price else 'less'} — below your minimum."
+        elif worst["key"] == "max_price":
+            detail = f"The ad costs €{price} — above your maximum."
+        return {
+            "verdict": "excluded",
+            "reason": f"Excluded by your {worst['key']} filter ({worst['label']}). {detail}",
+            "checks": checks,
+        }
+    if unknown:
+        return {
+            "verdict": "uncertain",
+            "reason": "The ad price could not be read automatically — compare it against your filters manually.",
+            "checks": checks,
+        }
+    return {
+        "verdict": "in_scope_unseen",
+        "reason": "Matches your scope but was never scraped — likely beyond the page depth, freshly posted, or briefly removed. It should appear within the next runs.",
+        "checks": checks,
+    }
 
 
 async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
@@ -724,6 +870,105 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
                 chat_id, store, max_listings=len(ids), days=365, ad_ids=ids
             )
             return {"ok": True, "queued": created, "ids": ids, "note": note}, HTTPStatus.OK
+        if action == "check_ad":
+            # "Is this Bazoš car in my DB, and if not — why?"
+            from bazcar.config.settings import load_llm_config
+            from bazcar.core.profiles import profile_key
+            from bazcar.db import ListingRepository
+            from bazcar.llm.provider import normalize_prompt_name
+
+            raw = str(body.get("ad_id") or body.get("url") or body.get("id") or "")
+            match = re.search(r"(\d{6,})", raw)
+            if not match:
+                return {"error": "ad id or Bazoš URL required"}, HTTPStatus.BAD_REQUEST
+            ad_id = int(match.group(1))
+            prefs = await store.get_prefs(chat_id)
+            model = (prefs.model if prefs else None) or load_llm_config().model
+            prompt = normalize_prompt_name(
+                getattr(prefs, "prompt_name", None) if prefs else None
+            )
+            p_key = profile_key(
+                prefs.criteria if prefs else None, model, prompt=prompt
+            )
+            repo = ListingRepository(settings.database_url)
+            await repo.connect()
+            try:
+                row = await repo.fetch_listing_by_id(ad_id, p_key)
+            finally:
+                await repo.close()
+            if row is not None:
+                score = row.get("score")
+                state = (
+                    f"AI score {score}/100" if score is not None
+                    else "no AI score yet for this profile — use Re-score"
+                )
+                stale_note = ""
+                try:
+                    import datetime
+
+                    last_seen = row.get("last_seen_at")
+                    seen = last_seen
+                    if isinstance(seen, str):
+                        seen = datetime.datetime.fromisoformat(seen)
+                    if seen is not None:
+                        now = datetime.datetime.now(datetime.UTC)
+                        if seen.tzinfo is None:
+                            seen = seen.replace(tzinfo=datetime.UTC)
+                        days = (now - seen).days
+                        if days > 7:
+                            stale_note = f" Last seen {days} days ago — probably sold or removed."
+                except (TypeError, ValueError):
+                    stale_note = ""
+                return {
+                    "found": True,
+                    "ad_id": ad_id,
+                    "title": row.get("title"),
+                    "url": row.get("url"),
+                    "price_eur": row.get("price_eur"),
+                    "first_seen_at": row.get("first_seen_at"),
+                    "last_seen_at": row.get("last_seen_at"),
+                    "score": score,
+                    "verdict": "in_db",
+                    "reason": f"In the database ({state}).{stale_note}",
+                }, HTTPStatus.OK
+            page = await _fetch_ad_page(ad_id)
+            if page is None:
+                return {
+                    "found": False,
+                    "ad_id": ad_id,
+                    "verdict": "unreachable",
+                    "reason": "Could not load the Bazoš page — try again later.",
+                }, HTTPStatus.OK
+            if page.get("gone"):
+                return {
+                    "found": False,
+                    "ad_id": ad_id,
+                    "verdict": "gone",
+                    "reason": "Bazoš no longer shows this ad (redirects to a category) — sold or removed.",
+                }, HTTPStatus.OK
+            filters = getattr(prefs, "filters", None) if prefs else None
+            if filters is None:
+                from bazcar.config.settings import load_scraper_config
+
+                try:
+                    scope = load_scraper_config().base.search_filters.model_dump()
+                except Exception:
+                    scope = {}
+            else:
+                scope = dict(filters)
+            diag = _diagnose_missing(page, scope)
+            return {
+                "found": False,
+                "ad_id": ad_id,
+                "title": page.get("title"),
+                "price_raw": page.get("price_raw"),
+                "price": page.get("price"),
+                "city": page.get("city"),
+                "scope": scope,
+                "verdict": diag["verdict"],
+                "reason": diag["reason"],
+                "checks": diag["checks"],
+            }, HTTPStatus.OK
         return {"error": f"unknown action: {action}"}, HTTPStatus.BAD_REQUEST
     finally:
         await store.close()

@@ -62,6 +62,42 @@ def _distinct_scopes(users: list[dict]) -> list[dict | None]:
     return scopes or [None]
 
 
+def _scope_detail(
+    scope_filters: dict | None, scraper, cards: int, new: int
+) -> dict:
+    """One scope's scrape telemetry for the run record (testable, no I/O)."""
+    return {
+        "filters": scope_filters,  # None = YAML default scope
+        "pages": list(getattr(scraper, "last_page_stats", []) or []),
+        "skipped": getattr(scraper, "last_parse_skipped", 0) or 0,
+        "cards": cards,
+        "new": new,
+    }
+
+
+async def _record_failed_run(settings, pages: list[str], scope_details: list[dict], exc: BaseException) -> None:
+    """Best-effort telemetry for a run that died mid-scrape (never raises)."""
+    if not settings.database_url:
+        return
+    try:
+        from bazcar.db import ListingRepository
+
+        async with ListingRepository(settings.database_url) as repo:
+            await repo.record_scrape_run(
+                pages=len(pages),
+                total=0,
+                inserted=0,
+                price_changed=0,
+                price_drops=0,
+                evaluated=0,
+                notified=0,
+                error=f"{type(exc).__name__}: {exc}"[:500],
+                detail={"scopes": scope_details},
+            )
+    except Exception:
+        logger.warning("failed-run telemetry failed", exc_info=True)
+
+
 async def run_scrape(
     *,
     platform: str = "bazos",
@@ -92,17 +128,28 @@ async def run_scrape(
     seen_ids: set[int] = set()
     pages: list[str] = []
     filters_tag = "default"
-    for scope_filters in scopes:
-        scope_cfg = _apply_filters(cfg, scope_filters)
-        async with get_scraper(platform, scope_cfg) as scraper:
-            found = await scraper.scrape_category(max_pages=max_pages)
-            pages.extend(scraper._page_url(i) for i in range(max_pages))
-            if filters_tag == "default":
-                filters_tag = getattr(scraper, "filters_hash", "default")
-            for listing in found:
-                if listing.ad_id not in seen_ids:
-                    seen_ids.add(listing.ad_id)
-                    listings.append(listing)
+    scope_details: list[dict] = []
+    try:
+        for scope_filters in scopes:
+            scope_cfg = _apply_filters(cfg, scope_filters)
+            async with get_scraper(platform, scope_cfg) as scraper:
+                found = await scraper.scrape_category(max_pages=max_pages)
+                pages.extend(scraper._page_url(i) for i in range(max_pages))
+                if filters_tag == "default":
+                    filters_tag = getattr(scraper, "filters_hash", "default")
+                new_in_scope = 0
+                for listing in found:
+                    if listing.ad_id not in seen_ids:
+                        seen_ids.add(listing.ad_id)
+                        listings.append(listing)
+                        new_in_scope += 1
+                scope_details.append(
+                    _scope_detail(scope_filters, scraper, len(found), new_in_scope)
+                )
+    except Exception as exc:
+        # A dead scrape must still leave a trace (which scope died, on what).
+        await _record_failed_run(settings, pages, scope_details, exc)
+        raise
     if detail:
         async with get_scraper(platform, cfg) as detail_scraper:
             for i, listing in enumerate(listings):
@@ -177,6 +224,7 @@ async def run_scrape(
                     price_drops=db_summary.price_drops,
                     evaluated=evaluated,
                     notified=notified,
+                    detail={"scopes": scope_details},
                 )
         except Exception:
             logger.warning("scrape run telemetry failed", exc_info=True)

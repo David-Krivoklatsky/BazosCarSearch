@@ -27,7 +27,7 @@ def test_spa_covers_all_backend_views() -> None:
     assert "openListing" in HTML  # listing detail
     assert "openCompare" in HTML  # compare
     # full-command parity views (every bot command lives in the Mini App)
-    for view in ("bounds", "models", "templates", "health", "digest"):
+    for view in ("bounds", "models", "templates", "health", "digest", "scraper"):
         assert f'"{view}"' in HTML, f"SPA never requests view {view}"
 
 
@@ -38,7 +38,7 @@ def test_spa_actions_match_backend() -> None:
     for action in ("save", "unsave", "note", "alert", "criteria", "use",
                    "toggle_search", "notify", "score", "photos",
                    "model", "prompt", "fallbacks", "filters", "search_create",
-                   "search_delete", "template", "eval", "rescore"):
+                   "search_delete", "template", "eval", "rescore", "check_ad"):
         assert f'"{action}"' in src, f"backend missing action {action}"
         assert action in HTML, f"SPA never calls action {action}"
 
@@ -157,3 +157,10 @@ def test_spa_saved_reuses_shared_card() -> None:
 def test_spa_drops_open_in_app_detail() -> None:
     """Biggest-discount titles route to the Bazcar detail, not Bazoš."""
     assert "openListing(${x.ad_id}" in HTML
+
+def test_spa_scraper_transparency_surface() -> None:
+    assert "scraperHtml" in HTML
+    assert "Recent runs" in HTML
+    assert "Find a missing car" in HTML
+    assert "checkad-in" in HTML and "checkAd" in HTML
+    assert "scopeLabel" in HTML

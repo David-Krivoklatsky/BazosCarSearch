@@ -770,3 +770,19 @@ def test_process_eval_tasks_targeted_ids_score_fresh(monkeypatch):
     assert ("complete", 9) in calls
     assert evaluated_kwargs.get("prompt_name") == "bargain"
     assert evaluated_kwargs.get("fallback_models") == ["f/1"]
+
+def test_scope_detail_collects_page_stats_and_skips() -> None:
+    from bazcar.pipeline.runner import _scope_detail
+
+    class _Scraper:
+        last_page_stats = [{"page": 1, "cards": 20}, {"page": 2, "cards": 5}]
+        last_parse_skipped = 2
+
+    detail = _scope_detail({"query": "octavia"}, _Scraper(), 25, 3)
+    assert detail["filters"] == {"query": "octavia"}
+    assert detail["pages"] == [{"page": 1, "cards": 20}, {"page": 2, "cards": 5}]
+    assert detail["skipped"] == 2
+    assert (detail["cards"], detail["new"]) == (25, 3)
+    # scrapers without telemetry degrade to empty (never crash the run)
+    detail = _scope_detail(None, object(), 0, 0)
+    assert detail == {"filters": None, "pages": [], "skipped": 0, "cards": 0, "new": 0}

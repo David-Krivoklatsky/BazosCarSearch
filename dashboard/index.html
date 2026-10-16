@@ -290,8 +290,7 @@ function fmtKmK(v) {
   if (!isFinite(n)) return "?";
   return n >= 1000 ? Math.round(n / 1000) + "K km" : n + " km";
 }
-function fmtDateDM(v) {
-  // Any date-ish value -> "dd.mm." (Slovak short date). Returns "" when unknown.
+function fmtDateDM(v) {  // Any date-ish value -> "dd.mm." (Slovak short date). Returns "" when unknown.
   if (v == null || v === "") return "";
   const m = String(v).match(/(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[3]}.${m[2]}.`;
@@ -309,6 +308,19 @@ function ago(iso) {
   if (d < 30) return d + " d ago";
   if (d < 365) return Math.floor(d/30) + " mo ago";
   return Math.floor(d/365) + " y ago";
+}
+function scopeLabel(f) {
+  // Short human label for a scrape-filter set (pure, unit-tested).
+  if (!f) return "defaults";
+  const keys = Object.keys(f).filter(k => f[k] !== "" && f[k] != null);
+  if (!keys.length) return "whole catalog";
+  const num = v => (v === "" || v == null ? null : v);
+  const parts = [];
+  if (f.query) parts.push(`"${f.query}"`);
+  const lo = num(f.min_price), hi = num(f.max_price);
+  if (lo != null || hi != null) parts.push(`€${lo ?? "…"}–${hi ?? "…"}`);
+  if (f.psc) parts.push(f.psc + (num(f.distance_km) != null ? ` +${f.distance_km} km` : ""));
+  return parts.join(" · ") || "custom";
 }
 function staleBadge(iso) {
   if (!iso) return "";
@@ -424,13 +436,14 @@ async function load(view) {
 async function renderInsightsFull(d) {
   renderInsights(d);
   try {
-    const [h, dg] = await Promise.all([
+    const [h, dg, sc] = await Promise.all([
       get(new URLSearchParams({ view: "health" })),
       get(new URLSearchParams({ view: "digest" })),
+      get(new URLSearchParams({ view: "scraper" })),
     ]);
     if (currentView !== "insights") return;
     const el = document.getElementById("ins-extra");
-    if (el) el.innerHTML = healthHtml(h) + digestHtml(dg);
+    if (el) el.innerHTML = healthHtml(h) + scraperHtml(sc) + digestHtml(dg);
   } catch (e) { /* main insights already rendered; extras are optional */ }
 }
 function healthHtml(h) {
@@ -447,8 +460,67 @@ function healthHtml(h) {
     <div class="kv"><span class="k">Services</span><span class="v">DB ${h.database ? "ok" : "MISSING"} · LLM key ${h.llm_key ? "ok" : "MISSING"}</span></div>
   </div></div>`;
 }
-function digestHtml(dg) {
-  if (!dg || dg.error) return "";
+function scraperHtml(sc) {
+  if (!sc || sc.error) return "";
+  const scope = sc.scope || {};
+  const srcNote = sc.scope_source === "custom" ? "your filters" : "YAML defaults";
+  const un = sc.unscored || {};
+  const runsHtml = (sc.runs || []).map(r => {
+    const det = r.detail || {};
+    const scopes = det.scopes || [];
+    const cards = scopes.reduce((a, s) => a + (s.cards || 0), 0);
+    const skipped = scopes.reduce((a, s) => a + (s.skipped || 0), 0);
+    const pages = scopes.length
+      ? Math.max(...scopes.map(s => (s.pages || []).length))
+      : (r.pages || 0);
+    const scopeTxt = scopes.length > 1
+      ? scopes.length + " scopes"
+      : scopeLabel(scopes.length ? scopes[0].filters : null);
+    return `<div class="q-item">
+      <div class="crit">${ago(r.finished_at || r.started_at)} · ${esc(scopeTxt)}${r.error ? ' <span class="badge b-warn">failed</span>' : ""}</div>
+      <div class="meta">${pages} pages · ${cards} cards seen · ${r.inserted ?? "?"} new · ${skipped} skipped${r.error ? " · " + esc(r.error).slice(0, 90) : ""}</div>
+    </div>`;
+  }).join("");
+  return `<div class="section"><h2>Scrape scope</h2><div class="card">
+    <div class="kv"><span class="k">Active filters</span><span class="v">${esc(sc.scope_source === "custom" ? scopeLabel(scope) : scopeLabel(null))} (${esc(srcNote)})</span></div>
+    <div class="kv"><span class="k">In database</span><span class="v">${sc.db_total ?? "?"}</span></div>
+    <div class="kv"><span class="k">No AI score (30 d)</span><span class="v">${un.missing ?? "?"} of ${un.total ?? "?"} — unscored, use Re-score in Profile</span></div>
+    <div class="muted">A car missing here entirely was filtered out, beyond page depth, or removed — check it below.</div>
+  </div></div>
+  <div class="section"><h2>Find a missing car</h2><div class="card">
+    <div class="toolbar" style="margin:0">
+      <input id="checkad-in" inputmode="numeric" placeholder="ad id or Bazoš URL" style="flex:1 1 180px">
+      <button class="mini on" onclick="checkAd()">Check</button>
+    </div>
+    <div id="checkad-out" style="margin-top:8px"></div>
+  </div></div>
+  <div class="section"><h2>Recent runs</h2><div class="card">
+    ${runsHtml || '<div class="muted">No runs recorded yet.</div>'}
+  </div></div>`;
+}
+async function checkAd() {
+  const inp = document.getElementById("checkad-in");
+  const el = document.getElementById("checkad-out");
+  if (!el) return;
+  const q = ((inp && inp.value) || "").trim();
+  if (!q) return;
+  el.innerHTML = '<div class="muted">Checking…</div>';
+  const r = await post("check_ad", { url: q });
+  if (!r) { el.innerHTML = ""; return; }
+  if (r.error) { el.innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
+  if (r.found) {
+    el.innerHTML = `<div class="kv"><span class="k">${esc(r.title || ("ad " + r.ad_id))}</span>` +
+      `<span class="v"><button class="mini" onclick="openListing(${r.ad_id}, 'insights')">Open</button></span></div>` +
+      `<div class="muted">${esc(r.reason || "")}</div>`;
+    return;
+  }
+  const head = (r.title || r.price_raw)
+    ? `<div class="kv"><span class="k">Ad</span><span class="v">${esc(r.title || "?")}${r.price_raw ? " · " + esc(r.price_raw) : ""}</span></div>` : "";
+  const checks = (r.checks || []).map(c =>
+    `<div class="kv"><span class="k">${esc(c.label)}</span><span class="v">${c.passes === true ? "✓" : c.passes === false ? "✗" : "?"}</span></div>`).join("");
+  el.innerHTML = head + `<div class="muted">${esc(r.reason || "")}</div>` + checks;
+}
+function digestHtml(dg) {  if (!dg || dg.error) return "";
   const drops = (dg.drops || []).map(x => `
     <div class="item"><div class="body">
       <div class="title"><a href="#" onclick="openListing(${x.ad_id}, 'insights');return false">${esc(x.title)}</a></div>

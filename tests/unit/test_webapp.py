@@ -158,7 +158,7 @@ class _FakeListRepo:
         pass
 
     async def fetch_listing_by_id(self, ad_id: int, profile_key: str):
-        if ad_id == 404:
+        if ad_id in (404, 195357799):
             return None
         return {
             "ad_id": ad_id,
@@ -169,6 +169,8 @@ class _FakeListRepo:
             "score": 82,
             "condition": "zachovalé",
             "target_offer": 7200,
+            "first_seen_at": "2026-09-01T00:00:00+00:00",
+            "last_seen_at": "2026-09-01T00:00:00+00:00",
         }
 
     async def fetch_price_history(self, ad_id: int, limit: int = 10):
@@ -279,6 +281,7 @@ class _RichStore(_FakeStore):
             min_score = 60
             show_photo = False
             notify_enabled = True
+            filters = {"query": "octavia", "min_price": 1000, "max_price": 9000}
 
         prefs = _P()
         for key, value in self.updates.items():
@@ -372,6 +375,21 @@ class _RichRepo(_FakeListRepo):
 
     async def eval_cost(self, p_key=None, days=30):
         return {"total": {"n": 4, "cost_usd": 0.01}, "by_model": []}
+
+    async def recent_scrape_runs(self, limit=8):
+        self.runs_limit = limit
+        return [{
+            "id": 3, "started_at": "2026-10-16T08:00:00+00:00",
+            "finished_at": "2026-10-16T08:05:00+00:00",
+            "pages": 2, "total": 40, "inserted": 5, "price_changed": 1,
+            "price_drops": 0, "evaluated": 0, "notified": 0, "error": None,
+            "detail": {"scopes": [{"filters": {"query": "octavia"},
+                                   "pages": [{"page": 1, "cards": 25}],
+                                   "skipped": 1, "cards": 25, "new": 5}]},
+        }]
+
+    async def count_missing_evaluations(self, p_key, days, limit):
+        return (6, 40)
 
     async def fetch_listings_by_ids(self, ad_ids):
         return [{
@@ -626,6 +644,67 @@ def test_listing_view_reports_saved_state(_rich_deps) -> None:
 def test_post_requires_auth(_fresh_settings) -> None:
     status, payload = _call_post({"action": "save", "id": 1}, "garbage")
     assert status.startswith("401")
+
+
+def test_scraper_view_transparency_bundle(_rich_deps) -> None:
+    payload, status = _run_view("scraper")
+    assert status == 200
+    assert payload["db_total"] == 10  # stats_overview total
+    assert payload["unscored"] == {"missing": 6, "total": 40}
+    assert payload["scope_source"] == "custom"
+    assert payload["scope"]["query"] == "octavia"
+    run = payload["runs"][0]
+    assert run["inserted"] == 5
+    assert run["detail"]["scopes"][0]["skipped"] == 1
+
+
+def test_check_ad_found_in_db(_fresh_settings, _rich_deps) -> None:
+    init_data = _make_init_data(user_id=42)
+    _, payload = _call_post({"action": "check_ad", "url": "https://auto.bazos.sk/inzerat/195357798/x.php"}, init_data)
+    assert payload["found"] is True
+    assert payload["ad_id"] == 195357798
+    assert payload["score"] == 82
+    assert payload["verdict"] == "in_db"
+    assert "probably sold" in payload["reason"]  # last seen 2026-09-01
+    _, payload = _call_post({"action": "check_ad", "url": "no-digits-here"}, init_data)
+    assert payload["error"] == "ad id or Bazoš URL required"
+
+
+def test_check_ad_missing_diagnoses_scope(_fresh_settings, _rich_deps, monkeypatch) -> None:
+    import api.webapp as webapp
+
+    async def _gone(ad_id):
+        return {"gone": True}
+
+    async def _cheap(ad_id):
+        return {"title": "Skoda Fabia", "price_raw": "500 €", "price": 500, "city": "BA"}
+
+    init_data = _make_init_data(user_id=42)
+    monkeypatch.setattr(webapp, "_fetch_ad_page", _gone)
+    _, payload = _call_post({"action": "check_ad", "ad_id": 195357799}, init_data)
+    assert payload == {"found": False, "ad_id": 195357799, "verdict": "gone",
+                       "reason": payload["reason"]}
+    assert "sold or removed" in payload["reason"]
+    monkeypatch.setattr(webapp, "_fetch_ad_page", _cheap)
+    _, payload = _call_post({"action": "check_ad", "ad_id": 195357799}, init_data)
+    assert payload["found"] is False
+    assert payload["verdict"] == "excluded"
+    assert payload["checks"][0]["key"] == "query"
+    assert any(c["key"] == "min_price" and c["passes"] is False for c in payload["checks"])
+
+
+def test_diagnose_missing_pure() -> None:
+    from api.webapp import _diagnose_missing
+
+    ad = {"title": "Skoda Octavia diesel", "price": 5000, "city": "BA"}
+    out = _diagnose_missing(ad, {})
+    assert out["verdict"] == "in_scope_unseen"
+    out = _diagnose_missing(ad, {"query": "bmw"})
+    assert out["verdict"] == "excluded" and "query" in out["reason"]
+    out = _diagnose_missing(ad, {"max_price": 3000})
+    assert out["verdict"] == "excluded" and out["checks"][0]["passes"] is False
+    out = _diagnose_missing({"title": "x", "price": None, "city": None}, {"min_price": 1000})
+    assert out["verdict"] == "uncertain"
 
 
 def test_post_model_queues_rescore_end_to_end(_fresh_settings, _rich_deps, monkeypatch) -> None:

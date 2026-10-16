@@ -88,14 +88,23 @@ class BazosScraper(BaseScraper):
         return base
 
     async def scrape_category(self, max_pages: int = 1) -> list[Listing]:
-        """Scrape ``max_pages`` paginated pages using configured search filters."""
+        """Scrape ``max_pages`` paginated pages using configured search filters.
+
+        Records per-page telemetry (``last_page_stats``) and unparseable-card
+        count (``last_parse_skipped``) so the pipeline can show what was seen.
+        """
         listings: list[Listing] = []
+        self.last_page_stats = []
+        skipped_total = 0
         for page_index in range(max_pages):
             url = self._page_url(page_index)
             html = await self.fetch_text(url)
             page_listings = self.parse_page(html)
+            skipped_total += getattr(self, "last_parse_skipped", 0) or 0
             listings.extend(page_listings)
+            self.last_page_stats.append({"page": page_index + 1, "cards": len(page_listings)})
             logger.info("page %d: %d listings (running total %d)", page_index + 1, len(page_listings), len(listings))
+        self.last_parse_skipped = skipped_total
         return listings
 
     async def scrape_detail(self, listing: Listing) -> Listing:
@@ -149,10 +158,14 @@ class BazosScraper(BaseScraper):
         if not containers:
             raise ParseError("no listing container found; page structure may have changed")
         listings: list[Listing] = []
+        skipped = 0
         for card in containers:
             listing = self._parse_card(card)
             if listing is not None:
                 listings.append(listing)
+            else:
+                skipped += 1
+        self.last_parse_skipped = skipped
         return listings
 
     def _parse_card(self, card) -> Listing | None:

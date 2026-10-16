@@ -195,6 +195,8 @@ ALTER TABLE user_searches
     ADD COLUMN IF NOT EXISTS notify_enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS notify_enabled boolean NOT NULL DEFAULT true;
+ALTER TABLE scrape_runs
+    ADD COLUMN IF NOT EXISTS detail jsonb;
 ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS prompt_name text NOT NULL DEFAULT 'standard';
 ALTER TABLE user_prefs
@@ -1350,13 +1352,14 @@ class ListingRepository:
         evaluated: int,
         notified: int,
         error: str | None = None,
+        detail: dict | None = None,
     ) -> None:
         conn = self._require_conn()
         try:
             await conn.execute(
                 "INSERT INTO scrape_runs (pages, total, inserted, price_changed,"
-                " price_drops, evaluated, notified, error, finished_at)"
-                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())",
+                " price_drops, evaluated, notified, error, finished_at, detail)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9::jsonb)",
                 pages,
                 total,
                 inserted,
@@ -1365,19 +1368,48 @@ class ListingRepository:
                 evaluated,
                 notified,
                 error,
+                json.dumps(detail, ensure_ascii=False) if detail is not None else None,
             )
         except asyncpg.PostgresError as exc:
             raise DbError(f"scrape run record failed: {exc}") from exc
+
+    @staticmethod
+    def _decode_run(row) -> dict:
+        """Row dict with the detail jsonb parsed (None stays None)."""
+        record = dict(row)
+        detail = record.get("detail")
+        if isinstance(detail, str):
+            try:
+                record["detail"] = json.loads(detail)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record["detail"] = None
+        return record
 
     async def latest_scrape_run(self) -> dict | None:
         conn = self._require_conn()
         try:
             row = await conn.fetchrow(
-                "SELECT * FROM scrape_runs ORDER BY id DESC LIMIT 1"
+                "SELECT id, started_at, finished_at, pages, total, inserted,"
+                " price_changed, price_drops, evaluated, notified, error, detail"
+                " FROM scrape_runs ORDER BY id DESC LIMIT 1"
             )
-            return dict(row) if row else None
+            return self._decode_run(row) if row else None
         except asyncpg.PostgresError as exc:
             raise DbError(f"latest scrape run failed: {exc}") from exc
+
+    async def recent_scrape_runs(self, limit: int = 8) -> list[dict]:
+        """Newest-first scrape runs with per-scope detail for transparency."""
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(
+                "SELECT id, started_at, finished_at, pages, total, inserted,"
+                " price_changed, price_drops, evaluated, notified, error, detail"
+                " FROM scrape_runs ORDER BY id DESC LIMIT $1",
+                max(1, min(int(limit or 8), 30)),
+            )
+            return [self._decode_run(r) for r in rows]
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"recent scrape runs failed: {exc}") from exc
 
     # ------------------------------------------------- eval task progress
 

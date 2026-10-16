@@ -217,6 +217,16 @@ test("renderSaved reuses the shared card with photo and note", () => {
   assert.ok(html.includes("unsave(1)"), "saved card offers Remove");
 });
 
+test("scopeLabel summarizes filter sets", () => {
+  const scopeLabel = spa().fn("scopeLabel");
+  assert.equal(scopeLabel(null), "defaults");
+  assert.equal(scopeLabel({}), "whole catalog");
+  assert.equal(scopeLabel({ query: "octavia", min_price: 1000, max_price: 9000 }),
+    '"octavia" · €1000–9000');
+  assert.equal(scopeLabel({ psc: "81101", distance_km: 100 }), "81101 +100 km");
+  assert.equal(scopeLabel({ query: "", min_price: "" }), "whole catalog");
+});
+
 test("view aliases keep legacy deep-links working", () => {
   const aliases = JSON.parse(spa().eval("JSON.stringify(VIEW_ALIASES)"));
   assert.equal(aliases.overview, "insights");

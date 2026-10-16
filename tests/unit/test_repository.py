@@ -223,3 +223,23 @@ def test_pending_tasks_parse_null_json_columns() -> None:
     tasks = asyncio.run(repo.pending_eval_tasks())
     assert tasks[0]["fallback_models"] == []
     assert tasks[0]["ad_ids"] is None
+
+def test_schema_bootstrap_covers_scraper_detail() -> None:
+    from bazcar.db.repository import SCHEMA_SQL
+
+    assert "detail jsonb" in SCHEMA_SQL
+
+
+def test_recent_scrape_runs_parse_detail() -> None:
+    import asyncio
+    import json
+
+    conn = _RecordingConn(rows=[
+        {"id": 1, "detail": json.dumps({"scopes": [{"cards": 3}]})},
+        {"id": 2, "detail": None},
+    ])
+    repo = _repo_with(conn)
+    runs = asyncio.run(repo.recent_scrape_runs(limit=5))
+    assert runs[0]["detail"] == {"scopes": [{"cards": 3}]}
+    assert runs[1]["detail"] is None
+    assert conn.fetches[0][1] == (5,)
