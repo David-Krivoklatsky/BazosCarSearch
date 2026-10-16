@@ -26,12 +26,26 @@ def test_parse_live_ad_extracts_title_price_city() -> None:
 
 
 def test_category_page_means_gone() -> None:
-    assert parse_ad_meta(CATEGORY_HTML, 196539114) == {"gone": True}
+    meta = parse_ad_meta(CATEGORY_HTML, 196539114)
+    assert meta["gone"] is True and meta["state"] == "gone"
 
 
 def test_wrong_id_in_meta_means_gone() -> None:
     # a different ad id in the page is not our ad
-    assert parse_ad_meta(LIVE_HTML, 111111111) == {"gone": True}
+    assert parse_ad_meta(LIVE_HTML, 111111111)["state"] == "gone"
+
+
+def test_bot_check_page_is_blocked_not_gone() -> None:
+    # No ad id and a bot-check marker: must NOT be treated as removed.
+    html = "<html><body><title>Just a moment...</title><div id='cf-browser-verification'></div></body></html>"
+    meta = parse_ad_meta(html, 196539114)
+    assert meta["state"] == "blocked" and "gone" not in meta
+
+
+def test_id_substring_does_not_count_as_mentioned() -> None:
+    # ad 123 must not be considered present just because 1234 appears
+    html = "<html><body>ad 12345678 unrelated</body></html>"
+    assert parse_ad_meta(html, 123)["state"] == "gone"
 
 
 def test_live_page_with_changed_markup_is_not_treated_as_gone() -> None:
@@ -39,6 +53,11 @@ def test_live_page_with_changed_markup_is_not_treated_as_gone() -> None:
     html = "<html><body><div data-ad='196539114'>new markup</div></body></html>"
     meta = parse_ad_meta(html, 196539114)
     assert meta.get("unparsed") is True and "gone" not in meta
+
+
+def test_ad_page_price_range_takes_lower_bound() -> None:
+    html = LIVE_HTML.replace("Cena: 2 250 €", "Cena: 1 500 – 2 000 €")
+    assert parse_ad_meta(html, 196539114)["price"] == 1500
 
 
 def test_unreadable_price_is_none_not_error() -> None:
@@ -61,7 +80,7 @@ def test_fetch_removed_ad_redirect_is_gone() -> None:
     respx.get("https://auto.bazos.sk/inzerat/196539114/").mock(
         return_value=httpx.Response(200, text=CATEGORY_HTML)
     )
-    assert asyncio.run(fetch_ad_page(196539114)) == {"gone": True}
+    assert asyncio.run(fetch_ad_page(196539114))["state"] == "gone"
 
 
 @respx.mock
@@ -71,9 +90,18 @@ def test_fetch_error_is_unreachable_not_removed() -> None:
 
 
 @respx.mock
-def test_non_200_counts_as_gone() -> None:
+def test_fetch_404_is_gone() -> None:
     respx.get("https://auto.bazos.sk/inzerat/196539114/").mock(return_value=httpx.Response(404))
-    assert asyncio.run(fetch_ad_page(196539114)) == {"gone": True}
+    assert asyncio.run(fetch_ad_page(196539114))["state"] == "gone"
+
+
+@respx.mock
+def test_fetch_403_and_429_are_unreachable_not_gone() -> None:
+    for code in (403, 429, 503):
+        respx.get("https://auto.bazos.sk/inzerat/196539114/").mock(
+            return_value=httpx.Response(code)
+        )
+        assert asyncio.run(fetch_ad_page(196539114)) is None
 
 
 # ----------------------------------------------------------------- diagnosis
@@ -163,6 +191,21 @@ def test_sweeper_marks_live_ads_verified(monkeypatch) -> None:
     stats = asyncio.run(runner._sweep_removed(limit=5))
     assert repo.verified == [196539114] and repo.removed == []
     assert stats["alive"] == 1
+
+
+@respx.mock
+def test_sweeper_treats_bot_check_as_unreachable(monkeypatch) -> None:
+    from bazcar.pipeline import runner
+
+    monkeypatch.setattr(runner, "REMOVAL_CHECK_DELAY_S", 0)
+    monkeypatch.setattr(runner, "get_settings", lambda: _Settings())
+    repo = _SweepRepo([{"ad_id": 4, "title": "blocked"}])
+    monkeypatch.setattr("bazcar.db.ListingRepository", lambda dsn: repo)
+    blocked = "<html><title>Just a moment...</title><div id='cf-browser-verification'></div></html>"
+    respx.get("https://auto.bazos.sk/inzerat/4/").mock(return_value=httpx.Response(200, text=blocked))
+    stats = asyncio.run(runner._sweep_removed(limit=5))
+    assert repo.removed == [] and repo.verified == []
+    assert stats["unreachable"] == 1
 
 
 def test_sweeper_is_a_noop_without_database(monkeypatch) -> None:

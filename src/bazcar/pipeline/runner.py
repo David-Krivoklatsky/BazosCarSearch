@@ -666,7 +666,7 @@ async def _sweep_removed(limit: int = REMOVAL_CHECKS_PER_RUN) -> dict:
         return stats
     import httpx
 
-    from bazcar.core.adpage import fetch_ad_page
+    from bazcar.core.adpage import AdState, fetch_ad_page
     from bazcar.db import ListingRepository
 
     repo = ListingRepository(settings.database_url)
@@ -681,7 +681,8 @@ async def _sweep_removed(limit: int = REMOVAL_CHECKS_PER_RUN) -> dict:
             for row in candidates:
                 state = await fetch_ad_page(row["ad_id"], client=client)
                 stats["checked"] += 1
-                if state is None:
+                blocked = state is not None and state.get("state") == AdState.BLOCKED.value
+                if state is None or blocked:
                     stats["unreachable"] += 1
                 elif state.get("gone"):
                     await repo.mark_listing_removed(row["ad_id"])

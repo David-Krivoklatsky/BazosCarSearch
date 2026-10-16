@@ -37,6 +37,7 @@ from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl
 
+from api.errors import error, queue_result, unavailable
 from bazcar.core.adpage import diagnose_missing as _diagnose_missing
 from bazcar.core.adpage import fetch_ad_page as _fetch_ad_page
 
@@ -161,7 +162,7 @@ async def _load_view(
     extra = extra or {}
     settings = get_settings()
     if not settings.database_url:
-        return {"error": "database not configured"}, HTTPStatus.OK
+        return error("database not configured", HTTPStatus.SERVICE_UNAVAILABLE)
 
     repo = ListingRepository(settings.database_url)
     await repo.connect()
@@ -263,7 +264,7 @@ async def _load_view(
                     saved_ids = {s.ad_id for s in saved}
             except Exception:
                 logger.warning("saved load failed in webapp", exc_info=True)
-                return {"error": "saved unavailable"}, HTTPStatus.OK
+                return unavailable("saved listings")
             # Enrich with live catalog data (photo, year, km, city, score) so
             # the Saved tab reuses the same card component as Listings.
             details: dict = {}
@@ -318,7 +319,7 @@ async def _load_view(
                     searches = await store.list_searches(chat_id)
             except Exception:
                 logger.warning("profiles load failed in webapp", exc_info=True)
-                return {"error": "profiles unavailable"}, HTTPStatus.OK
+                return unavailable("profiles")
             from bazcar.llm.provider import PROMPT_META
 
             return {
@@ -626,7 +627,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
     action = (body.get("action") or "").strip().lower()
     settings = get_settings()
     if not settings.database_url:
-        return {"error": "database not configured"}, HTTPStatus.OK
+        return error("database not configured", HTTPStatus.SERVICE_UNAVAILABLE)
 
     store = UserStore(settings.database_url)
     await store.connect()
@@ -726,7 +727,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             await store.ensure_prefs(chat_id)
             await store.update_prefs(chat_id, model=model_id)
             created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
-            return {"ok": True, "queued": created == "queued", "status": created, "note": note}, HTTPStatus.OK
+            return queue_result(created, note)
         if action == "prompt":
             from bazcar.llm.provider import prompt_names
 
@@ -738,7 +739,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             await store.ensure_prefs(chat_id)
             await store.update_prefs(chat_id, prompt_name=name)
             created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
-            return {"ok": True, "queued": created == "queued", "status": created, "note": note}, HTTPStatus.OK
+            return queue_result(created, note)
         if action == "fallbacks":
             raw = body.get("models")
             if isinstance(raw, str):
@@ -811,7 +812,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
                 filters=dict(tpl.filters), min_score=tpl.min_score,
             )
             created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
-            return {"ok": True, "queued": created == "queued", "status": created, "note": note}, HTTPStatus.OK
+            return queue_result(created, note)
         if action == "eval":
             limit = _to_int(str(body.get("limit") if body.get("limit") is not None else "100"),
                             lo=1, hi=500) or 100
@@ -820,7 +821,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             created, note = await _queue_eval_task(
                 chat_id, store, max_listings=limit, days=days
             )
-            return {"ok": True, "queued": created == "queued", "status": created, "note": note}, HTTPStatus.OK
+            return queue_result(created, note)
         if action == "rescore":
             raw = body.get("ids") or []
             parts = raw if isinstance(raw, list) else str(raw).replace(",", " ").split()
@@ -836,7 +837,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
                 chat_id, store, max_listings=len(ids), days=365, ad_ids=ids,
                 force=True, scope_label=f"{len(ids)} selected cars",
             )
-            return {"ok": True, "queued": created == "queued", "status": created, "ids": ids, "note": note}, HTTPStatus.OK
+            return queue_result(created, note, ids=ids)
         if action in ("queue_clear", "queue_confirm", "queue_cancel"):
             from bazcar.config.settings import get_settings as _gs2
             from bazcar.db import ListingRepository
@@ -909,13 +910,7 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             finally:
                 await repo.close()
             status = result["status"]
-            return {
-                "ok": True,
-                "queued": status == "queued",
-                "status": status,
-                "cars": len(ids),
-                "note": _GATE_NOTES.get(status, ""),
-            }, HTTPStatus.OK
+            return queue_result(status, _GATE_NOTES.get(status, ""), cars=len(ids))
         if action == "check_ad":
             # "Is this Bazoš car in my DB, and if not — why?"
             from bazcar.core.profiles import profile_key
@@ -980,6 +975,13 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
                     "ad_id": ad_id,
                     "verdict": "unreachable",
                     "reason": "Could not load the Bazoš page — try again later.",
+                }, HTTPStatus.OK
+            if page.get("state") == "blocked":
+                return {
+                    "found": False,
+                    "ad_id": ad_id,
+                    "verdict": "blocked",
+                    "reason": "Bazoš returned a bot-check page — try again in a minute.",
                 }, HTTPStatus.OK
             if page.get("gone"):
                 return {

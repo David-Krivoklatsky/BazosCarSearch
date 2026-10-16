@@ -14,6 +14,16 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org"
 
+_TEXT_LIMIT = 4096  # Telegram hard limit for a message body
+_CAPTION_LIMIT = 1024  # Telegram hard limit for a photo / document caption
+
+
+def _clip(text: str, limit: int = _TEXT_LIMIT) -> str:
+    """Trim ``text`` to Telegram's limit so an oversized body is never dropped."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
 
 class TelegramNotifier:
     """Thin async client over the Telegram ``sendMessage`` API."""
@@ -57,7 +67,7 @@ class TelegramNotifier:
         """
         payload: dict[str, Any] = {
             "chat_id": chat_id or self._chat_id,
-            "text": text,
+            "text": _clip(text),
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
             "disable_notification": silent,
@@ -82,7 +92,7 @@ class TelegramNotifier:
         payload: dict[str, Any] = {
             "chat_id": chat_id or self._chat_id,
             "photo": photo_url,
-            "caption": caption[:1024],
+            "caption": _clip(caption, _CAPTION_LIMIT),
             "parse_mode": "HTML",
             "disable_notification": silent,
         }
@@ -115,7 +125,7 @@ class TelegramNotifier:
         payload: dict[str, Any] = {
             "chat_id": chat_id or self._chat_id,
             "message_id": message_id,
-            "text": text,
+            "text": _clip(text),
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }
@@ -137,7 +147,7 @@ class TelegramNotifier:
                 f"{self._base}/bot{self._token}/sendDocument",
                 data={
                     "chat_id": str(chat_id or self._chat_id),
-                    "caption": caption[:1024],
+                    "caption": _clip(caption, _CAPTION_LIMIT),
                     "parse_mode": "HTML",
                 },
                 files={"document": (filename, content, "text/csv")},
@@ -166,18 +176,21 @@ class TelegramNotifier:
     async def send_listings_with_photos(
         self, listings: list[Listing], *, chat_id: int | None = None, silent: bool = False
     ) -> int:
-        """Send each listing as a photo message when an image exists; fall back to text."""
+        """Send each listing as a photo when one exists, falling back to text.
+
+        A listing whose photo Telegram rejects (dead URL, unsupported format)
+        is still delivered as a plain text message rather than dropped.
+        """
         sent = 0
         for listing in listings:
-            if listing.image_urls:
-                if await self.send_photo(
-                    listing.image_urls[0],
-                    caption=format_photo_caption(listing),
-                    chat_id=chat_id,
-                    silent=silent,
-                    reply_markup=listing_keyboard(listing),
-                ):
-                    sent += 1
+            if listing.image_urls and await self.send_photo(
+                listing.image_urls[0],
+                caption=format_photo_caption(listing),
+                chat_id=chat_id,
+                silent=silent,
+                reply_markup=listing_keyboard(listing),
+            ):
+                sent += 1
             elif await self.send_message(
                 format_listing(listing),
                 chat_id=chat_id,

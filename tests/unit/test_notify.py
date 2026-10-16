@@ -165,6 +165,50 @@ async def test_send_listings_with_photos_uses_send_photo_and_keyboard() -> None:
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_send_listings_with_photos_falls_back_to_text_on_photo_failure() -> None:
+    """A rejected photo (dead URL / bad format) must not drop the listing."""
+    respx.post("https://api.telegram.org/botTOKEN/sendPhoto").mock(
+        return_value=Response(400, json={"ok": False, "description": "wrong file type"})
+    )
+    text_route = respx.post("https://api.telegram.org/botTOKEN/sendMessage").mock(
+        return_value=Response(200, json={"ok": True, "result": {}})
+    )
+    listing = _listing(ad_id=5, image_urls=["https://img/x.jpg"])
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        sent = await ntf.send_listings_with_photos([listing])
+    assert sent == 1
+    assert text_route.called
+    body = json.loads(text_route.calls[0].request.content)
+    assert "Kia Sportage" in body["text"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_message_clips_oversized_body() -> None:
+    route = respx.post("https://api.telegram.org/botTOKEN/sendMessage").mock(
+        return_value=Response(200, json={"ok": True, "result": {}})
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        await ntf.send_message("x" * 5000)
+    body = json.loads(route.calls[0].request.content)
+    assert len(body["text"]) <= 4096
+    assert body["text"].endswith("…")
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_photo_clips_oversized_caption() -> None:
+    route = respx.post("https://api.telegram.org/botTOKEN/sendPhoto").mock(
+        return_value=Response(200, json={"ok": True, "result": {"photo": []}})
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        await ntf.send_photo("https://img/x.jpg", caption="y" * 2000)
+    body = json.loads(route.calls[0].request.content)
+    assert len(body["caption"]) <= 1024
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_answer_callback_acknowledges() -> None:
     route = respx.post("https://api.telegram.org/botTOKEN/answerCallbackQuery").mock(
         return_value=Response(200, json={"ok": True})

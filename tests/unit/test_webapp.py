@@ -116,12 +116,13 @@ def test_wsgi_rejects_bad_init_data(_fresh_settings) -> None:
 
 
 def test_wsgi_accepts_valid_auth_then_needs_db(_fresh_settings) -> None:
-    """A validly-signed request passes auth; with no DB it reports the error."""
+    """A validly-signed request passes auth; with no DB it reports 503."""
     init_data = _make_init_data(user_id=42)
     query = urlencode({"view": "overview", "initData": init_data})
     status, body = _call_wsgi(query)
-    assert status.startswith("200")
+    assert status.startswith("503")
     payload = json.loads(body)
+    assert payload["ok"] is False
     assert payload.get("error") == "database not configured"
 
 
@@ -844,12 +845,14 @@ def test_post_actions_model_prompt_fallbacks(_fresh_settings, _rich_deps) -> Non
     store, _ = _rich_deps
     init_data = _make_init_data(user_id=42)
     _, payload = _call_post({"action": "model", "id": "x/model"}, init_data)
-    assert payload["ok"] is True  # queue fails safe without a real DB
+    assert payload["ok"] is False and payload["status"] == "error"  # saved, but queue failed
+    assert payload["error"]
     assert ("prefs", {"model": "x/model"}) in [c for c in store.calls if c[0] == "prefs"]
     _, payload = _call_post({"action": "model"}, init_data)
     assert payload["error"] == "id required"
     _, payload = _call_post({"action": "prompt", "name": "bargain"}, init_data)
-    assert payload["ok"] is True
+    assert payload["ok"] is False and payload["status"] == "error"  # saved, but queue failed
+    assert payload["error"]
     assert ("prefs", {"prompt_name": "bargain"}) in [c for c in store.calls if c[0] == "prefs"]
     _, payload = _call_post({"action": "prompt", "name": "nope"}, init_data)
     assert "unknown prompt" in payload["error"]
@@ -885,16 +888,19 @@ def test_post_actions_filters_searches_template_eval_rescore(
     _, payload = _call_post({"action": "search_delete", "name": "hwy"}, init_data)
     assert payload == {"ok": True, "removed": True}
     _, payload = _call_post({"action": "template", "key": "city"}, init_data)
-    assert payload["ok"] is True
+    assert payload["ok"] is False and payload["status"] == "error"  # saved, but queue failed
+    assert payload["error"]
     assert ("prefs", {"criteria": "small city car, low fuel consumption, easy maintenance, under 120,000 km",
                       "filters": {"min_price": 1000, "max_price": 5000},
                       "min_score": 60}) in [c for c in store.calls if c[0] == "prefs"]
     _, payload = _call_post({"action": "template", "key": "nope"}, init_data)
     assert payload["error"] == "unknown template"
     _, payload = _call_post({"action": "eval", "limit": 30, "days": 7}, init_data)
-    assert payload["ok"] is True and payload["queued"] is False  # no real DB to queue
+    assert payload["ok"] is False and payload["queued"] is False  # no real DB to queue
+    assert payload["status"] == "error"
     _, payload = _call_post({"action": "rescore", "ids": [7, 8]}, init_data)
-    assert payload["ok"] is True and payload["ids"] == [7, 8]
+    assert payload["ok"] is False and payload["ids"] == [7, 8]  # no real DB to queue
+    assert payload["status"] == "error"
     _, payload = _call_post({"action": "rescore", "ids": []}, init_data)
     assert payload["error"] == "ids required"
 
@@ -1040,3 +1046,36 @@ def test_saved_items_expose_removed_flag(_fresh_settings, _rich_deps, monkeypatc
     payload, status = _run_view("saved")
     assert status == 200
     assert payload["items"][0]["removed"] is True
+
+
+# ------------------------------------------------- response contract (api/errors.py)
+
+
+def test_queue_result_ok_for_success_statuses() -> None:
+    from api.errors import queue_result
+
+    for status in ("queued", "awaiting", "nothing", "already"):
+        payload, code = queue_result(status, "note")
+        assert payload["ok"] is True
+        assert payload["queued"] is (status == "queued")
+        assert payload["status"] == status
+        assert code == 200
+
+
+def test_queue_result_is_truthful_on_error() -> None:
+    from api.errors import queue_result
+
+    payload, code = queue_result("error", "database not configured", ids=[7, 8])
+    assert payload["ok"] is False
+    assert payload["error"] == "database not configured"
+    assert payload["queued"] is False
+    assert payload["ids"] == [7, 8]
+    assert code == 200
+
+
+def test_unavailable_is_503() -> None:
+    from api.errors import unavailable
+
+    payload, code = unavailable("saved listings")
+    assert payload == {"ok": False, "error": "saved listings unavailable"}
+    assert code == 503

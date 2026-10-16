@@ -36,6 +36,15 @@ def test_parse_price_dohodou(bazos_scraper: BazosScraper, bazos_page_html: str) 
     assert listing.price_raw == "Dohodou"
 
 
+def test_parse_price_range_takes_lower_bound(bazos_scraper: BazosScraper) -> None:
+    # "1 500 – 2 000 €" is a range, not €15002000
+    assert bazos_scraper._parse_price("1 500 – 2 000 €") == Decimal("1500")
+    assert bazos_scraper._parse_price("1 500 - 2 000 EUR") == Decimal("1500")
+    assert bazos_scraper._parse_price("12 500 €") == Decimal("12500")
+    assert bazos_scraper._parse_price("od 1 500 €") == Decimal("1500")
+    assert bazos_scraper._parse_price("Dohodou") is None
+
+
 def test_parse_year_iv_and_tis_km(bazos_scraper: BazosScraper, bazos_page_html: str) -> None:
     octavia = bazos_scraper.parse_page(bazos_page_html)[1]
     assert octavia.year == 2019

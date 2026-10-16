@@ -225,8 +225,14 @@ class BazosScraper(BaseScraper):
         if not raw:
             return None
         text = raw.replace("\u00a0", " ").strip()
-        digits = re.sub(r"[^\d]", "", text)
-        if not digits:  # "Dohodou", "Vymenné", ...
+        # A range like "1 500 – 2 000 €" lists two numbers; the asking price is
+        # the lower bound. Take the first number group rather than every digit
+        # on the line (which would read €1 500 2 000).
+        match = re.search(r"\d[\d ]*", text)
+        if not match:  # "Dohodou", "Vymenné", ...
+            return None
+        digits = re.sub(r"[^\d]", "", match.group(0))
+        if not digits:
             return None
         try:
             return Decimal(digits)

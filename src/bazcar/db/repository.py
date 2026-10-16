@@ -252,7 +252,8 @@ ON CONFLICT (ad_id) DO UPDATE SET
     mileage_km          = EXCLUDED.mileage_km,
     last_seen_at        = now(),
     updated_at          = now(),
-    removed_at          = NULL
+    removed_at          = NULL,
+    verified_at         = NULL
 """
 
 _INSERT_PRICE_HISTORY_SQL = """
@@ -584,7 +585,8 @@ class ListingRepository:
             value = await conn.fetchval(
                 "SELECT count(*) FROM listings l"
                 " JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1"
-                " WHERE e.score >= $2 AND COALESCE(l.published_date, l.first_seen_at::date)"
+                " WHERE e.score >= $2 AND l.removed_at IS NULL"
+                "       AND COALESCE(l.published_date, l.first_seen_at::date)"
                 "       >= (now() - make_interval(days => $3))::date",
                 profile_key,
                 min_score,
@@ -611,7 +613,8 @@ class ListingRepository:
         try:
             value = await conn.fetchval(
                 "SELECT count(*) FROM evaluations e JOIN listings l ON l.ad_id = e.ad_id"
-                " WHERE e.profile_key = $1 AND l.last_seen_at >= now() - make_interval(days => $2)",
+                " WHERE e.profile_key = $1 AND l.removed_at IS NULL"
+                "   AND l.last_seen_at >= now() - make_interval(days => $2)",
                 profile_key,
                 days,
             )
@@ -887,25 +890,38 @@ class ListingRepository:
     async def migrate_profile_keys(self, mapping: dict[str, str]) -> dict:
         """One-time v3 migration: rewrite model-bound keys to spec keys.
 
-        ``mapping`` = {legacy_key: spec_key}. Per car (and per chat+car for
-        notifications) only the most recent row survives across all legacy and
-        spec keys, so the primary keys stay unique. Each table is rewritten with a
-        single set-based statement. Idempotent: once no legacy key remains it is a
-        no-op. Returns row counts touched.
+        ``mapping`` = {legacy_key: spec_key}. Keys collapsing into *different*
+        spec keys are different profiles and must never interact, so rows are
+        collapsed newest-wins only *within* each target group (the legacy keys
+        that share one spec key, plus that spec key itself). Each table is
+        rewritten set-based. Idempotent: once no legacy key remains in any table
+        it is a no-op. Returns row counts touched (renamed rows per table).
         """
         zero = {"evaluations": 0, "notifications": 0, "eval_tasks": 0}
         if not mapping:
             return zero
         conn = self._require_conn()
-        keys = sorted(set(mapping) | set(mapping.values()))
-        legacy_left = await conn.fetchval(
-            "SELECT 1 FROM evaluations WHERE profile_key = ANY($1::text[]) LIMIT 1",
-            list(mapping),
+
+        # legacy keys grouped by the spec key they collapse into (+ that spec key)
+        grouped: dict[str, set[str]] = {}
+        for old, new in mapping.items():
+            grouped.setdefault(new, set()).update({old, new})
+        groups = {new: sorted(keys) for new, keys in grouped.items()}
+
+        olds = list(mapping.keys())
+        news = list(mapping.values())
+        # Already migrated? Every table the migration touches must be clean.
+        pending = await conn.fetchval(
+            "SELECT 1 FROM evaluations WHERE profile_key = ANY($1::text[])"
+            " UNION ALL SELECT 1 FROM notifications WHERE profile_key = ANY($1::text[])"
+            " UNION ALL SELECT 1 FROM eval_tasks WHERE profile_key = ANY($1::text[])"
+            " LIMIT 1",
+            olds,
+            olds,
+            olds,
         )
-        if legacy_left is None:
-            return zero  # already migrated: nothing bound to a legacy key remains
-        olds, news = list(mapping.keys()), list(mapping.values())
-        counts: dict[str, int] = {}
+        if pending is None:
+            return zero
 
         def _n(status: str) -> int:
             try:
@@ -913,16 +929,19 @@ class ListingRepository:
             except (ValueError, IndexError):
                 return 0
 
+        counts = dict(zero)
         async with conn.transaction():
-            # 1) keep only the newest row per car across all keys in play
-            await conn.execute(
-                "DELETE FROM evaluations e WHERE e.profile_key = ANY($1::text[])"
-                " AND EXISTS (SELECT 1 FROM evaluations x WHERE x.ad_id = e.ad_id"
-                "   AND x.profile_key = ANY($1::text[])"
-                "   AND (x.evaluated_at > e.evaluated_at"
-                "     OR (x.evaluated_at = e.evaluated_at AND x.profile_key > e.profile_key)))",
-                keys,
-            )
+            # 1) collapse newest-wins per car, scoped to each target group so
+            #    scores belonging to other profiles are never deleted
+            for keys in groups.values():
+                await conn.execute(
+                    "DELETE FROM evaluations e WHERE e.profile_key = ANY($1::text[])"
+                    " AND EXISTS (SELECT 1 FROM evaluations x WHERE x.ad_id = e.ad_id"
+                    "   AND x.profile_key = ANY($1::text[])"
+                    "   AND (x.evaluated_at > e.evaluated_at"
+                    "     OR (x.evaluated_at = e.evaluated_at AND x.profile_key > e.profile_key)))",
+                    keys,
+                )
             # 2) rename the survivors to their spec key (one statement)
             counts["evaluations"] = _n(await conn.execute(
                 "UPDATE evaluations t SET profile_key = m.new"
@@ -930,15 +949,16 @@ class ListingRepository:
                 " WHERE t.profile_key = m.old",
                 olds, news,
             ))
-
-            await conn.execute(
-                "DELETE FROM notifications n WHERE n.profile_key = ANY($1::text[])"
-                " AND EXISTS (SELECT 1 FROM notifications x WHERE x.chat_id = n.chat_id"
-                "   AND x.ad_id = n.ad_id AND x.profile_key = ANY($1::text[])"
-                "   AND (x.notified_at > n.notified_at"
-                "     OR (x.notified_at = n.notified_at AND x.profile_key > n.profile_key)))",
-                keys,
-            )
+            # 3) notifications: collapse per (chat, car) within each target group
+            for keys in groups.values():
+                await conn.execute(
+                    "DELETE FROM notifications n WHERE n.profile_key = ANY($1::text[])"
+                    " AND EXISTS (SELECT 1 FROM notifications x WHERE x.chat_id = n.chat_id"
+                    "   AND x.ad_id = n.ad_id AND x.profile_key = ANY($1::text[])"
+                    "   AND (x.notified_at > n.notified_at"
+                    "     OR (x.notified_at = n.notified_at AND x.profile_key > n.profile_key)))",
+                    keys,
+                )
             counts["notifications"] = _n(await conn.execute(
                 "UPDATE notifications t SET profile_key = m.new"
                 " FROM unnest($1::text[], $2::text[]) AS m(old, new)"
@@ -1180,7 +1200,7 @@ class ListingRepository:
             rows = await conn.fetch(
                 "SELECT ad_id, url, title, price_eur, city, image_urls,"
                 " year, mileage_km, description_preview, description, removed_at"
-                " FROM listings WHERE ad_id = ANY($1::bigint[])",
+                " FROM listings WHERE ad_id = ANY($1::bigint[]) AND removed_at IS NULL",
                 ids,
             )
         except asyncpg.PostgresError as exc:
@@ -1226,10 +1246,14 @@ class ListingRepository:
         """Aggregate numbers for /stats and the dashboard overview."""
         conn = self._require_conn()
         try:
-            total = int(await conn.fetchval("SELECT count(*) FROM listings") or 0)
+            total = int(
+                await conn.fetchval("SELECT count(*) FROM listings WHERE removed_at IS NULL") or 0
+            )
             evaluated = int(
                 await conn.fetchval(
-                    "SELECT count(*) FROM evaluations WHERE profile_key = $1", profile_key
+                    "SELECT count(*) FROM evaluations e JOIN listings l ON l.ad_id = e.ad_id"
+                    " WHERE e.profile_key = $1 AND l.removed_at IS NULL",
+                    profile_key,
                 )
                 or 0
             )
@@ -1237,7 +1261,7 @@ class ListingRepository:
                 "SELECT min(price_eur) AS mn, max(price_eur) AS mx,"
                 " avg(price_eur)::int AS avg,"
                 " percentile_cont(0.5) WITHIN GROUP (ORDER BY price_eur) AS median"
-                " FROM listings WHERE price_eur IS NOT NULL"
+                " FROM listings WHERE price_eur IS NOT NULL AND removed_at IS NULL"
             )
             bands = await conn.fetchrow(
                 "SELECT"
@@ -1246,12 +1270,14 @@ class ListingRepository:
                 " count(*) FILTER (WHERE score >= 70 AND score < 80) AS b70,"
                 " count(*) FILTER (WHERE score >= 50 AND score < 70) AS b50,"
                 " count(*) FILTER (WHERE score < 50) AS b0"
-                " FROM evaluations WHERE profile_key = $1",
+                " FROM evaluations e JOIN listings l ON l.ad_id = e.ad_id"
+                " WHERE e.profile_key = $1 AND l.removed_at IS NULL",
                 profile_key,
             )
             new_by_day = await conn.fetch(
                 "SELECT d::date AS day, count(*) AS n FROM ("
                 "  SELECT COALESCE(published_date, first_seen_at::date) AS d FROM listings"
+                "  WHERE removed_at IS NULL"
                 ") t WHERE d >= (now() - make_interval(days => 7))::date"
                 " GROUP BY 1 ORDER BY 1"
             )
@@ -1281,7 +1307,7 @@ class ListingRepository:
     _BENCHMARK_SQL = """
     WITH base AS (
         SELECT price_eur FROM listings
-        WHERE price_eur IS NOT NULL AND title ILIKE $1
+        WHERE price_eur IS NOT NULL AND removed_at IS NULL AND title ILIKE $1
           AND ($2::int IS NULL OR year BETWEEN $2 - 2 AND $2 + 2)
           AND ($3::text IS NULL OR title ILIKE '%' || $3 || '%')
           AND ($4::bigint IS NULL OR mileage_km IS NULL
@@ -1351,10 +1377,10 @@ class ListingRepository:
         try:
             rows = await conn.fetch(
                 "WITH b AS (SELECT min(price_eur) AS mn, max(price_eur) AS mx"
-                " FROM listings WHERE price_eur IS NOT NULL)"
+                " FROM listings WHERE price_eur IS NOT NULL AND removed_at IS NULL)"
                 " SELECT width_bucket(price_eur, b.mn, b.mx, $1) AS bucket,"
                 " count(*) AS n, min(price_eur) AS lo, max(price_eur) AS hi"
-                " FROM listings, b WHERE price_eur IS NOT NULL"
+                " FROM listings, b WHERE price_eur IS NOT NULL AND removed_at IS NULL"
                 " GROUP BY 1 ORDER BY 1",
                 buckets,
             )
@@ -1375,7 +1401,8 @@ class ListingRepository:
                 "SELECT upper(split_part(title, ' ', 1)) AS make, count(*) AS n,"
                 " percentile_cont(0.5) WITHIN GROUP (ORDER BY price_eur) AS median"
                 " FROM listings"
-                f" WHERE upper(split_part(title, ' ', 1)) NOT IN ({self._MAKE_STOPLIST})"
+                " WHERE removed_at IS NULL"
+                f" AND upper(split_part(title, ' ', 1)) NOT IN ({self._MAKE_STOPLIST})"
                 " GROUP BY 1 ORDER BY n DESC LIMIT $1",
                 max(1, min(int(limit or 10), 30)),
             )
@@ -1394,7 +1421,7 @@ class ListingRepository:
                 " count(*) AS n, avg(price_eur)::int AS avg_price,"
                 " percentile_cont(0.5) WITHIN GROUP (ORDER BY price_eur) AS median_price"
                 " FROM evaluations e LEFT JOIN listings l ON l.ad_id = e.ad_id"
-                " WHERE e.profile_key = $1 GROUP BY 1",
+                " WHERE e.profile_key = $1 AND l.removed_at IS NULL GROUP BY 1",
                 profile_key,
             )
             order = {"90+": 0, "80-89": 1, "70-79": 2, "50-69": 3, "<50": 4}
@@ -1412,6 +1439,7 @@ class ListingRepository:
             rows = await conn.fetch(
                 "SELECT d::date AS day, count(*) AS n FROM ("
                 "  SELECT COALESCE(published_date, first_seen_at::date) AS d FROM listings"
+                "  WHERE removed_at IS NULL"
                 ") t WHERE d >= (now() - make_interval(days => $1))::date"
                 " GROUP BY 1 ORDER BY 1",
                 days,
@@ -1466,10 +1494,13 @@ class ListingRepository:
         """Pipeline funnel: scraped -> evaluated -> notified -> saved."""
         conn = self._require_conn()
         try:
-            total = int(await conn.fetchval("SELECT count(*) FROM listings") or 0)
+            total = int(
+                await conn.fetchval("SELECT count(*) FROM listings WHERE removed_at IS NULL") or 0
+            )
             evaluated = int(
                 await conn.fetchval(
-                    "SELECT count(*) FROM evaluations WHERE profile_key = $1",
+                    "SELECT count(*) FROM evaluations e JOIN listings l ON l.ad_id = e.ad_id"
+                    " WHERE e.profile_key = $1 AND l.removed_at IS NULL",
                     profile_key,
                 )
                 or 0

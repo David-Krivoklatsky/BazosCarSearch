@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from enum import StrEnum
 from typing import Any
 
 import httpx
@@ -23,33 +24,77 @@ _META_RE = re.compile(
 )
 _UA = {"User-Agent": "Mozilla/5.0"}
 
+# Markers of a bot-check / rate-limit interstitial. Such a page never mentions
+# the ad id, so without this guard it would look identical to a removed ad and
+# we would hide live inventory. A blocked page means "retry later", never "gone".
+_BLOCK_MARKERS = (
+    "cf-browser-verification",
+    "cf_chl_opt",
+    "Just a moment",
+    "Attention Required",
+    "Access denied",
+    "Too many requests",
+    "captcha",
+)
+
+
+class AdState(StrEnum):
+    """Outcome of a single ad-page probe."""
+
+    LIVE = "live"            # ad served, meta parsed
+    UNPARSED = "unparsed"    # ad id present but markup changed — treat as alive
+    GONE = "gone"            # 404 or confirmed redirect to a category page
+    BLOCKED = "blocked"      # bot-check / rate-limit page — retry later
+
+
+def _mentioned(html: str, ad_id: int) -> bool:
+    """True when the exact ad id appears (word-boundary, so 123 ≠ 1234)."""
+    return re.search(rf"(?<!\d){ad_id}(?!\d)", html) is not None
+
+
+def _is_blocked(html: str) -> bool:
+    return any(marker in html for marker in _BLOCK_MARKERS)
+
 
 def parse_ad_meta(html: str, ad_id: int) -> dict[str, Any]:
-    """Parse the ad page. ``{"gone": True}`` only when the ad itself is absent.
+    """Parse the ad page. ``state="gone"`` only when the ad is truly absent.
 
     Safety rule: a page that still mentions this ad's id is alive even when its
-    meta description cannot be read (markup change) — we would rather keep a
-    car than hide a live one. Category/redirect pages never mention the id.
+    meta description cannot be read (markup change), and a bot-check page is
+    "blocked" (retry) — we would rather keep a car than hide a live one.
+    Category/redirect pages never mention the id and carry no block markers.
     """
     match = _META_RE.search(html)
     if not match or int(match.group(1)) != ad_id:
-        if str(ad_id) in html:
-            return {"title": None, "price_raw": None, "price": None, "city": None, "unparsed": True}
-        return {"gone": True}
+        if _mentioned(html, ad_id):
+            return {"title": None, "price_raw": None, "price": None, "city": None,
+                    "unparsed": True, "state": AdState.UNPARSED.value}
+        if _is_blocked(html):
+            return {"title": None, "price_raw": None, "price": None, "city": None,
+                    "state": AdState.BLOCKED.value}
+        return {"gone": True, "state": AdState.GONE.value}
     title = re.sub(r"\s+", " ", match.group(2)).strip()[:200]
     price_raw = re.sub(r"\s+", " ", match.group(3)).strip()[:40]
     city = re.sub(r"\s+", " ", match.group(4)).strip()[:80]
-    digits = re.sub(r"[^\d]", "", price_raw)
+    # Ranges ("1 500 – 2 000 €") list two numbers; keep the lower bound.
+    price_match = re.search(r"\d[\d ]*", price_raw)
+    digits = re.sub(r"[^\d]", "", price_match.group(0)) if price_match else ""
     return {
         "title": title or None,
         "price_raw": price_raw or None,
         "price": int(digits) if digits else None,
         "city": city or None,
+        "state": AdState.LIVE.value,
     }
 
 
 async def fetch_ad_page(ad_id: int, client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
-    """Live state of one ad: None (unreachable), ``{"gone": True}`` or parsed meta."""
+    """Live state of one ad.
+
+    Returns ``None`` when the state cannot be determined (network error, 5xx,
+    403/429 bot-check) — the caller must retry later, never remove. Only a 404
+    or a 200 page that parses as absent yields ``state="gone"``.
+    """
     owns = client is None
     client = client or httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=_UA)
     try:
@@ -60,8 +105,11 @@ async def fetch_ad_page(ad_id: int, client: httpx.AsyncClient | None = None) -> 
     finally:
         if owns:
             await client.aclose()
+    if resp.status_code == 404:
+        return {"gone": True, "state": AdState.GONE.value}
     if resp.status_code != 200:
-        return {"gone": True}
+        logger.info("ad %s probe inconclusive (HTTP %s) — retry later", ad_id, resp.status_code)
+        return None
     return parse_ad_meta(resp.text, ad_id)
 
 

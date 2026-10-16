@@ -14,6 +14,8 @@ overwrites the row with the current model.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
+from typing import Any
 
 # Evaluation output schema version — part of the key so a change in the JSON
 # contract never silently reuses evaluations produced by an older contract.
@@ -43,6 +45,41 @@ def legacy_profile_key(
     if prompt and prompt != "standard":
         base += f"|{prompt}"
     return hashlib.md5(base.encode()).hexdigest()[:12]
+
+
+@dataclass(frozen=True)
+class ActiveProfile:
+    """WHAT a user is currently judging (criteria + prompt), plus the active model.
+
+    One object is the single source of truth for the cache key, so a prompt or
+    model change can never be forgotten in one call site and applied in another.
+    """
+
+    criteria: str | None = None
+    prompt: str = "standard"
+    model: str | None = None
+
+    @property
+    def key(self) -> str:
+        return profile_key(self.criteria, prompt=self.prompt)
+
+    @classmethod
+    def from_prefs(cls, prefs: Any) -> ActiveProfile:
+        """Build from a user-prefs object (``UserPrefs`` or any duck type)."""
+        if prefs is None:
+            return cls()
+        prompt = getattr(prefs, "prompt_name", "standard") or "standard"
+        try:
+            from bazcar.llm.provider import normalize_prompt_name
+
+            prompt = normalize_prompt_name(prompt)
+        except Exception:  # import-light fallback: never fail key derivation
+            pass
+        return cls(
+            criteria=getattr(prefs, "criteria", None),
+            prompt=prompt,
+            model=getattr(prefs, "model", None),
+        )
 
 
 def legacy_key_mapping(

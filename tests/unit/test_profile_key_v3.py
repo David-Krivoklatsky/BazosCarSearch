@@ -47,6 +47,19 @@ def test_mapping_is_empty_without_inputs() -> None:
     assert legacy_key_mapping(["diesel"], []) == {}
 
 
+def test_active_profile_threads_prompt_not_just_criteria() -> None:
+    from types import SimpleNamespace
+
+    from bazcar.core.profiles import ActiveProfile
+
+    prefs = SimpleNamespace(criteria="diesel", prompt_name="bargain", model="m/1")
+    ap = ActiveProfile.from_prefs(prefs)
+    assert ap.key == profile_key("diesel", prompt="bargain")
+    assert ap.key != profile_key("diesel")  # the prompt-blind bug is fixed
+    assert ap.model == "m/1"
+    assert ActiveProfile.from_prefs(None).key == profile_key(None)
+
+
 class _Tx:
     async def __aenter__(self):
         return self
@@ -97,6 +110,18 @@ def test_migration_rewrites_all_three_tables_and_dedupes_first() -> None:
     # one statement per table regardless of how many keys are mapped
     assert sum(1 for s in sql if s.startswith("UPDATE")) == 3
     assert counts["evaluations"] == 1 and counts["notifications"] == 1 and counts["eval_tasks"] == 1
+
+
+def test_migration_scopes_dedupe_to_each_target_group() -> None:
+    # Two legacy keys collapsing into DIFFERENT spec keys are different profiles:
+    # dedupe must run once per target group, never across them, or a valid score
+    # for the other profile would be deleted.
+    conn = _MigrationConn(legacy_left=True)
+    counts = asyncio.run(_repo(conn).migrate_profile_keys({"a": "x", "b": "y"}))
+    deletes = [s for s in conn.statements if s.startswith("DELETE FROM evaluations")]
+    assert len(deletes) == 2
+    assert sum(1 for s in conn.statements if s.startswith("UPDATE")) == 3
+    assert counts["evaluations"] == 1
 
 
 def test_migration_is_a_noop_once_legacy_keys_are_gone() -> None:

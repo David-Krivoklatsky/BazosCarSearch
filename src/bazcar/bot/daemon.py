@@ -62,7 +62,7 @@ from bazcar.bot.templates import TEMPLATES, get_template
 from bazcar.config.settings import get_settings, load_llm_config
 from bazcar.core.exceptions import ConfigError
 from bazcar.core.models import Listing
-from bazcar.core.profiles import profile_key
+from bazcar.core.profiles import ActiveProfile
 from bazcar.db.repository import ListingRepository
 from bazcar.notify.telegram import TelegramNotifier
 
@@ -703,11 +703,7 @@ class Bot:
         settings = get_settings()
         prefs = await self.store.get_prefs(chat_id)
         if prefs is not None and settings.database_url:
-            from bazcar.llm.provider import normalize_prompt_name
-
-            p_key = profile_key(
-                prefs.criteria, prompt=normalize_prompt_name(prefs.prompt_name)
-            )
+            p_key = ActiveProfile.from_prefs(prefs).key
             repo = ListingRepository(settings.database_url)
             await repo.connect()
             try:
@@ -752,7 +748,7 @@ class Bot:
         limit = arg_limit or max(1, min(prefs.show_limit, 20))
         if arg_limit is not None and arg_limit != prefs.show_limit:
             await self.store.update_prefs(chat_id, show_limit=arg_limit)  # remember default
-        p_key = profile_key(prefs.criteria)
+        p_key = ActiveProfile.from_prefs(prefs).key
         min_score = prefs.min_score or 0
 
         repo = ListingRepository(settings.database_url)
@@ -791,8 +787,7 @@ class Bot:
     async def _profile_key_for(self, chat_id: int) -> tuple[str, Any]:
         """(profile_key, prefs) for the calling user's active search profile."""
         prefs = await self.store.get_prefs(chat_id)
-        criteria = prefs.criteria if prefs else None
-        return profile_key(criteria), prefs
+        return ActiveProfile.from_prefs(prefs).key, prefs
 
     async def _cars(self, chat_id: int, arg: str) -> tuple[str, dict] | str:
         """Browse the whole collected catalog — evaluated or not (/cars)."""
@@ -889,14 +884,15 @@ class Bot:
                 ]
             ]
         }
+        sent = False
         if prefs and prefs.show_photo and row.get("image_urls"):
-            await self.notifier.send_photo(
+            sent = await self.notifier.send_photo(
                 row["image_urls"][0],
-                caption=text[:1024],
+                caption=text,
                 chat_id=chat_id,
                 reply_markup=keyboard,
             )
-        else:
+        if not sent:
             await self.notifier.send_message(text, chat_id=chat_id, reply_markup=keyboard)
         return None
 
@@ -1404,7 +1400,7 @@ class Bot:
         if prefs is None:
             return "No settings yet. /help"
         model = prefs.model or load_llm_config().model
-        p_key = profile_key(prefs.criteria)
+        p_key = ActiveProfile.from_prefs(prefs).key
         lines = [
             "<b>⚙️ Settings & status</b>",
             f"Criteria: {_em(prefs.criteria or '—')}",

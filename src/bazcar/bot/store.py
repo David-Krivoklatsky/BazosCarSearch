@@ -50,6 +50,7 @@ class SavedListing:
     max_price: int | None = None
     last_seen_at: str | None = None
     alert_below: int | None = None
+    removed_at: str | None = None
 
 
 class UserStore:
@@ -366,7 +367,7 @@ class UserStore:
     async def list_saved(self, chat_id: int) -> list[SavedListing]:
         rows = await self._require().fetch(
             "SELECT s.ad_id, s.ad_title, s.ad_url, s.note, s.alert_below,"
-            " l.price_eur AS current_price, l.last_seen_at,"
+            " l.price_eur AS current_price, l.last_seen_at, l.removed_at,"
             " (SELECT max(h.price_eur) FROM price_history h WHERE h.ad_id = s.ad_id)"
             " AS max_price"
             " FROM saved_listings s LEFT JOIN listings l ON l.ad_id = s.ad_id"
@@ -376,8 +377,9 @@ class UserStore:
         out = []
         for r in rows:
             record = dict(r)
-            if record.get("last_seen_at") is not None:
-                record["last_seen_at"] = str(record["last_seen_at"])
+            for key in ("last_seen_at", "removed_at"):
+                if record.get(key) is not None:
+                    record[key] = str(record[key])
             out.append(SavedListing(**record))
         return out
 
