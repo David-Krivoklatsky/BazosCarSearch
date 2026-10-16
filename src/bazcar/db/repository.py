@@ -1195,6 +1195,15 @@ class ListingRepository:
             out.append(record)
         return out
 
+    @staticmethod
+    def _decode_catalog_row(row) -> dict:
+        record = dict(row)
+        try:
+            record["image_urls"] = json.loads(record["image_urls"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            record["image_urls"] = []
+        return record
+
     async def fetch_price_history(self, ad_id: int, limit: int = 10) -> list[dict]:
         """Chronological price points for one ad (oldest first)."""
         conn = self._require_conn()

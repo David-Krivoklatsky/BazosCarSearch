@@ -265,3 +265,26 @@ def test_clear_queue_includes_legacy_tasks_without_chat() -> None:
     repo = _repo_with(_Conn())
     assert asyncio.run(repo.clear_eval_tasks(42)) == 5
     assert "chat_id IS NULL" in seen["sql"] and "done_at IS NULL" in seen["sql"]
+
+
+def test_every_repo_method_called_by_the_app_exists() -> None:
+    """Guard: any ``repo.method(`` call in the app must exist on ListingRepository.
+
+    Catches accidental deletions (a removed helper only fails at runtime).
+    """
+    import re
+    from pathlib import Path
+
+    from bazcar.db import ListingRepository
+
+    root = Path(__file__).resolve().parents[2]
+    sources = [p for d in ("src", "api") for p in (root / d).rglob("*.py")]
+    called: set[str] = set()
+    for path in sources:
+        called.update(re.findall(r"\brepo\.(\w+)\(", path.read_text(encoding="utf-8")))
+        called.update(re.findall(r"\brepository\.(\w+)\(", path.read_text(encoding="utf-8")))
+    # calls from inside the repository itself (the bug that slipped through)
+    repo_src = (root / "src" / "bazcar" / "db" / "repository.py").read_text(encoding="utf-8")
+    called.update(re.findall(r"\bself\.(\w+)\(", repo_src))
+    missing = sorted(name for name in called if not hasattr(ListingRepository, name))
+    assert not missing, f"repository methods called but not defined: {missing}"
