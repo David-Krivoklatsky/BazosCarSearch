@@ -373,6 +373,19 @@ class _RichRepo(_FakeListRepo):
     async def eval_cost(self, p_key=None, days=30):
         return {"total": {"n": 4, "cost_usd": 0.01}, "by_model": []}
 
+    async def fetch_listings_by_ids(self, ad_ids):
+        return [{
+            "ad_id": 1, "url": "https://x/1", "title": "A",
+            "price_eur": 4000, "city": "BA", "image_urls": ["https://x/i.jpg"],
+            "year": 2019, "mileage_km": 150000, "description_preview": "d",
+            "description": "d",
+        }]
+
+    async def fetch_evaluations(self, p_key, ad_ids):
+        from bazcar.core.models import DealEvaluation
+
+        return {1: DealEvaluation(score=80, why="ok", is_car=True)}
+
     async def catalog_bounds(self, p_key, days, status="all", q=None):
         self.bounds_kwargs = {"status": status, "q": q}
         return {"min_price": 1000, "max_price": 9000,
@@ -441,6 +454,19 @@ def test_saved_view_computes_drop(_rich_deps) -> None:
     assert item["drop_pct"] == 20.0
     assert item["note"] == "zavolat"
     assert payload["saved_ids"] == [1]
+
+
+def test_saved_view_enriched_for_shared_card(_rich_deps) -> None:
+    """Saved items carry photo/year/km/city/score for the shared component."""
+    payload, status = _run_view("saved")
+    assert status == 200
+    item = payload["items"][0]
+    assert item["image_urls"] == ["https://x/i.jpg"]
+    assert item["year"] == 2019
+    assert item["mileage_km"] == 150000
+    assert item["city"] == "BA"
+    assert item["score"] == 80
+    assert item["is_car"] is True
 
 
 def test_profiles_view_shape(_rich_deps) -> None:

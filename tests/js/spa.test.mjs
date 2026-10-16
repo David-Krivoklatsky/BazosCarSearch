@@ -33,6 +33,8 @@ function elementStub() {
 }
 
 function buildSandbox() {
+  const elements = {};
+  const el = id => (elements[id] ??= elementStub());
   const sandbox = {
     console,
     setTimeout,
@@ -46,7 +48,7 @@ function buildSandbox() {
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
   sandbox.document = {
-    getElementById: () => elementStub(),
+    getElementById: id => el(id),
     querySelectorAll: () => [],
     addEventListener() {},
     documentElement: { style: { setProperty() {} } },
@@ -167,6 +169,52 @@ test("fmtKmK compacts mileage to xK", () => {
   assert.equal(fmtKmK(850), "850 km");
   assert.equal(fmtKmK(150000), "150K km");
   assert.equal(fmtKmK(199500), "200K km");
+});
+
+test("cardHtml puts the title full-width above photo, specs and price", () => {
+  const s = spa();
+  const html = s.fn("cardHtml")({
+    ad_id: 7, title: "Skoda Octavia 1.9 TDI", url: "https://auto.bazos.sk/inzerat/7/x.php",
+    price_eur: 5000, year: 2019, mileage_km: 150000, city: "BA",
+    published_date: "2026-10-03", last_seen_at: "2026-10-16T00:00:00Z",
+    image_urls: ["https://example.com/1.jpg"], score: 82, is_car: true,
+  });
+  const top = html.indexOf("toprow"), bot = html.indexOf("botrow");
+  const title = html.indexOf('class="title"'), side = html.indexOf('class="side"');
+  assert.ok(top !== -1 && bot !== -1 && top < bot, "title row must precede the body row");
+  assert.ok(title !== -1 && side !== -1 && title < side, "title must precede price/buttons");
+  assert.ok(html.includes("03.10."), "card date in dd.mm.");
+  assert.ok(html.includes("150K km"));
+  assert.ok(html.includes("1.jpg"), "photo rendered");
+  assert.ok(html.includes(">82<"), "score badge rendered");
+});
+
+test("digest drops link to the in-app detail, not straight to Bazoš", () => {
+  const html = spa().fn("digestHtml")({
+    days: 7, new_total: 1, trend: [], queue_pending: 0,
+    drops: [{ ad_id: 7, title: "Skoda", url: "https://auto.bazos.sk/inzerat/7/x.php",
+              prev: 6000, now_price: 5000, city: "BA", pct: 16.7 }],
+    top: [],
+  });
+  assert.ok(html.includes("openListing(7"), "drop title must open the in-app detail");
+  assert.ok(!html.includes('href="https://auto.bazos.sk'), "drop title must not link Bazoš directly");
+});
+
+test("renderSaved reuses the shared card with photo and note", () => {
+  const s = spa();
+  s.eval(`savedIds = new Set([1])`);
+  s.fn("renderSaved")({ items: [{
+    ad_id: 1, title: "Skoda", url: "https://x/1", note: "call me",
+    current_price: 4000, drop_pct: 20.0, last_seen_at: "2026-10-01T00:00:00Z",
+    alert_below: 3000, image_urls: ["https://example.com/1.jpg"],
+    year: 2019, mileage_km: 150000, city: "BA", score: 80, is_car: true,
+  }], saved_ids: [1] });
+  const html = s.eval(`document.getElementById("content").innerHTML`);
+  assert.ok(html.includes("toprow"), "saved card uses the shared component");
+  assert.ok(html.includes("1.jpg"), "saved card shows the photo");
+  assert.ok(html.includes("Note: call me"));
+  assert.ok(html.includes("watching below"));
+  assert.ok(html.includes("unsave(1)"), "saved card offers Remove");
 });
 
 test("view aliases keep legacy deep-links working", () => {

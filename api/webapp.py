@@ -244,8 +244,24 @@ async def _load_view(
             except Exception:
                 logger.warning("saved load failed in webapp", exc_info=True)
                 return {"error": "saved unavailable"}, HTTPStatus.OK
+            # Enrich with live catalog data (photo, year, km, city, score) so
+            # the Saved tab reuses the same card component as Listings.
+            details: dict = {}
+            scores: dict = {}
+            try:
+                details = {
+                    r["ad_id"]: r
+                    for r in await repo.fetch_listings_by_ids([s.ad_id for s in saved])
+                }
+                scores = await repo.fetch_evaluations(
+                    p_key, [s.ad_id for s in saved]
+                )
+            except Exception:
+                logger.warning("saved enrichment failed in webapp", exc_info=True)
             items = []
             for s in saved:
+                det = details.get(s.ad_id) or {}
+                ev = scores.get(s.ad_id)
                 drop_pct = None
                 if s.current_price is not None and s.max_price:
                     try:
@@ -265,6 +281,12 @@ async def _load_view(
                         "drop_pct": drop_pct if (drop_pct or 0) > 0 else None,
                         "last_seen_at": s.last_seen_at,
                         "alert_below": s.alert_below,
+                        "image_urls": det.get("image_urls") or [],
+                        "year": det.get("year"),
+                        "mileage_km": det.get("mileage_km"),
+                        "city": det.get("city"),
+                        "score": ev.score if ev is not None else None,
+                        "is_car": ev.is_car if ev is not None else None,
                     }
                 )
             return {"items": items, "saved_ids": sorted(saved_ids)}, HTTPStatus.OK

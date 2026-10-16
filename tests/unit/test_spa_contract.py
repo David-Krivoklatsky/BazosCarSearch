@@ -142,3 +142,18 @@ def test_spa_filter_changes_soft_reload_with_skeletons() -> None:
 def test_spa_has_scroll_to_top() -> None:
     assert 'id="totop"' in HTML
     assert "scrollTop" in HTML
+
+def test_spa_card_title_spans_full_width() -> None:
+    """Title lives in its own full-width row above photo/specs/price."""
+    assert "toprow" in HTML and "botrow" in HTML
+    assert "photo-col" in HTML
+
+
+def test_spa_saved_reuses_shared_card() -> None:
+    assert 'from: "saved"' in HTML
+    assert "cardHtml(r, {" in HTML
+
+
+def test_spa_drops_open_in_app_detail() -> None:
+    """Biggest-discount titles route to the Bazcar detail, not Bazoš."""
+    assert "openListing(${x.ad_id}" in HTML

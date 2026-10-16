@@ -109,16 +109,18 @@
   .toolbar input[type="search"] { flex: 1 1 160px; }
   .toolbar input.num { width: 92px; }
   .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: -4px 0 12px; }
-  .item { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: flex-start; }
+  .item { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
   .item:last-child { border-bottom: 0; }
+  .item .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item .toprow { min-width: 0; }
+  .item .botrow { display: flex; gap: 12px; align-items: flex-start; }
   .item .photo-col { display: flex; flex-direction: column; align-items: center; gap: 5px; flex-shrink: 0; width: 72px; }
   .item img.thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 10px; background: var(--surface2); }
   .item .photo-col .badge { font-size: 11px; padding: 0 7px; }
   .item .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .item .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .item .specs { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
   .item .side { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-end; gap: 6px; align-self: stretch; }
-  .item .price { font-weight: 700; font-size: 15.5px; }
+  .item .price { font-weight: 700; font-size: 15.5px; white-space: nowrap; }
   .iconbtns { display: flex; gap: 6px; }
   .dual { position: relative; height: 34px; margin: 2px 0 0; }
   .dual input[type="range"] {
@@ -449,7 +451,7 @@ function digestHtml(dg) {
   if (!dg || dg.error) return "";
   const drops = (dg.drops || []).map(x => `
     <div class="item"><div class="body">
-      <div class="title"><a href="${esc(x.url)}">${esc(x.title)}</a></div>
+      <div class="title"><a href="#" onclick="openListing(${x.ad_id}, 'insights');return false">${esc(x.title)}</a></div>
       <div class="specs">${eur(x.prev)} → ${eur(x.now_price)} · ${esc(x.city || "")}</div>
     </div><div class="side"><span class="badge b-drop">−${x.pct} %</span></div></div>`).join("");
   const top = (dg.top || []).map(t => `
@@ -700,26 +702,38 @@ async function refreshBounds() {
 }
 
 let lastData = null;
-function cardHtml(r) {
+function cardHtml(r, o) {
+  // Shared car card: full-width one-line title on top; photo + score,
+  // specs, price + buttons below. `o` customizes for saved lists:
+  // {from, price, titleSuffix, afterSpecs, afterBtns, saveBtn}.
+  o = o || {};
+  const from = o.from || "listings";
   const img = (r.image_urls || []).find(extUrl);
   const isSaved = savedIds.has(r.ad_id);
-  const date = fmtDateDM(r.published_date) || fmtDateDM(r.first_seen_at);
-  return `<div class="item">
-    <div class="photo-col">
-      ${img ? `<img class="thumb" src="${esc(img)}" loading="lazy" alt="">` : ""}
-      ${badge(r)}
-    </div>
-    <div class="body">
-      <div class="title"><a href="${esc(r.url)}">${esc(r.title)}</a></div>
-      <div class="specs">${r.year ?? "?"} · ${fmtKmK(r.mileage_km)} · ${esc(r.city || "")} · ${date}</div>
-      <div class="specs">${staleBadge(r.last_seen_at)}</div>
-    </div>
-    <div class="side">
-      <div class="price">${eur(r.price_eur)}</div>
-      <div class="iconbtns">
-        <button class="mini" onclick="openListing(${r.ad_id}, 'listings')">View</button>
-        <button class="mini ${compareIds.includes(r.ad_id) ? "on" : ""}" onclick="toggleCompare(${r.ad_id}, this)">⇄</button>
-        <button class="mini ${isSaved ? "on" : ""}" onclick="toggleSave(${r.ad_id}, this)">${isSaved ? "Saved" : "Save"}</button>
+  const date = o.date !== undefined ? o.date : (fmtDateDM(r.published_date) || fmtDateDM(r.first_seen_at));
+  const price = o.price !== undefined ? o.price : r.price_eur;
+  const saveBtn = o.saveBtn !== undefined ? o.saveBtn :
+    `<button class="mini ${isSaved ? "on" : ""}" onclick="toggleSave(${r.ad_id}, this)">${isSaved ? "Saved" : "Save"}</button>`;
+  return `<div class="item"${o.idAttr ? ` id="${o.idAttr}"` : ""}>
+    <div class="toprow"><div class="title"><a href="${esc(r.url)}">${esc(r.title)}</a>${o.titleSuffix || ""}</div></div>
+    <div class="botrow">
+      <div class="photo-col">
+        ${img ? `<img class="thumb" src="${esc(img)}" loading="lazy" alt="">` : ""}
+        ${badge(r)}
+      </div>
+      <div class="body">
+        <div class="specs">${r.year ?? "?"} · ${fmtKmK(r.mileage_km)} · ${esc(r.city || "")} · ${date}</div>
+        <div class="specs">${staleBadge(r.last_seen_at)}</div>
+        ${o.afterSpecs || ""}
+      </div>
+      <div class="side">
+        <div class="price">${eur(price)}</div>
+        <div class="iconbtns">
+          <button class="mini" onclick="openListing(${r.ad_id}, '${from}')">View</button>
+          <button class="mini ${compareIds.includes(r.ad_id) ? "on" : ""}" onclick="toggleCompare(${r.ad_id}, this)">⇄</button>
+          ${saveBtn}
+        </div>
+        ${o.afterBtns || ""}
       </div>
     </div>
   </div>`;
@@ -813,28 +827,23 @@ function renderSaved(d) {
   const items = d.items || [];
   savedIds = new Set((d.saved_ids || []).concat(items.map(s => s.ad_id)));
   const cards = items.map(s => {
+    const r = Object.assign({}, s, { price_eur: s.current_price });
     const drop = s.drop_pct ? ` <span class="badge b-drop">−${s.drop_pct} %</span>` : "";
     const watch = s.alert_below ? `<div class="specs">watching below ${eur(s.alert_below)}</div>` : "";
-    return `<div class="item" id="saved-${s.ad_id}">
-      <div class="body">
-        <div class="title"><a href="${esc(s.url || "#")}">${esc(s.title || ("ad " + s.ad_id))}</a>${drop}</div>
-        <div class="specs">${s.current_price != null ? eur(s.current_price) : "price ?"}${staleBadge(s.last_seen_at)}</div>
-        <div class="specs" id="note-line-${s.ad_id}">${s.note ? "Note: " + esc(s.note) : '<span class="muted">No note</span>'}</div>
-        ${watch}
-        <div class="specs" id="alert-line-${s.ad_id}"></div>
-      </div>
-      <div class="side">
-        <div class="iconbtns">
-          <button class="mini" onclick="openListing(${s.ad_id}, 'saved')">View</button>
-          <button class="mini ${compareIds.includes(s.ad_id) ? "on" : ""}" onclick="toggleCompare(${s.ad_id}, this)">⇄</button>
-        </div>
-        <div class="iconbtns">
-          <button class="mini" data-note="${esc(s.note || "")}" onclick="editNote(${s.ad_id}, this)">Note</button>
-          <button class="mini" data-below="${s.alert_below || ""}" onclick="editAlert(${s.ad_id}, this)">Alert</button>
-          <button class="mini" onclick="unsave(${s.ad_id})">Remove</button>
-        </div>
-      </div>
-    </div>`;
+    const noteLine = `<div class="specs" id="note-line-${s.ad_id}">${s.note ? "Note: " + esc(s.note) : '<span class="muted">No note</span>'}</div>`;
+    return cardHtml(r, {
+      from: "saved",
+      idAttr: `saved-${s.ad_id}`,
+      titleSuffix: drop,
+      price: s.current_price,
+      date: fmtDateDM(s.last_seen_at),
+      afterSpecs: noteLine + watch + `<div class="specs" id="alert-line-${s.ad_id}"></div>`,
+      saveBtn: `<button class="mini" onclick="unsave(${s.ad_id})">Remove</button>`,
+      afterBtns: `<div class="iconbtns">
+        <button class="mini" data-note="${esc(s.note || "")}" onclick="editNote(${s.ad_id}, this)">Note</button>
+        <button class="mini" data-below="${s.alert_below || ""}" onclick="editAlert(${s.ad_id}, this)">Alert</button>
+      </div>`,
+    });
   }).join("");
   content.innerHTML = `
     <div class="muted" style="margin:2px 0 6px">${items.length ? `${items.length} saved` : "Nothing saved yet"}</div>
@@ -1006,7 +1015,7 @@ function renderInsights(d) {
   const dropsHtml = drops.slice(0, 5).map(x => `
     <div class="item">
       <div class="body">
-        <div class="title"><a href="${esc(x.url)}">${esc(x.title)}</a></div>
+        <div class="title"><a href="#" onclick="openListing(${x.ad_id}, 'insights');return false">${esc(x.title)}</a></div>
         <div class="specs">${eur(x.prev)} → ${eur(x.now_price)} · ${esc(x.city || "")}</div>
       </div>
       <div class="side"><span class="badge b-drop">−${x.pct} %</span></div>
