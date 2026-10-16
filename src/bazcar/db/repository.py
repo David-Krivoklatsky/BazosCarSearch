@@ -703,7 +703,7 @@ class ListingRepository:
             days,
             prompt_name or "standard",
             json.dumps([m for m in (fallback_models or []) if m][:3]),
-            ([int(a) for a in ad_ids if int(a) > 0][:50] or None),
+            ([int(a) for a in (ad_ids or []) if int(a) > 0][:50] or None),
         )
 
     async def bump_eval_task_attempt(self, task_id: int) -> None:
@@ -921,9 +921,9 @@ class ListingRepository:
             raise DbError(f"listing fetch failed: {exc}") from exc
         return self._decode_catalog_row(row) if row else None
 
-    async def fetch_listings_by_ids(self, ad_ids: list[int]) -> list[dict]:
+    async def fetch_listings_by_ids(self, ad_ids: list[int] | None) -> list[dict]:
         """Raw listing rows for explicit ad ids (targeted re-score input)."""
-        ids = [int(a) for a in ad_ids if int(a) > 0][:50]
+        ids = [int(a) for a in (ad_ids or []) if int(a) > 0][:50]
         if not ids:
             return []
         conn = self._require_conn()
@@ -946,9 +946,9 @@ class ListingRepository:
             out.append(record)
         return out
 
-    async def delete_evaluations(self, ad_ids: list[int], profile_key: str) -> int:
+    async def delete_evaluations(self, ad_ids: list[int] | None, profile_key: str) -> int:
         """Drop cached scores so a targeted re-score evaluates fresh, not skipped."""
-        ids = [int(a) for a in ad_ids if int(a) > 0][:50]
+        ids = [int(a) for a in (ad_ids or []) if int(a) > 0][:50]
         if not ids:
             return 0
         conn = self._require_conn()

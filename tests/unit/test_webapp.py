@@ -239,6 +239,7 @@ class _RichStore(_FakeStore):
             {"name": "diesel", "criteria": "diesel", "min_score": 70, "notify": True}
         ]
         self.prefs = {"notify": True, "score": 60, "photos": False}
+        self.updates: dict = {}
 
     async def connect(self) -> None:
         pass
@@ -279,13 +280,17 @@ class _RichStore(_FakeStore):
             show_photo = False
             notify_enabled = True
 
-        return _P()
+        prefs = _P()
+        for key, value in self.updates.items():
+            setattr(prefs, key, value)
+        return prefs
 
     async def ensure_prefs(self, chat_id: int):
         return await self.get_prefs(chat_id)
 
     async def update_prefs(self, chat_id: int, **fields) -> None:
         self.calls.append(("prefs", fields))
+        self.updates.update(fields)
 
     async def update_filters(self, chat_id: int, patch: dict) -> dict:
         self.calls.append(("filters", patch))
@@ -595,6 +600,48 @@ def test_listing_view_reports_saved_state(_rich_deps) -> None:
 def test_post_requires_auth(_fresh_settings) -> None:
     status, payload = _call_post({"action": "save", "id": 1}, "garbage")
     assert status.startswith("401")
+
+
+def test_post_model_queues_rescore_end_to_end(_fresh_settings, _rich_deps, monkeypatch) -> None:
+    """The model action must queue a task (regression: ad_ids=None crashed it)."""
+    created: list = []
+
+    class _QueueRepo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def init_schema(self):
+            pass
+
+        async def pending_eval_tasks(self):
+            return []
+
+        async def create_eval_task(self, p_key, criteria, model, limit, days,
+                                   prompt_name="standard", fallback_models=None,
+                                   ad_ids=None):
+            created.append({
+                "model": model, "prompt": prompt_name,
+                "fallbacks": fallback_models, "ad_ids": ad_ids,
+            })
+
+    monkeypatch.setattr("bazcar.db.ListingRepository", _QueueRepo)
+    init_data = _make_init_data(user_id=42)
+    _, payload = _call_post({"action": "model", "id": "x/model"}, init_data)
+    assert payload["ok"] is True and payload["queued"] is True
+    assert created[0]["model"] == "x/model"
+    assert created[0]["ad_ids"] is None
+    _, payload = _call_post({"action": "prompt", "name": "family"}, init_data)
+    assert payload["ok"] is True and payload["queued"] is True
+    assert created[1]["prompt"] == "family"
+    _, payload = _call_post({"action": "rescore", "ids": [7]}, init_data)
+    assert payload["ok"] is True and payload["queued"] is True
+    assert created[2]["ad_ids"] == [7]
 
 
 def test_profile_alias_resolves_to_profiles(_rich_deps) -> None:

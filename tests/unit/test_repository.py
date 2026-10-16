@@ -135,3 +135,91 @@ def test_upsert_evaluation_sql_matches_usage_columns():
     assert _UPSERT_EVALUATION_SQL.count("$") == 12
     for column in ("prompt_tokens", "completion_tokens", "cost_usd"):
         assert column in _UPSERT_EVALUATION_SQL
+
+class _RecordingConn:
+    """Minimal asyncpg stand-in: records execute/fetch calls."""
+
+    def __init__(self, rows=None):
+        self.rows = rows or []
+        self.executes: list = []
+        self.fetches: list = []
+
+    async def execute(self, sql, *args):
+        self.executes.append((sql, args))
+        return "DELETE 1" if sql.strip().upper().startswith("DELETE") else "INSERT 0 1"
+
+    async def fetch(self, sql, *args):
+        self.fetches.append((sql, args))
+        return self.rows
+
+
+def _repo_with(conn) -> object:
+    from bazcar.db import ListingRepository
+
+    repo = ListingRepository("postgres://fake")
+    repo._conn = conn
+    return repo
+
+
+def test_create_eval_task_defaults_survive_none_ids() -> None:
+    """Regression: queueing without ad_ids must not raise (model/prompt/eval)."""
+    conn = _RecordingConn()
+    repo = _repo_with(conn)
+    import asyncio
+
+    asyncio.run(repo.create_eval_task("pk", "crit", "m/1", 100))
+    assert len(conn.executes) == 1
+    sql, args = conn.executes[0]
+    assert "prompt_name" in sql and "ad_ids" in sql
+    # (profile_key, criteria, model, max_listings, days, prompt, fallbacks, ad_ids)
+    assert args[5] == "standard"
+    assert args[7] is None  # NULL ad_ids = whole-window task
+
+
+def test_create_eval_task_targeted_ids_prompt_and_fallbacks() -> None:
+    import asyncio
+    import json
+
+    conn = _RecordingConn()
+    repo = _repo_with(conn)
+    asyncio.run(
+        repo.create_eval_task(
+            "pk", "crit", "m/1", 20, days=365, prompt_name="bargain",
+            fallback_models=["a/1", "b/2"], ad_ids=[7, 0, 8],
+        )
+    )
+    _, args = conn.executes[0]
+    assert args[5] == "bargain"
+    assert json.loads(args[6]) == ["a/1", "b/2"]
+    assert args[7] == [7, 8]  # non-positive ids dropped
+
+
+def test_fetch_and_delete_by_ids_tolerate_none() -> None:
+    import asyncio
+
+    class _ExplodingConn(_RecordingConn):
+        async def execute(self, sql, *args):
+            raise AssertionError("no SQL expected")
+
+        async def fetch(self, sql, *args):
+            raise AssertionError("no SQL expected")
+
+    repo = _repo_with(_ExplodingConn())
+    assert asyncio.run(repo.fetch_listings_by_ids(None)) == []
+    assert asyncio.run(repo.delete_evaluations(None, "pk")) == 0
+
+
+def test_pending_tasks_parse_null_json_columns() -> None:
+    """Pre-migration/NULL fallback_models + ad_ids must parse, not crash."""
+    import asyncio
+
+    conn = _RecordingConn(rows=[{
+        "id": 1, "profile_key": "pk", "criteria": "c", "model": "m",
+        "max_listings": 10, "days": 3, "attempts": 0, "total": 0, "done": 0,
+        "started_at": None, "created_at": None, "prompt_name": None,
+        "fallback_models": None, "ad_ids": None,
+    }])
+    repo = _repo_with(conn)
+    tasks = asyncio.run(repo.pending_eval_tasks())
+    assert tasks[0]["fallback_models"] == []
+    assert tasks[0]["ad_ids"] is None

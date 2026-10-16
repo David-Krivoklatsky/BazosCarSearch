@@ -121,11 +121,22 @@
   .item .price { font-weight: 700; font-size: 15.5px; }
   .iconbtns { display: flex; gap: 6px; }
   .dual { position: relative; height: 34px; margin: 2px 0 0; }
-  .dual input[type="range"] { position: absolute; left: 0; right: 0; top: 0; width: 100%; pointer-events: none; background: transparent; }
-  .dual input[type="range"]::-webkit-slider-runnable-track { background: transparent; }
-  .dual input[type="range"]::-moz-range-track { background: transparent; }
-  .dual input[type="range"]::-webkit-slider-thumb { pointer-events: auto; }
-  .dual input[type="range"]::-moz-range-thumb { pointer-events: auto; }
+  .dual input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    position: absolute; left: 0; right: 0; top: 0; width: 100%; height: 34px;
+    margin: 0; padding: 0; border: 0; background: transparent; pointer-events: none;
+  }
+  .dual input[type="range"]::-webkit-slider-runnable-track { background: transparent; height: 34px; }
+  .dual input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; pointer-events: auto;
+    width: 22px; height: 22px; margin-top: 6px; border-radius: 50%;
+    background: var(--text); border: 2px solid var(--accent); cursor: pointer;
+  }
+  .dual input[type="range"]::-moz-range-track { background: transparent; height: 34px; }
+  .dual input[type="range"]::-moz-range-thumb {
+    pointer-events: auto; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--text); border: 2px solid var(--accent); cursor: pointer;
+  }
   .dual .fill { position: absolute; top: 15px; height: 4px; background: var(--accent); border-radius: 2px; opacity: .9; }
   .dual .track { position: absolute; top: 15px; left: 0; right: 0; height: 4px; background: var(--surface2); border-radius: 2px; }
   .sliderow { margin: 4px 0 10px; }
@@ -154,6 +165,12 @@
   .switch:last-child { border-bottom: 0; }
   .pager { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
   .pager .count { color: var(--muted); font-size: 12.5px; margin-left: auto; }
+  #totop {
+    display: none; position: fixed; right: 16px; bottom: 20px; z-index: 6;
+    width: 44px; height: 44px; border-radius: 50%;
+    background: var(--surface2); border: 1px solid var(--line); color: var(--text);
+    font-size: 18px; cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.4);
+  }
   #loading { color: var(--muted); margin-top: 20px; }
 </style>
 </head>
@@ -170,6 +187,7 @@
 </div>
 <div id="loading">Loading…</div>
 <div id="content"></div>
+<button id="totop" onclick="scrollTop()" aria-label="Scroll to top">↑</button>
 
 <script>
 const tg = window.Telegram && window.Telegram.WebApp;
@@ -210,8 +228,17 @@ let lastRetry = () => load("listings");
 const VIEW_ALIASES = { overview: "insights", stats: "insights", queue: "insights", inventory: "listings", profiles: "profile" };
 const KNOWN_VIEWS = ["listings", "saved", "insights", "profile"];
 
-function buzz(kind) {
-  try {
+if (window.addEventListener) {
+  window.addEventListener("scroll", () => {
+    const b = document.getElementById("totop");
+    if (b) b.style.display = (window.scrollY || 0) > 600 ? "block" : "none";
+  }, { passive: true });
+}
+function scrollTop() {
+  try { window.scrollTo({ top: 0, behavior: "smooth" }); }
+  catch (e) { window.scrollTo(0, 0); }
+}
+function buzz(kind) {  try {
     if (!Haptic) return;
     if (kind === "ok") Haptic.notificationOccurred("success");
     else if (kind === "err") Haptic.notificationOccurred("error");
@@ -526,8 +553,34 @@ let invTotal = 0, invLoaded = 0, loadingMore = false, listObserver = null;
 let boundsCache = null; // {key, bounds}
 let reloadTimer = null;
 function scheduleReload() {
+  if (currentView !== "listings") return;
   clearTimeout(reloadTimer);
-  reloadTimer = setTimeout(() => { invPage = 0; load("listings"); }, 600);
+  reloadTimer = setTimeout(() => softReload(), 600);
+}
+async function softReload() {
+  // Filter changes keep the old cards on screen with skeletons on top —
+  // no black flash, no focus loss in the toolbar (state lives in `inv`).
+  if (currentView !== "listings") return;
+  invPage = 0;
+  loadingMore = false;
+  if (listObserver) { listObserver.disconnect(); listObserver = null; }
+  const cards = document.getElementById("cards");
+  const count = document.getElementById("listcount");
+  if (cards && lastData) {
+    cards.insertAdjacentHTML("afterbegin", '<div class="skel"></div>'.repeat(3));
+    if (count) count.textContent = "Loading…";
+  } else {
+    skeleton(3);
+    content.innerHTML = "";
+  }
+  markTab("listings");
+  setBack(null);
+  buzz();
+  const data = await get(buildListParams());
+  if (!data || currentView !== "listings") return;
+  loading.style.display = "none";
+  if (data.error) { showErr(esc(data.error)); return; }
+  renderListings(data, false);
 }
 function toolbar() {
   const dayIdx = Math.max(0, DAY_OPTS.indexOf(invDays));
@@ -542,7 +595,7 @@ function toolbar() {
     <div class="dayrow" style="flex:1;min-width:190px"><span class="lab">Window <b id="day-lab">${invDays} d</b></span>
     <input type="range" id="dayRange" min="0" max="${DAY_OPTS.length - 1}" step="1" value="${dayIdx}"
       oninput="document.getElementById('day-lab').textContent = DAY_OPTS[+this.value] + ' d'"
-      onchange="invDays = DAY_OPTS[+this.value]; invPage = 0; load('listings')"></div>
+      onchange="invDays = DAY_OPTS[+this.value]; softReload()"></div>
   </div>
   <div class="toolbar">
     <input type="search" id="fq" placeholder="Search titles…" value="${esc(inv.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
@@ -566,14 +619,12 @@ function applyFilters() {
   inv.sort = g("fsort") || "newest";
   inv.status = g("fstatus") || "all";
   boundsCache = null;
-  invPage = 0;
-  load("listings");
+  softReload();
 }
 function resetFilters() {
   inv = { q: "", sort: "newest", status: "all", min_price: "", max_price: "", min_year: "", max_year: "" };
   boundsCache = null;
-  invPage = 0;
-  load("listings");
+  softReload();
 }
 function numOr(v, fb) {
   const n = Number(v);
@@ -732,7 +783,6 @@ async function loadMore() {
   try {
     const data = await get(buildListParams());
     if (!data || currentView !== "listings") return;
-    lastData = data;
     savedIds = new Set([...savedIds, ...(data.saved_ids || [])]);
     renderListings(data, true);
   } finally {
@@ -1002,7 +1052,7 @@ function renderInsights(d) {
 
 function renderProfile(d) {
   const a = d.active || {};
-  const qn = s => esc((s || "").replace(/'/g, "\\'"));
+  const qn = s => esc((s || "").replace(/'/g, "\\'").replace(/[\r\n]+/g, " "));
   const rows = (d.searches || []).map(s => `
     <div class="switch"><span>${s.notify_enabled ? "On" : "Off"} · <b>${esc(s.name)}</b><br>
       <span class="muted">${esc((s.criteria || "").slice(0, 80))}${s.min_score != null ? " · " + s.min_score : ""}</span></span>

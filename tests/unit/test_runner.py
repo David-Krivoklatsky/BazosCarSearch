@@ -698,3 +698,75 @@ def test_evaluate_profile_uses_prompt_in_cache_key(monkeypatch):
     expected = profile_key("c", "m", prompt="family")
     assert keys[0] == expected
     assert expected != profile_key("c", "m")
+
+def test_process_eval_tasks_targeted_ids_score_fresh(monkeypatch):
+    """ad_ids tasks: fetch by ids, drop cached evals, score with prompt+fallbacks."""
+    from bazcar.pipeline.runner import _process_eval_tasks
+
+    calls: list = []
+    evaluated_kwargs: dict = {}
+
+    class _Repo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def init_schema(self):
+            pass
+
+        async def pending_eval_tasks(self):
+            return [{
+                "id": 9, "profile_key": "pk", "criteria": "diesel", "model": "m/1",
+                "max_listings": 2, "days": 365, "attempts": 0, "total": 0, "done": 0,
+                "prompt_name": "bargain", "fallback_models": ["f/1"], "ad_ids": [7, 8],
+            }]
+
+        async def fetch_listings_by_ids(self, ad_ids):
+            calls.append(("fetch_ids", list(ad_ids)))
+            return [
+                {"ad_id": 7, "url": "https://x/7", "title": "A",
+                 "description_preview": "d"},
+                {"ad_id": 8, "url": "https://x/8", "title": "B",
+                 "description_preview": "d"},
+            ]
+
+        async def fetch_recent_listings(self, days, limit):
+            raise AssertionError("targeted task must not use the window")
+
+        async def delete_evaluations(self, ad_ids, p_key):
+            calls.append(("delete", list(ad_ids), p_key))
+            return 2
+
+        async def start_eval_task(self, task_id, total):
+            calls.append(("start", task_id, total))
+
+        async def set_eval_task_progress(self, task_id, done):
+            pass
+
+        async def complete_eval_task(self, task_id):
+            calls.append(("complete", task_id))
+
+        async def bump_eval_task_attempt(self, task_id):
+            raise AssertionError("scored task must not bump attempts")
+
+    async def _fake_evaluate(listings, **kw):
+        evaluated_kwargs.update(kw)
+        return 2, 2
+
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    monkeypatch.setattr("bazcar.pipeline.runner._evaluate_profile", _fake_evaluate)
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(database_url="postgres://x", openrouter_api_key="K"),
+    )
+    assert _run(_process_eval_tasks()) == 1
+    assert ("fetch_ids", [7, 8]) in calls
+    assert any(c[0] == "delete" and c[1] == [7, 8] for c in calls)
+    assert ("complete", 9) in calls
+    assert evaluated_kwargs.get("prompt_name") == "bargain"
+    assert evaluated_kwargs.get("fallback_models") == ["f/1"]

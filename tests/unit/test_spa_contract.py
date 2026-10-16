@@ -127,3 +127,18 @@ def test_spa_js_balanced_braces() -> None:
     code = max(scripts, key=len)
     assert code.count("{") == code.count("}"), "unbalanced braces in SPA script"
     assert code.count("(") == code.count(")"), "unbalanced parens in SPA script"
+
+def test_spa_filter_changes_soft_reload_with_skeletons() -> None:
+    """Filter/sider changes must not wipe the page (no black flash)."""
+    assert "softReload" in HTML
+    # skeletons render on top of the old cards while the new page loads
+    assert "afterbegin" in HTML and "skel" in HTML
+    # toolbar rebuilds from inv state (no focus/value loss beyond the edit)
+    assert "scheduleReload" in HTML
+    # infinite-scroll append must not clobber the merged first-page payload
+    assert "lastData.items = lastData.items.concat(items)" in HTML
+
+
+def test_spa_has_scroll_to_top() -> None:
+    assert 'id="totop"' in HTML
+    assert "scrollTop" in HTML
