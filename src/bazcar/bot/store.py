@@ -27,6 +27,8 @@ class UserPrefs:
     filters: dict = field(default_factory=dict)
     show_limit: int = 5
     notify_enabled: bool = True
+    prompt_name: str = "standard"
+    fallback_models: list = field(default_factory=list)
 
 
 @dataclass
@@ -89,7 +91,7 @@ class UserStore:
     async def get_prefs(self, chat_id: int) -> UserPrefs | None:
         row = await self._require().fetchrow(
             "SELECT chat_id, criteria, model, min_score, show_photo, filters,"
-            " show_limit, notify_enabled"
+            " show_limit, notify_enabled, prompt_name, fallback_models"
             " FROM user_prefs WHERE chat_id = $1",
             chat_id,
         )
@@ -97,6 +99,14 @@ class UserStore:
             return None
         prefs = dict(row)
         prefs["filters"] = json.loads(prefs["filters"]) if prefs["filters"] else {}
+        try:
+            prefs["fallback_models"] = (
+                json.loads(prefs["fallback_models"]) if prefs["fallback_models"] else []
+            )
+        except (TypeError, ValueError):
+            prefs["fallback_models"] = []
+        if not prefs.get("prompt_name"):
+            prefs["prompt_name"] = "standard"
         return UserPrefs(**prefs)
 
     async def ensure_prefs(self, chat_id: int) -> UserPrefs:
@@ -113,13 +123,21 @@ class UserStore:
         """Every registered user's preferences — input for the multi-user sweep."""
         rows = await self._require().fetch(
             "SELECT chat_id, criteria, model, min_score, show_photo, filters,"
-            " show_limit, notify_enabled"
+            " show_limit, notify_enabled, prompt_name, fallback_models"
             " FROM user_prefs ORDER BY chat_id"
         )
         prefs_list = []
         for row in rows:
             data = dict(row)
             data["filters"] = json.loads(data["filters"]) if data["filters"] else {}
+            try:
+                data["fallback_models"] = (
+                    json.loads(data["fallback_models"]) if data["fallback_models"] else []
+                )
+            except (TypeError, ValueError):
+                data["fallback_models"] = []
+            if not data.get("prompt_name"):
+                data["prompt_name"] = "standard"
             prefs_list.append(UserPrefs(**data))
         return prefs_list
 
@@ -132,12 +150,22 @@ class UserStore:
             "filters",
             "show_limit",
             "notify_enabled",
+            "prompt_name",
+            "fallback_models",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return
         if "filters" in updates:
             updates["filters"] = json.dumps(updates["filters"], ensure_ascii=False)
+        if "fallback_models" in updates:
+            updates["fallback_models"] = json.dumps(
+                [m for m in (updates["fallback_models"] or []) if m][:3], ensure_ascii=False
+            )
+        if "prompt_name" in updates:
+            from bazcar.llm.provider import normalize_prompt_name
+
+            updates["prompt_name"] = normalize_prompt_name(updates["prompt_name"])
         columns = ", ".join(f"{key} = ${i + 1}" for i, key in enumerate(updates))
         values = list(updates.values()) + [chat_id]
         await self._require().execute(

@@ -1067,3 +1067,56 @@ def test_saved_shows_alert_threshold(monkeypatch):
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/alert 111 2500"}})
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/saved"}})
     assert "watching below 2 500" in bot.notifier.sent[-1][1]
+
+def test_parse_eval_ids_targets_explicit_cars() -> None:
+    assert Bot._parse_eval_ids("195357798,195357799") == [195357798, 195357799]
+    assert Bot._parse_eval_ids("id 195357798") == [195357798]
+    assert Bot._parse_eval_ids("195357798 195357799") == [195357798, 195357799]
+    assert Bot._parse_eval_ids("30") == []  # limit, not an id
+    assert Bot._parse_eval_ids("days 7") == []
+    assert Bot._parse_eval_ids("all") == []
+
+
+def test_eval_with_ids_queues_targeted_rescore() -> None:
+    bot = _bot_with_prefs()
+    queued: list = []
+    orig = bot._queue_rescore
+
+    async def _fake(chat_id, max_listings=100, days=3, ad_ids=None):
+        queued.append(ad_ids)
+        return True
+
+    bot._queue_rescore = _fake
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/eval 195357798,195357799"}})
+    assert queued == [[195357798, 195357799]]
+    assert "2 cars" in bot.notifier.sent[-1][1]
+    bot._queue_rescore = orig
+
+
+def test_prompt_lists_and_switches() -> None:
+    bot = _bot_with_prefs()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/prompt"}})
+    assert "standard" in bot.notifier.sent[-1][1]
+    assert "bargain" in bot.notifier.sent[-1][1]
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/prompt bargain"}})
+    assert bot.store.prefs[42].prompt_name == "bargain"
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/prompt nope"}})
+    assert "Unknown prompt" in bot.notifier.sent[-1][1]
+
+
+def test_fallbacks_set_list_and_clear() -> None:
+    bot = _bot_with_prefs()
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/fallbacks"}})
+    assert "No fallback models" in bot.notifier.sent[-1][1]
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/fallbacks a/one,b/two"}})
+    assert bot.store.prefs[42].fallback_models == ["a/one", "b/two"]
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/fallbacks"}})
+    assert "a/one" in bot.notifier.sent[-1][1]
+    _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/fallbacks clear"}})
+    assert bot.store.prefs[42].fallback_models == []
+
+
+def test_hidden_aliases_include_prompt_and_fallbacks() -> None:
+    from bazcar.bot.daemon import _HIDDEN_COMMANDS
+
+    assert {"prompt", "fallbacks"} <= _HIDDEN_COMMANDS

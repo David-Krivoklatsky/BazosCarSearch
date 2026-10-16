@@ -26,6 +26,9 @@ def test_spa_covers_all_backend_views() -> None:
         assert legacy in HTML, f"legacy view {legacy} not aliased"
     assert "openListing" in HTML  # listing detail
     assert "openCompare" in HTML  # compare
+    # full-command parity views (every bot command lives in the Mini App)
+    for view in ("bounds", "models", "templates", "health", "digest"):
+        assert f'"{view}"' in HTML, f"SPA never requests view {view}"
 
 
 def test_spa_actions_match_backend() -> None:
@@ -33,7 +36,9 @@ def test_spa_actions_match_backend() -> None:
 
     src = Path(webapp.__file__).read_text(encoding="utf-8")
     for action in ("save", "unsave", "note", "alert", "criteria", "use",
-                   "toggle_search", "notify", "score", "photos"):
+                   "toggle_search", "notify", "score", "photos",
+                   "model", "prompt", "fallbacks", "filters", "search_create",
+                   "search_delete", "template", "eval", "rescore"):
         assert f'"{action}"' in src, f"backend missing action {action}"
         assert action in HTML, f"SPA never calls action {action}"
 
@@ -53,8 +58,22 @@ def test_spa_telegram_native_hooks() -> None:
 def test_spa_has_gallery_description_and_filters() -> None:
     assert "gallery(" in HTML and "image_urls" in HTML
     assert "descBlock" in HTML and "description" in HTML
-    for control in ("fq", "fsort", "fstatus", "fminp", "fmaxp", "fminy", "fmaxy"):
+    for control in ("fq", "fsort", "fstatus", "dayRange", "plo", "yla"):
         assert f'id="{control}"' in HTML, f"missing filter control {control}"
+
+
+def test_spa_listings_layout_and_formats() -> None:
+    """Item 7+8: dd.mm dates, xK mileage, score under photo, price bottom-right."""
+    assert "fmtDateDM" in HTML
+    assert "fmtKmK" in HTML
+    assert "photo-col" in HTML
+    assert "cardHtml" in HTML
+    # infinite scroll instead of pager buttons
+    assert "sentinel" in HTML and "loadMore" in HTML
+    assert "‹ Prev" not in HTML and "Next ›" not in HTML
+    # CSV + window slider live at the top, window button is a slider
+    assert "Export CSV" in HTML and "DAY_OPTS" in HTML
+    assert "30d window" not in HTML
 
 
 def test_spa_renders_stats_v2_sections() -> None:

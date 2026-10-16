@@ -10,7 +10,7 @@ from __future__ import annotations
 #
 # Visible set (22): the daily-driver commands. The rest still work as hidden
 # aliases for backward compatibility (old messages, muscle memory, tests):
-# /score, /photos, /models, /note, /alert, /digest, /status.
+# /score, /photos, /models, /note, /alert, /digest, /status, /prompt, /fallbacks.
 BOT_COMMANDS: list[dict[str, str]] = [
     {"command": "menu", "description": "🏠 Main menu — buttons for everything"},
     {"command": "cars", "description": "🚗 All cars (even without AI score)"},
@@ -37,7 +37,10 @@ BOT_COMMANDS: list[dict[str, str]] = [
 ]
 
 # Hidden aliases: accepted by _command but not advertised in the menu.
-_HIDDEN_COMMANDS = {"score", "photos", "models", "note", "alert", "digest", "status"}
+_HIDDEN_COMMANDS = {
+    "score", "photos", "models", "note", "alert", "digest", "status",
+    "prompt", "fallbacks",
+}
 
 
 MENU_KEYBOARD: dict = {
@@ -150,7 +153,8 @@ COMMAND_HELP: dict[str, str] = {
         "  <code>/eval 30</code> — 30 newest\n"
         "  <code>/eval days 7</code> — 7-day window\n"
         "  <code>/eval 50 days 7</code> — combined\n"
-        "  <code>/eval all</code> — everything in the DB (up to 500)\n\n"
+        "  <code>/eval all</code> — everything in the DB (up to 500)\n"
+        "  <code>/eval 195357798,195357799</code> — re-score just these cars (fresh)\n\n"
         "The bot immediately prints how many cars will be scored and a time "
         "estimate. When done, you'll get a ✅ report."
     ),

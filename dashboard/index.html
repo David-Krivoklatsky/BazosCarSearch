@@ -11,6 +11,7 @@
     --bg: #141413; --surface: #1c1c1a; --surface2: #262624; --text: #ececea;
     --muted: #9a9891; --line: rgba(255,255,255,.08); --accent: #d97757;
     --accent-ink: #fff; --good: #8ba888; --warn: #c9a227; --bad: #c96a54;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -98,18 +99,45 @@
     background: var(--surface); border: 1px solid var(--line); color: var(--text);
     border-radius: 9px; padding: 8px 11px; font-size: 13.5px; max-width: 100%;
   }
+  input, select, textarea {
+    background: var(--surface2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 9px; padding: 8px 11px; font-size: 13.5px; max-width: 100%;
+  }
+  input::placeholder, textarea::placeholder { color: var(--muted); opacity: .8; }
+  input[type="range"] { padding: 0; border: 0; background: transparent; accent-color: var(--accent); }
+  select option { background: var(--surface2); color: var(--text); }
   .toolbar input[type="search"] { flex: 1 1 160px; }
   .toolbar input.num { width: 92px; }
   .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: -4px 0 12px; }
   .item { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: flex-start; }
   .item:last-child { border-bottom: 0; }
-  .item img.thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 9px; flex-shrink: 0; background: var(--surface2); }
-  .item .body { flex: 1; min-width: 0; }
-  .item .title { font-weight: 600; font-size: 14px; }
+  .item .photo-col { display: flex; flex-direction: column; align-items: center; gap: 5px; flex-shrink: 0; width: 72px; }
+  .item img.thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 10px; background: var(--surface2); }
+  .item .photo-col .badge { font-size: 11px; padding: 0 7px; }
+  .item .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .item .title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .item .specs { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
-  .item .side { text-align: right; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
-  .item .price { font-weight: 650; font-size: 14.5px; }
+  .item .side { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-end; gap: 6px; align-self: stretch; }
+  .item .price { font-weight: 700; font-size: 15.5px; }
   .iconbtns { display: flex; gap: 6px; }
+  .dual { position: relative; height: 34px; margin: 2px 0 0; }
+  .dual input[type="range"] { position: absolute; left: 0; right: 0; top: 0; width: 100%; pointer-events: none; background: transparent; }
+  .dual input[type="range"]::-webkit-slider-runnable-track { background: transparent; }
+  .dual input[type="range"]::-moz-range-track { background: transparent; }
+  .dual input[type="range"]::-webkit-slider-thumb { pointer-events: auto; }
+  .dual input[type="range"]::-moz-range-thumb { pointer-events: auto; }
+  .dual .fill { position: absolute; top: 15px; height: 4px; background: var(--accent); border-radius: 2px; opacity: .9; }
+  .dual .track { position: absolute; top: 15px; left: 0; right: 0; height: 4px; background: var(--surface2); border-radius: 2px; }
+  .sliderow { margin: 4px 0 10px; }
+  .sliderow .lab { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-bottom: 2px; }
+  .sliderow .lab b { color: var(--text); font-weight: 600; }
+  .dayrow { display: flex; align-items: center; gap: 10px; }
+  .dayrow input[type="range"] { flex: 1; }
+  .dayrow .lab { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .dayrow .lab b { color: var(--text); }
+  .toptools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .toptools .spacer { flex: 1; }
+  .moretag { text-align: center; color: var(--muted); font-size: 12.5px; padding: 10px 0 2px; }
   .gallery { margin: 10px 0 4px; }
   .gallery .main { width: 100%; border-radius: 10px; max-height: 340px; object-fit: cover; display: block; background: var(--surface2); }
   .gallery .thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
@@ -227,6 +255,21 @@ function eur(v) {
   return Number(v).toLocaleString("sk-SK").replace(/,/g, " ") + " €";
 }
 function km(v) { return v == null ? "? km" : Number(v).toLocaleString("sk-SK") + " km"; }
+function fmtKmK(v) {
+  if (v == null) return "?";
+  const n = Number(v);
+  if (!isFinite(n)) return "?";
+  return n >= 1000 ? Math.round(n / 1000) + "K km" : n + " km";
+}
+function fmtDateDM(v) {
+  // Any date-ish value -> "dd.mm." (Slovak short date). Returns "" when unknown.
+  if (v == null || v === "") return "";
+  const m = String(v).match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}.${m[2]}.`;
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return "";
+  return String(d.getDate()).padStart(2, "0") + "." + String(d.getMonth() + 1).padStart(2, "0") + ".";
+}
 function ago(iso) {
   if (!iso) return "never";
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -331,13 +374,11 @@ async function load(view) {
   content.innerHTML = "";
   const params = new URLSearchParams({ view });
   if (view === "listings") {
-    params.set("view", "inventory");
-    params.set("page", invPage); params.set("days", invDays);
-    params.set("sort", inv.sort); params.set("status", inv.status);
-    if (inv.q) params.set("q", inv.q);
-    ["min_price", "max_price", "min_year", "max_year"].forEach(k => {
-      if (inv[k] !== "") params.set(k, inv[k]);
-    });
+    invPage = 0;
+    loadingMore = false;
+    if (listObserver) { listObserver.disconnect(); listObserver = null; }
+    const lp = buildListParams();
+    lp.forEach((v, k) => params.set(k, v));
   } else if (view === "insights") {
     params.set("view", "insights");
   }
@@ -348,8 +389,54 @@ async function load(view) {
   if (data.error && view !== "listing") { showErr(esc(data.error)); return; }
   if (view === "listings") renderListings(data);
   else if (view === "saved") renderSaved(data);
-  else if (view === "insights") renderInsights(data);
+  else if (view === "insights") renderInsightsFull(data);
   else if (view === "profile") renderProfile(data);
+}
+async function renderInsightsFull(d) {
+  renderInsights(d);
+  try {
+    const [h, dg] = await Promise.all([
+      get(new URLSearchParams({ view: "health" })),
+      get(new URLSearchParams({ view: "digest" })),
+    ]);
+    if (currentView !== "insights") return;
+    const el = document.getElementById("ins-extra");
+    if (el) el.innerHTML = healthHtml(h) + digestHtml(dg);
+  } catch (e) { /* main insights already rendered; extras are optional */ }
+}
+function healthHtml(h) {
+  if (!h || h.error) return "";
+  const run = h.last_run || {};
+  const spend = Number(h.spend_30d_usd || 0);
+  const budget = h.budget_usd != null ? Number(h.budget_usd) : null;
+  const over = budget != null && spend >= budget;
+  return `<div class="section"><h2>Health</h2><div class="card">
+    <div class="kv"><span class="k">Last run</span><span class="v">${run.finished_at ? ago(run.finished_at) : "none recorded"}</span></div>
+    <div class="kv"><span class="k">Run output</span><span class="v">${run.inserted ?? "?"} new · ${run.evaluated ?? "?"} scored · ${run.notified ?? "?"} notifications</span></div>
+    <div class="kv"><span class="k">Queue</span><span class="v">${h.queue_pending ?? "?"} waiting</span></div>
+    <div class="kv"><span class="k">AI spend (30 d)</span><span class="v">$${spend.toFixed(4)}${budget != null ? " / $" + budget : ""}${over ? ' <span class="badge b-warn">budget hit</span>' : ""}</span></div>
+    <div class="kv"><span class="k">Services</span><span class="v">DB ${h.database ? "ok" : "MISSING"} · LLM key ${h.llm_key ? "ok" : "MISSING"}</span></div>
+  </div></div>`;
+}
+function digestHtml(dg) {
+  if (!dg || dg.error) return "";
+  const drops = (dg.drops || []).map(x => `
+    <div class="item"><div class="body">
+      <div class="title"><a href="${esc(x.url)}">${esc(x.title)}</a></div>
+      <div class="specs">${eur(x.prev)} → ${eur(x.now_price)} · ${esc(x.city || "")}</div>
+    </div><div class="side"><span class="badge b-drop">−${x.pct} %</span></div></div>`).join("");
+  const top = (dg.top || []).map(t => `
+    <div class="item"><div class="body">
+      <div class="title"><a href="${esc(t.url)}">${esc(t.title)}</a></div>
+      <div class="specs">${eur(t.price_eur)} · score ${t.score ?? "?"}</div>
+    </div><div class="side"><button class="mini" onclick="openListing(${t.ad_id}, 'insights')">View</button></div></div>`).join("");
+  const counts = (dg.trend || []).map(x => x.n);
+  return `<div class="section"><h2>Digest (7 days)</h2><div class="card">
+    <div class="kv"><span class="k">New listings</span><span class="v">${dg.new_total ?? "?"}</span></div>
+    ${counts.length ? spark(counts) : ""}
+  </div></div>
+  <div class="section"><h2>Top matches (7 days)</h2><div class="card">${top || '<div class="muted">None yet.</div>'}</div></div>
+  <div class="section"><h2>Discounts (7 days)</h2><div class="card">${drops || '<div class="muted">None yet.</div>'}</div></div>`;
 }
 function backTo(view) { setBack(null); load(view); }
 function backToCompare() { openCompare(lastCompareIds, lastCompareFrom); }
@@ -433,16 +520,31 @@ function gallery(images) {
     (imgs.length > 1 ? `<div class="thumbs">${thumbs}</div>` : "") + `</div>`;
 }
 
+const DAY_OPTS = [7, 14, 30, 60, 90, 180, 365];
+const PER = 30;
+let invTotal = 0, invLoaded = 0, loadingMore = false, listObserver = null;
+let boundsCache = null; // {key, bounds}
+let reloadTimer = null;
+function scheduleReload() {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(() => { invPage = 0; load("listings"); }, 600);
+}
 function toolbar() {
+  const dayIdx = Math.max(0, DAY_OPTS.indexOf(invDays));
   const adv = showFilters ? `
-    <div class="filters">
-      <input class="num" id="fminp" inputmode="numeric" placeholder="€ from" value="${esc(inv.min_price)}">
-      <input class="num" id="fmaxp" inputmode="numeric" placeholder="€ to" value="${esc(inv.max_price)}">
-      <input class="num" id="fminy" inputmode="numeric" placeholder="Year from" value="${esc(inv.min_year)}">
-      <input class="num" id="fmaxy" inputmode="numeric" placeholder="Year to" value="${esc(inv.max_year)}">
-      <button class="mini" onclick="resetFilters()">Reset</button>
+    <div class="card" style="margin:-4px 0 12px">
+      <div class="sliderow"><div class="lab"><span>Price</span><b id="plo-lab"></b></div><div class="dual" id="plo"></div></div>
+      <div class="sliderow"><div class="lab"><span>Year</span><b id="yla-lab"></b></div><div class="dual" id="yla"></div></div>
+      <div class="rowbtn" style="margin-top:2px"><button class="mini" onclick="resetFilters()">Reset all filters</button></div>
     </div>` : "";
-  return `<div class="toolbar">
+  return `<div class="toptools">
+    <button class="btn" onclick="exportCsv()">Export CSV</button>
+    <div class="dayrow" style="flex:1;min-width:190px"><span class="lab">Window <b id="day-lab">${invDays} d</b></span>
+    <input type="range" id="dayRange" min="0" max="${DAY_OPTS.length - 1}" step="1" value="${dayIdx}"
+      oninput="document.getElementById('day-lab').textContent = DAY_OPTS[+this.value] + ' d'"
+      onchange="invDays = DAY_OPTS[+this.value]; invPage = 0; load('listings')"></div>
+  </div>
+  <div class="toolbar">
     <input type="search" id="fq" placeholder="Search titles…" value="${esc(inv.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
     <select id="fsort" onchange="applyFilters()">
       <option value="newest" ${inv.sort === "newest" ? "selected" : ""}>Newest</option>
@@ -455,7 +557,7 @@ function toolbar() {
       <option value="rated" ${inv.status === "rated" ? "selected" : ""}>Scored</option>
       <option value="unevaluated" ${inv.status === "unevaluated" ? "selected" : ""}>Unscored</option>
     </select>
-    <button class="mini ${showFilters ? "on" : ""}" onclick="showFilters=!showFilters;renderListings(lastData)">Filters</button>
+    <button class="mini ${showFilters ? "on" : ""}" onclick="showFilters=!showFilters;renderListings(lastData)">Sliders</button>
   </div>${adv}`;
 }
 function applyFilters() {
@@ -463,55 +565,179 @@ function applyFilters() {
   inv.q = g("fq").trim();
   inv.sort = g("fsort") || "newest";
   inv.status = g("fstatus") || "all";
-  if (showFilters) {
-    inv.min_price = g("fminp").trim(); inv.max_price = g("fmaxp").trim();
-    inv.min_year = g("fminy").trim(); inv.max_year = g("fmaxy").trim();
-  }
+  boundsCache = null;
   invPage = 0;
   load("listings");
 }
 function resetFilters() {
   inv = { q: "", sort: "newest", status: "all", min_price: "", max_price: "", min_year: "", max_year: "" };
+  boundsCache = null;
   invPage = 0;
   load("listings");
 }
+function numOr(v, fb) {
+  const n = Number(v);
+  return (v === "" || v == null || !isFinite(n)) ? fb : n;
+}
+async function ensureBounds() {
+  const key = `${inv.q}|${inv.status}|${invDays}`;
+  if (boundsCache && boundsCache.key === key) return boundsCache.bounds;
+  const params = new URLSearchParams({ view: "bounds", days: invDays, status: inv.status });
+  if (inv.q) params.set("q", inv.q);
+  const data = await get(params);
+  const b = (data && data.bounds) || null;
+  boundsCache = { key, bounds: b };
+  return b;
+}
+function mountDual(elId, labId, o) {
+  const el = document.getElementById(elId);
+  if (!el || o.max <= o.min) return;
+  const lo = Math.min(o.lo, o.hi), hi = Math.max(o.lo, o.hi);
+  el.innerHTML = `<div class="track"></div><div class="fill" id="${elId}-f"></div>` +
+    `<input type="range" id="${elId}-a" min="${o.min}" max="${o.max}" step="${o.step}" value="${lo}">` +
+    `<input type="range" id="${elId}-b" min="${o.min}" max="${o.max}" step="${o.step}" value="${hi}">`;
+  const paint = () => {
+    const a = document.getElementById(elId + "-a"), b = document.getElementById(elId + "-b");
+    if (!a || !b) return;
+    const x = Math.min(+a.value, +b.value), y = Math.max(+a.value, +b.value);
+    const f = document.getElementById(elId + "-f");
+    const span = (o.max - o.min) || 1;
+    if (f) { f.style.left = ((x - o.min) / span * 100) + "%"; f.style.width = ((y - x) / span * 100) + "%"; }
+    const lab = document.getElementById(labId);
+    if (lab) lab.textContent = o.fmt(x) + " – " + o.fmt(y);
+  };
+  const commit = () => {
+    const a = document.getElementById(elId + "-a"), b = document.getElementById(elId + "-b");
+    if (!a || !b) return;
+    o.onLo(Math.min(+a.value, +b.value));
+    o.onHi(Math.max(+a.value, +b.value));
+    paint();
+    scheduleReload();
+  };
+  el.querySelectorAll("input").forEach(i => {
+    i.addEventListener("input", paint);
+    i.addEventListener("change", commit);
+  });
+  paint();
+}
+async function refreshBounds() {
+  const b = await ensureBounds();
+  if (currentView !== "listings" || !showFilters) return;
+  if (!b || b.n === 0) {
+    const plo = document.getElementById("plo");
+    if (plo) plo.innerHTML = '<div class="muted">No data for these filters.</div>';
+    return;
+  }
+  const pMin = b.min_price != null ? b.min_price : 0;
+  const pMax = b.max_price != null ? b.max_price : pMin + 1000;
+  const yMin = b.min_year != null ? b.min_year : 2000;
+  const yMax = b.max_year != null ? b.max_year : yMin;
+  mountDual("plo", "plo-lab", {
+    min: pMin, max: Math.max(pMax, pMin + 1), step: 50,
+    lo: numOr(inv.min_price, pMin), hi: numOr(inv.max_price, Math.max(pMax, pMin + 1)),
+    fmt: v => eur(v),
+    onLo: v => { inv.min_price = v <= pMin ? "" : v; },
+    onHi: v => { inv.max_price = v >= pMax ? "" : v; },
+  });
+  mountDual("yla", "yla-lab", {
+    min: yMin, max: Math.max(yMax, yMin + 1), step: 1,
+    lo: numOr(inv.min_year, yMin), hi: numOr(inv.max_year, Math.max(yMax, yMin + 1)),
+    fmt: v => String(v),
+    onLo: v => { inv.min_year = v <= yMin ? "" : v; },
+    onHi: v => { inv.max_year = v >= yMax ? "" : v; },
+  });
+}
 
 let lastData = null;
-function renderListings(d) {
-  lastData = d;
-  const items = d.items || [];
-  savedIds = new Set(d.saved_ids || [...savedIds]);
-  const from = d.page * d.page_size + 1;
-  const to = d.page * d.page_size + items.length;
-  const cards = items.map(r => {
-    const img = (r.image_urls || []).find(extUrl);
-    const isSaved = savedIds.has(r.ad_id);
-    return `<div class="item">
+function cardHtml(r) {
+  const img = (r.image_urls || []).find(extUrl);
+  const isSaved = savedIds.has(r.ad_id);
+  const date = fmtDateDM(r.published_date) || fmtDateDM(r.first_seen_at);
+  return `<div class="item">
+    <div class="photo-col">
       ${img ? `<img class="thumb" src="${esc(img)}" loading="lazy" alt="">` : ""}
-      <div class="body">
-        <div class="title"><a href="${esc(r.url)}">${esc(r.title)}</a></div>
-        <div class="specs">${r.year ?? "?"} · ${km(r.mileage_km)} · ${esc(r.city || "")} · ${esc((r.published_date || "").slice(5) || ago(r.first_seen_at))}</div>
-        <div class="specs">${badge(r)}${staleBadge(r.last_seen_at)}</div>
+      ${badge(r)}
+    </div>
+    <div class="body">
+      <div class="title"><a href="${esc(r.url)}">${esc(r.title)}</a></div>
+      <div class="specs">${r.year ?? "?"} · ${fmtKmK(r.mileage_km)} · ${esc(r.city || "")} · ${date}</div>
+      <div class="specs">${staleBadge(r.last_seen_at)}</div>
+    </div>
+    <div class="side">
+      <div class="price">${eur(r.price_eur)}</div>
+      <div class="iconbtns">
+        <button class="mini" onclick="openListing(${r.ad_id}, 'listings')">View</button>
+        <button class="mini ${compareIds.includes(r.ad_id) ? "on" : ""}" onclick="toggleCompare(${r.ad_id}, this)">⇄</button>
+        <button class="mini ${isSaved ? "on" : ""}" onclick="toggleSave(${r.ad_id}, this)">${isSaved ? "Saved" : "Save"}</button>
       </div>
-      <div class="side">
-        <div class="price">${eur(r.price_eur)}</div>
-        <div class="iconbtns">
-          <button class="mini" onclick="openListing(${r.ad_id}, 'listings')">View</button>
-          <button class="mini ${compareIds.includes(r.ad_id) ? "on" : ""}" onclick="toggleCompare(${r.ad_id}, this)">⇄</button>
-          <button class="mini ${isSaved ? "on" : ""}" onclick="toggleSave(${r.ad_id}, this)">${isSaved ? "Saved" : "Save"}</button>
-        </div>
-      </div>
-    </div>`;
-  }).join("");
-  content.innerHTML = toolbar() + `
-    <div class="muted" style="margin:2px 0 6px">${items.length ? `Showing ${from}–${to} of ${d.total} · last ${invDays} days` : "No results"}</div>
-    ${items.length ? cards : '<div class="muted">Nothing matches these filters — try loosening them.</div>'}
-    <div class="pager">
-      <button class="btn" ${d.page === 0 ? "disabled" : ""} onclick="invPage--;load('listings')">‹ Prev</button>
-      <button class="btn" ${to >= d.total ? "disabled" : ""} onclick="invPage++;load('listings')">Next ›</button>
-      <button class="btn" onclick="invDays = invDays === 30 ? 90 : (invDays === 90 ? 7 : 30); invPage = 0; load('listings')">${invDays}d window</button>
-      <button class="btn" onclick="exportCsv()">Export CSV</button>
-    </div>` + cmpBar("listings");
+    </div>
+  </div>`;
+}
+function listCountHtml(loaded, total) {
+  return loaded
+    ? `Showing ${loaded} of ${total} · last ${invDays} days`
+    : "No results";
+}
+function renderListings(d, append) {
+  const items = d.items || [];
+  savedIds = new Set([...savedIds, ...(d.saved_ids || [])]);
+  if (!append) {
+    lastData = d;
+    invTotal = d.total || 0;
+    invLoaded = items.length;
+    content.innerHTML = toolbar() + `
+      <div class="muted" id="listcount" style="margin:2px 0 6px">${listCountHtml(invLoaded, invTotal)}</div>
+      <div id="cards">${items.length ? items.map(cardHtml).join("") : '<div class="muted">Nothing matches these filters — try loosening them.</div>'}</div>
+      <div class="moretag" id="sentinel"></div>` + cmpBar("listings");
+    if (showFilters) refreshBounds();
+    watchSentinel();
+  } else {
+    invLoaded += items.length;
+    if (lastData && Array.isArray(lastData.items)) lastData.items = lastData.items.concat(items);
+    const cards = document.getElementById("cards");
+    if (cards) cards.insertAdjacentHTML("beforeend", items.map(cardHtml).join(""));
+    const count = document.getElementById("listcount");
+    if (count) count.textContent = listCountHtml(invLoaded, invTotal);
+  }
+  updateSentinel();
+}
+function buildListParams() {
+  const params = new URLSearchParams({ view: "inventory" });
+  params.set("page", invPage); params.set("days", invDays); params.set("per", PER);
+  params.set("sort", inv.sort); params.set("status", inv.status);
+  if (inv.q) params.set("q", inv.q);
+  ["min_price", "max_price", "min_year", "max_year"].forEach(k => {
+    if (inv[k] !== "") params.set(k, inv[k]);
+  });
+  return params;
+}
+function watchSentinel() {
+  if (listObserver) { listObserver.disconnect(); listObserver = null; }
+  const s = document.getElementById("sentinel");
+  if (!s || typeof IntersectionObserver === "undefined") return;
+  listObserver = new IntersectionObserver(es => {
+    if (es.some(e => e.isIntersecting)) loadMore();
+  }, { rootMargin: "600px" });
+  listObserver.observe(s);
+}
+function updateSentinel() {
+  const s = document.getElementById("sentinel");
+  if (!s) return;
+  s.textContent = invLoaded >= invTotal ? (invTotal ? "That's everything." : "") : "Loading more…";
+}
+async function loadMore() {
+  if (loadingMore || currentView !== "listings" || invLoaded >= invTotal) return;
+  loadingMore = true;
+  invPage++;
+  try {
+    const data = await get(buildListParams());
+    if (!data || currentView !== "listings") return;
+    lastData = data;
+    savedIds = new Set([...savedIds, ...(data.saved_ids || [])]);
+    renderListings(data, true);
+  } finally {
+    loadingMore = false;
+  }
 }
 async function exportCsv() {
   const params = new URLSearchParams({ view: "inventory", per: 200, days: invDays, sort: inv.sort, status: inv.status });
@@ -663,11 +889,12 @@ function renderListing(d, from) {
     <div class="rowbtn" style="margin-top:0">
       ${backBtn}
       <button class="mini ${isSaved ? "on" : ""}" id="detail-save" onclick="toggleSave(${r.ad_id}, this, 'detail')">${isSaved ? "Saved" : "Save"}</button>
+      <button class="mini" onclick="rescoreIds([${r.ad_id}])">Re-score</button>
       <a href="${esc(r.url)}" style="align-self:center">Open on Bazoš →</a>
     </div>
     <div class="section card">
       <h2 style="font-size:17px;margin-bottom:6px">${esc(r.title)}${stale}</h2>
-      <div class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)} · ${esc(r.city || "?")} · listed ${esc(r.published_date || "?")}${r.views != null ? ` · ${r.views} views` : ""}</div>
+      <div class="muted">${eur(r.price_eur)} · ${r.year ?? "?"} · ${km(r.mileage_km)} · ${esc(r.city || "?")} · listed ${fmtDateDM(r.published_date) || "?"}${r.views != null ? ` · ${r.views} views` : ""}</div>
       ${gallery(r.image_urls)}
       ${trend}
       ${sparkHtml}
@@ -685,7 +912,8 @@ function renderCompare(d, from) {
     ${staleBadge(r.last_seen_at)}</td>`).join("");
   const row = (label, fn) => `<tr><td>${label}</td>${items.map(r => `<td>${fn(r)}</td>`).join("")}</tr>`;
   content.innerHTML = `
-    <div class="rowbtn" style="margin-top:0"><button class="mini" onclick="backTo('${from || "listings"}')">‹ Back</button></div>
+    <div class="rowbtn" style="margin-top:0"><button class="mini" onclick="backTo('${from || "listings"}')">‹ Back</button>
+    <button class="mini" onclick="rescoreIds(compareIds)">Re-score these</button></div>
     <div class="section"><h2>Compare (${items.length})</h2><div class="card cmp-scroll">
     <table class="cmp-table">
       <tr><td></td>${cols}</tr>
@@ -768,21 +996,30 @@ function renderInsights(d) {
     <div class="section"><h2>Last run</h2><div class="card"><div class="muted">
       ${run.finished_at ? ago(run.finished_at) : "none recorded"} ·
       ${run.inserted ?? "?"} new · ${run.evaluated ?? "?"} scored · ${run.notified ?? "?"} notifications
-    </div></div></div>`;
+    </div></div></div>
+    <div id="ins-extra"></div>`;
 }
 
 function renderProfile(d) {
   const a = d.active || {};
+  const qn = s => esc((s || "").replace(/'/g, "\\'"));
   const rows = (d.searches || []).map(s => `
     <div class="switch"><span>${s.notify_enabled ? "On" : "Off"} · <b>${esc(s.name)}</b><br>
       <span class="muted">${esc((s.criteria || "").slice(0, 80))}${s.min_score != null ? " · " + s.min_score : ""}</span></span>
-      <span style="white-space:nowrap"><button class="tgl" onclick="useProfile('${esc(s.name.replace(/'/g, "\\'"))}')">Use</button>
-      <button class="tgl ${s.notify_enabled ? "on" : ""}" onclick="toggleSearch('${esc(s.name.replace(/'/g, "\\'"))}', ${!s.notify_enabled})">${s.notify_enabled ? "On" : "Off"}</button></span>
+      <span style="white-space:nowrap"><button class="tgl" onclick="useProfile('${qn(s.name)}')">Use</button>
+      <button class="tgl ${s.notify_enabled ? "on" : ""}" onclick="toggleSearch('${qn(s.name)}', ${!s.notify_enabled})">${s.notify_enabled ? "On" : "Off"}</button>
+      <button class="tgl" onclick="deleteSearch('${qn(s.name)}')">Del</button></span>
     </div>`).join("");
+  const prompts = a.prompts || { standard: "Standard" };
+  const promptOpts = Object.keys(prompts).map(n =>
+    `<option value="${n}" ${n === a.prompt_name ? "selected" : ""}>${esc(prompts[n])}</option>`).join("");
+  const f = a.filters || {};
   content.innerHTML = `
     <div class="section"><h2>Active profile</h2><div class="card">
-      <div class="kv"><span class="k">Criteria</span><span class="v" id="crit-line">${esc(a.criteria || "—")} <button class="mini" onclick="editCriteria(this, '${esc((a.criteria || "").replace(/'/g, "\\'"))}')">Edit</button></span></div>
-      <div class="kv"><span class="k">Model</span><span class="v">${esc(a.model || "—")}</span></div>
+      <div class="kv"><span class="k">Criteria</span><span class="v" id="crit-line">${esc(a.criteria || "—")} <button class="mini" onclick="editCriteria(this, '${qn(a.criteria || "")}')">Edit</button></span></div>
+      <div class="kv"><span class="k">Model</span><span class="v" id="model-line">${esc(a.model || "—")} <button class="mini" onclick="document.getElementById('model-card').scrollIntoView()">Change</button></span></div>
+      <div class="kv"><span class="k">Prompt</span><span class="v"><select id="prompt-sel" onchange="setPrompt(this.value)">${promptOpts}</select></span></div>
+      <div class="kv"><span class="k">Fallbacks</span><span class="v" id="fb-line">${esc((a.fallback_models || []).join(", ") || "—")} <button class="mini" onclick="editFallbacks(this, '${qn((a.fallback_models || []).join(", "))}')">Edit</button></span></div>
       <div class="switch"><span>Min. score (${a.min_score ?? "—"})</span>
         <span><button class="tgl" onclick="setScore(${(a.min_score ?? 60) - 5})">−5</button>
         <button class="tgl" onclick="setScore(${(a.min_score ?? 60) + 5})">+5</button></span></div>
@@ -791,8 +1028,40 @@ function renderProfile(d) {
       <div class="switch"><span>Alerts (all)</span>
         <button class="tgl ${a.notify_enabled ? "on" : ""}" onclick="setNotify(${!a.notify_enabled})">${a.notify_enabled ? "on" : "off"}</button></div>
     </div></div>
+    <div class="section"><h2>Bazoš filters (what gets scraped)</h2><div class="card">
+      <div class="toolbar" style="margin-bottom:0">
+        <input id="ff-q" placeholder="query" value="${esc(f.query || "")}" style="flex:1 1 140px">
+        <input id="ff-psc" placeholder="ZIP" value="${esc(f.psc || "")}" style="width:90px">
+        <input id="ff-dist" inputmode="numeric" placeholder="km radius" value="${esc(f.distance_km ?? "")}" style="width:100px">
+        <input id="ff-minp" inputmode="numeric" placeholder="€ from" value="${esc(f.min_price ?? "")}" style="width:90px">
+        <input id="ff-maxp" inputmode="numeric" placeholder="€ to" value="${esc(f.max_price ?? "")}" style="width:90px">
+        <button class="mini on" onclick="saveFilters()">Save</button>
+        <button class="mini" onclick="clearFilters()">Clear</button>
+      </div>
+    </div></div>
+    <div class="section" id="model-card"><h2>AI model</h2><div class="card">
+      <div class="muted" id="models-note">Loading models…</div>
+      <div class="toolbar" style="margin:8px 0 0"><select id="model-sel" style="flex:1"></select>
+      <button class="mini on" onclick="setModel()">Use model</button></div>
+    </div></div>
     <div class="section"><h2>Saved searches (${(d.searches || []).length})</h2><div class="card">
-      ${rows || '<div class="muted">None yet — save a search in the bot with /search.</div>'}</div></div>`;
+      ${rows || '<div class="muted">None yet.</div>'}
+      <div class="toolbar" style="margin:10px 0 0">
+        <input id="ns-name" placeholder="name" maxlength="60" style="width:110px">
+        <input id="ns-crit" placeholder="criteria…" maxlength="500" style="flex:1 1 160px">
+        <button class="mini on" onclick="createSearch()">Save</button>
+      </div></div></div>
+    <div class="section"><h2>Templates</h2><div class="card" id="tpl-list"><div class="muted">Loading…</div></div></div>
+    <div class="section"><h2>Re-score</h2><div class="card">
+      <div class="rowbtn" style="margin-top:0"><button class="mini on" onclick="queueEval()">Re-score newest 100 (3 days)</button></div>
+      <div class="toolbar" style="margin:10px 0 0">
+        <input id="rs-ids" inputmode="numeric" placeholder="ad ids, e.g. 195357798, 195357799" style="flex:1 1 200px">
+        <button class="mini" onclick="rescoreIds((document.getElementById('rs-ids').value || '').split(/[ ,]+/))">Re-score these</button>
+      </div>
+      <div class="muted">Targeted re-scores evaluate fresh (cache bypassed).</div>
+    </div></div>`;
+  loadModelsIntoPicker(a.model);
+  loadTemplates();
 }
 function editCriteria(btn, current) {
   const line = document.getElementById("crit-line");
@@ -827,6 +1096,102 @@ async function setScore(min_score) {
 async function setPhotos(enabled) {
   const r = await post("photos", { enabled });
   if (r && r.ok) { buzz("ok"); load("profile"); }
+}
+async function setPrompt(name) {
+  const r = await post("prompt", { name });
+  if (r && r.ok) { buzz("ok"); toast(r.queued ? "Prompt saved — re-score queued." : ("Note: " + (r.note || "already queued."))); load("profile"); }
+  else if (r && r.error) { toast(r.error); load("profile"); }
+}
+function editFallbacks(btn, current) {
+  const line = document.getElementById("fb-line");
+  line.innerHTML = `<input id="fb-in" maxlength="400" value="${esc(current).replace(/"/g, "&quot;")}" placeholder="model/one, model/two (max 3)" style="width:70%">` +
+    ` <button class="mini on" onclick="saveFallbacks()">OK</button>`;
+  const inp = document.getElementById("fb-in");
+  if (inp) inp.focus();
+}
+async function saveFallbacks() {
+  const inp = document.getElementById("fb-in");
+  const r = await post("fallbacks", { models: ((inp && inp.value) || "").split(",") });
+  if (r && r.ok) { buzz("ok"); load("profile"); }
+  else if (r && r.error) { toast(r.error); }
+}
+function _fv(id) {
+  const el = document.getElementById(id);
+  return ((el && el.value) || "").trim();
+}
+async function saveFilters() {
+  const r = await post("filters", { filters: {
+    query: _fv("ff-q"), psc: _fv("ff-psc"), dist: _fv("ff-dist"),
+    min_price: _fv("ff-minp"), max_price: _fv("ff-maxp"),
+  } });
+  if (r && r.ok) { buzz("ok"); toast("Scrape filters saved."); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function clearFilters() {
+  const r = await post("filters", { filters: { query: "", psc: "", dist: "", min_price: "", max_price: "" } });
+  if (r && r.ok) { buzz("ok"); load("profile"); }
+}
+async function loadModelsIntoPicker(current) {
+  const data = await get(new URLSearchParams({ view: "models" }));
+  const sel = document.getElementById("model-sel");
+  const note = document.getElementById("models-note");
+  if (!sel) return;
+  if (!data || !data.models) { if (note) note.textContent = "Models unavailable."; return; }
+  const free = data.models.filter(m => m.free), paid = data.models.filter(m => !m.free);
+  const opt = m => `<option value="${esc(m.id)}" ${m.id === (current || data.current) ? "selected" : ""}>${esc(m.id)} · ${m.free ? "free" : "$" + m.price_in + "/M"} · ${m.rpm ? m.rpm + "/min" : "∞"}</option>`;
+  sel.innerHTML = `<optgroup label="Free">${free.map(opt).join("")}</optgroup><optgroup label="Paid">${paid.map(opt).join("")}</optgroup>`;
+  if (note) {
+    let stamp = "";
+    try { stamp = data.fetched_at ? fmtDateDM(data.fetched_at) + " " + String(data.fetched_at).slice(11, 16) : ""; } catch (e) {}
+    note.textContent = `${data.models.length} JSON-capable models · list refreshed ${stamp || "?"} (daily). Fallbacks: ${(data.fallback_models || []).join(", ") || "none"}.`;
+  }
+}
+async function setModel() {
+  const sel = document.getElementById("model-sel");
+  const r = await post("model", { id: (sel && sel.value) || "" });
+  if (r && r.ok) { buzz("ok"); toast(r.queued ? "Model saved — re-score queued." : ("Note: " + (r.note || "already queued."))); load("profile"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function createSearch() {
+  const r = await post("search_create", { name: _fv("ns-name"), criteria: _fv("ns-crit") });
+  if (r && r.ok) { buzz("ok"); load("profile"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function deleteSearch(name) {
+  const r = await post("search_delete", { name });
+  if (r && r.ok) { buzz("ok"); load("profile"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function loadTemplates() {
+  const data = await get(new URLSearchParams({ view: "templates" }));
+  const el = document.getElementById("tpl-list");
+  if (!el) return;
+  if (!data || !data.templates) { el.innerHTML = '<div class="muted">Templates unavailable.</div>'; return; }
+  el.innerHTML = data.templates.map(t => `
+    <div class="switch"><span>${esc(t.emoji || "")} <b>${esc(t.name)}</b><br>
+      <span class="muted">${esc(t.description || "")}</span></span>
+      <button class="tgl" onclick="applyTemplate('${esc(t.key)}')">Apply</button></div>`).join("");
+}
+async function applyTemplate(key) {
+  const r = await post("template", { key });
+  if (r && r.ok) { buzz("ok"); toast(r.queued ? "Template applied — re-score queued." : ("Note: " + (r.note || "already queued."))); load("profile"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function queueEval() {
+  const r = await post("eval", { limit: 100, days: 3 });
+  if (r && r.ok) { buzz("ok"); toast(r.queued ? "Re-score queued." : ("Note: " + (r.note || "already queued."))); load("insights"); }
+  else if (r && r.error) { toast(r.error); }
+}
+async function rescoreIds(ids) {
+  const list = (ids || []).map(Number).filter(n => n > 0).slice(0, 20);
+  if (!list.length) { toast("Nothing to re-score."); return; }
+  const r = await post("rescore", { ids: list });
+  if (r && r.ok) {
+    buzz("ok");
+    toast(r.queued ? `Re-score queued for ${list.length} car${list.length > 1 ? "s" : ""} — fresh scores, cache bypassed.` : (r.note || "Already queued."));
+    load("insights");
+  }
+  else if (r && r.error) { toast(r.error); }
 }
 
 document.querySelectorAll(".tab").forEach(t =>

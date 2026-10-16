@@ -35,8 +35,13 @@ class _Settings:
         self.telegram_min_score = kw.get("telegram_min_score", 70)
         self.telegram_bot_token = kw.get("telegram_bot_token")
         self.openrouter_api_key = kw.get("openrouter_api_key")
+        self.opencode_api_key = kw.get("opencode_api_key")
         self.openrouter_model = kw.get("openrouter_model")
         self.monthly_budget_usd = kw.get("monthly_budget_usd")
+
+    @property
+    def llm_api_key(self):
+        return self.openrouter_api_key or self.opencode_api_key
 
 
 def _run(coro):
@@ -603,3 +608,93 @@ def test_evaluate_pauses_when_budget_exhausted(monkeypatch):
     monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
     users = [_user(7, None, criteria="diesel", model="m/1", min_score=70)]
     assert _run(_evaluate([_listing()], enabled=True, users=users)) == 0
+
+def test_profile_key_prompt_forks_cache() -> None:
+    # standard reproduces the historical key (existing caches keep hitting)
+    assert profile_key("c", "m") == profile_key("c", "m", prompt="standard")
+    assert profile_key("c", "m") != profile_key("c", "m", prompt="bargain")
+    assert profile_key("c", "m", prompt="bargain") != profile_key("c", "m", prompt="family")
+
+
+def test_evaluate_profile_falls_back_to_next_model(monkeypatch):
+    from bazcar.core.models import DealEvaluation
+    from bazcar.pipeline.runner import _evaluate_profile
+
+    seen: list = []
+
+    class _FakeLLM:
+        def __init__(self, api_key, **kw):
+            self.model = kw.get("model")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def evaluate(self, listing, *, criteria=None, prompt_name="standard"):
+            seen.append((self.model, prompt_name))
+            if self.model == "bad/primary":
+                return None  # total failure -> fallback must kick in
+            return DealEvaluation(score=80, why="ok", is_car=True)
+
+    monkeypatch.setattr("bazcar.llm.LLMProvider", _FakeLLM)
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(database_url="postgres://x", openrouter_api_key="K"),
+    )
+    cfg = type("C", (), {"base_url": "https://x", "temperature": 0.0,
+                         "max_tokens": 10, "top_p": None, "frequency_penalty": None,
+                         "presence_penalty": None, "response_format": None,
+                         "stream": False})()
+    attached, fresh = _run(_evaluate_profile(
+        [_listing()], criteria="diesel", model="bad/primary", cfg=cfg, repo=None,
+        prompt_name="bargain", fallback_models=["good/second"],
+    ))
+    assert (attached, fresh) == (1, 1)
+    assert ("bad/primary", "bargain") in seen
+    assert ("good/second", "bargain") in seen
+
+
+def test_evaluate_profile_uses_prompt_in_cache_key(monkeypatch):
+    from bazcar.pipeline.runner import _evaluate_profile
+
+    keys: list = []
+
+    class _Repo:
+        async def fetch_evaluations(self, p_key, ids):
+            keys.append(p_key)
+            return {}
+
+        async def upsert_evaluations(self, p_key, items):
+            keys.append(("write", p_key))
+
+    class _FakeLLM:
+        def __init__(self, api_key, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def evaluate(self, listing, *, criteria=None, prompt_name="standard"):
+            from bazcar.core.models import DealEvaluation
+
+            return DealEvaluation(score=70, why="ok", is_car=True)
+
+    monkeypatch.setattr("bazcar.llm.LLMProvider", _FakeLLM)
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(database_url="postgres://x", openrouter_api_key="K"),
+    )
+    cfg = type("C", (), {"base_url": "https://x", "temperature": 0.0,
+                         "max_tokens": 10, "top_p": None, "frequency_penalty": None,
+                         "presence_penalty": None, "response_format": None,
+                         "stream": False})()
+    _run(_evaluate_profile([_listing()], criteria="c", model="m", cfg=cfg,
+                           repo=_Repo(), prompt_name="family"))
+    expected = profile_key("c", "m", prompt="family")
+    assert keys[0] == expected
+    assert expected != profile_key("c", "m")

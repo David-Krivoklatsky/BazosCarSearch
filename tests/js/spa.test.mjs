@@ -152,6 +152,23 @@ test("spark and bars render placeholders and tracks", () => {
   assert.ok(s.fn("bars")([{ k: "A", n: 3 }], "k", "n").includes("track"));
 });
 
+test("fmtDateDM renders Slovak short dates", () => {
+  const fmtDateDM = spa().fn("fmtDateDM");
+  assert.equal(fmtDateDM("2026-10-03"), "03.10.");
+  assert.equal(fmtDateDM("2026-10-03T12:00:00+00:00"), "03.10.");
+  assert.equal(fmtDateDM(null), "");
+  assert.equal(fmtDateDM(""), "");
+  assert.equal(fmtDateDM("garbage"), "");
+});
+
+test("fmtKmK compacts mileage to xK", () => {
+  const fmtKmK = spa().fn("fmtKmK");
+  assert.equal(fmtKmK(null), "?");
+  assert.equal(fmtKmK(850), "850 km");
+  assert.equal(fmtKmK(150000), "150K km");
+  assert.equal(fmtKmK(199500), "200K km");
+});
+
 test("view aliases keep legacy deep-links working", () => {
   const aliases = JSON.parse(spa().eval("JSON.stringify(VIEW_ALIASES)"));
   assert.equal(aliases.overview, "insights");

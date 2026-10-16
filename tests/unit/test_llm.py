@@ -180,3 +180,104 @@ def test_runner_raises_when_eval_explicit_but_no_key() -> None:
         pytest.skip("OPENROUTER_API_KEY is set — cannot test no-key path")
     with pytest.raises(ConfigError, match="OPENROUTER_API_KEY"):
         asyncio.run(_evaluate([_listing()], enabled=True))
+
+def test_prompt_presets_share_output_contract() -> None:
+    from bazcar.llm.provider import PROMPT_META, normalize_prompt_name, prompt_names, resolve_prompt
+
+    assert set(prompt_names()) == set(PROMPT_META)
+    for name in prompt_names():
+        body = resolve_prompt(name)
+        assert "score" in body and "target_offer" in body and "is_car" in body
+    assert normalize_prompt_name(None) == "standard"
+    assert normalize_prompt_name("  BARGAIN ") == "bargain"
+    assert normalize_prompt_name("nope") == "standard"
+    assert resolve_prompt("nope") == resolve_prompt("standard")
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_evaluate_sends_named_prompt() -> None:
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "{\"score\": 77}"}}]},
+        )
+    )
+    async with LLMProvider("test-key", model="test/model") as llm:
+        eval_ = await llm.evaluate(_listing(), prompt_name="bargain")
+    assert eval_ is not None and eval_.score == 77
+    body = json.loads(route.calls[0].request.content)
+    system_text = " ".join(m["content"] for m in body["messages"] if m["role"] == "system")
+    assert "lovec" in system_text  # bargain preset, not the standard prompt
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_list_models_cached_serves_fresh_cache() -> None:
+    import datetime
+
+    from bazcar.llm.provider import list_models_cached
+
+    raw = [{"id": "x/model", "name": "X", "supported_parameters": ["response_format"],
+            "pricing": {"prompt": "0", "completion": "0"},
+            "per_request_limits": {}, "context_length": 64000},
+           {"id": "x/chat", "name": "Y", "supported_parameters": ["tools"],
+            "pricing": {"prompt": "1", "completion": "1"},
+            "per_request_limits": {}, "context_length": 8000}]
+
+    class _Repo:
+        def __init__(self):
+            self.saved = None
+
+        async def get_model_cache(self):
+            return {"models": raw,
+                    "fetched_at": datetime.datetime.now(datetime.UTC)}
+
+        async def save_model_cache(self, data):
+            self.saved = data
+
+    route = respx.get("https://openrouter.ai/api/v1/models").mock(
+        return_value=Response(200, json={"data": raw})
+    )
+    repo = _Repo()
+    models, stamp = await list_models_cached("K", repo)
+    assert [m["id"] for m in models] == ["x/model"]  # only JSON-capable
+    assert models[0]["free"] is True
+    assert stamp is not None
+    assert not route.called  # fresh cache => no network
+    assert repo.saved is None
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_list_models_cached_refreshes_stale_cache() -> None:
+    import datetime
+
+    from bazcar.llm.provider import list_models_cached
+
+    raw = [{"id": "x/model", "name": "X", "supported_parameters": ["structured_outputs"],
+            "pricing": {"prompt": "0.5", "completion": "1"},
+            "per_request_limits": {"requests_per_minute": 30},
+            "context_length": 128000}]
+
+    class _Repo:
+        def __init__(self):
+            self.saved = None
+
+        async def get_model_cache(self):
+            return {"models": [],
+                    "fetched_at": datetime.datetime(2020, 1, 1,
+                                                    tzinfo=datetime.UTC)}
+
+        async def save_model_cache(self, data):
+            self.saved = data
+
+    route = respx.get("https://openrouter.ai/api/v1/models").mock(
+        return_value=Response(200, json={"data": raw})
+    )
+    repo = _Repo()
+    models, _ = await list_models_cached("K", repo, max_age_s=60)
+    assert route.called  # stale cache => live refresh
+    assert repo.saved == raw
+    assert models[0]["rpm"] == 30
+    assert models[0]["free"] is False

@@ -105,6 +105,14 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPENROUTER_KEY", "BAZCAR_OPENROUTER_API_KEY"),
     )
+    opencode_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OPENCODE_API_KEY", "BAZCAR_OPENCODE_API_KEY"),
+        description=(
+            "Fallback OpenRouter-compatible key: used for the models-list refresh "
+            "and LLM calls when no OpenRouter key is set."
+        ),
+    )
     openrouter_model: str | None = None
     telegram_bot_token: str | None = Field(
         default=None,
@@ -143,6 +151,11 @@ class Settings(BaseSettings):
             "reaches this, fresh scoring pauses (cached scores still served)."
         ),
     )
+
+    @property
+    def llm_api_key(self) -> str | None:
+        """Effective LLM key: OpenRouter first, OpenCode as fallback."""
+        return self.openrouter_api_key or self.opencode_api_key
 
     def allowed_chats(self) -> set[int] | None:
         """Parse the allowlist; None means open onboarding (no restriction)."""

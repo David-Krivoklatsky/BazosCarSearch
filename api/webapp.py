@@ -134,6 +134,10 @@ async def _load_view(
     from bazcar.core.profiles import profile_key
     from bazcar.db import ListingRepository
 
+    # The SPA's Profile tab requests view=profile; the backend's canonical
+    # name is "profiles" (kept for backward compatibility).
+    if view == "profile":
+        view = "profiles"
     extra = extra or {}
     settings = get_settings()
     if not settings.database_url:
@@ -146,6 +150,7 @@ async def _load_view(
     conn = getattr(repo, "_conn", None)
     try:
         criteria, model = None, load_llm_config().model
+        prompt_name, fallback_models = "standard", []
         saved_ids: set[int] = set()
         try:
             async with UserStore(settings.database_url, conn=conn) as store:
@@ -153,6 +158,10 @@ async def _load_view(
                 if prefs is not None:
                     criteria = prefs.criteria
                     model = prefs.model or model
+                    prompt_name = getattr(prefs, "prompt_name", None) or "standard"
+                    fallback_models = [
+                        m for m in (getattr(prefs, "fallback_models", None) or []) if m
+                    ][:3]
                 if view in {"inventory", "listing", "compare"}:
                     try:
                         saved_ids = await store.list_saved_ids(chat_id)
@@ -160,7 +169,7 @@ async def _load_view(
                         logger.warning("saved-ids load failed in webapp", exc_info=True)
         except Exception:
             logger.warning("prefs load failed in webapp", exc_info=True)
-        p_key = profile_key(criteria, model)
+        p_key = profile_key(criteria, model, prompt=prompt_name)
 
         if view == "overview":
             stats = await repo.stats_overview(p_key)
@@ -267,6 +276,8 @@ async def _load_view(
             except Exception:
                 logger.warning("profiles load failed in webapp", exc_info=True)
                 return {"error": "profiles unavailable"}, HTTPStatus.OK
+            from bazcar.llm.provider import PROMPT_META
+
             return {
                 "active": {
                     "criteria": prefs.criteria if prefs else None,
@@ -274,6 +285,14 @@ async def _load_view(
                     "min_score": prefs.min_score if prefs else None,
                     "show_photo": bool(prefs.show_photo) if prefs else False,
                     "notify_enabled": bool(prefs.notify_enabled) if prefs else True,
+                    "prompt_name": (
+                        getattr(prefs, "prompt_name", None) or "standard"
+                    ) if prefs else "standard",
+                    "prompts": PROMPT_META,
+                    "fallback_models": (
+                        [m for m in (getattr(prefs, "fallback_models", None) or []) if m][:3]
+                    ) if prefs else [],
+                    "filters": dict(getattr(prefs, "filters", None) or {}) if prefs else {},
                 },
                 "searches": [
                     {
@@ -329,9 +348,140 @@ async def _load_view(
                 "funnel": await repo.funnel(p_key, chat_id),
                 "cost": await repo.eval_cost(p_key),
             }, HTTPStatus.OK
+        if view == "bounds":
+            # Price/year span of the browsable set (ignores the price/year
+            # filters themselves) — initializes the dual sliders.
+            status_f = extra.get("status") if extra.get("status") in _STATUSES else "all"
+            bounds = await repo.catalog_bounds(p_key, days, status_f, extra.get("q"))
+            return {"profile_key": p_key, "bounds": bounds}, HTTPStatus.OK
+        if view == "models":
+            # Real model list (cached, refreshed daily) + current selection.
+            from bazcar.llm.provider import PROMPT_META, list_models_cached
+
+            models, stamp = await list_models_cached(
+                getattr(settings, "llm_api_key", None), repo
+            )
+            return {
+                "models": models,
+                "current": model,
+                "fetched_at": stamp.isoformat() if stamp is not None and hasattr(stamp, "isoformat") else stamp,
+                "prompt_name": prompt_name,
+                "prompts": PROMPT_META,
+                "fallback_models": fallback_models,
+            }, HTTPStatus.OK
+        if view == "templates":
+            # Static ready-made searches (import-light, no DB needed).
+            import dataclasses
+
+            from bazcar.bot.templates import TEMPLATES
+
+            return {
+                "templates": [dataclasses.asdict(t) for t in TEMPLATES],
+            }, HTTPStatus.OK
+        if view == "health":
+            # Pipeline health: last run, queue state, 30-day AI spend vs budget.
+            run = await repo.latest_scrape_run()
+            pending = await repo.pending_eval_tasks()
+            cost = await repo.eval_cost(None, 30)
+            try:
+                spent = float((cost.get("total") or {}).get("cost_usd") or 0)
+            except (TypeError, ValueError):
+                spent = 0.0
+            return {
+                "last_run": run,
+                "queue_pending": len(pending),
+                "pending": pending[:5],
+                "finished": await repo.recent_finished_eval_tasks(limit=3),
+                "spend_30d_usd": spent,
+                "budget_usd": settings.monthly_budget_usd,
+                "database": bool(settings.database_url),
+                "llm_key": bool(getattr(settings, "llm_api_key", None)),
+            }, HTTPStatus.OK
+        if view == "digest":
+            # 7-day summary: new listings, biggest discounts, top matches, queue.
+            trend = await repo.new_by_day(7)
+            try:
+                new_total = sum(int(n) for _, n in trend)
+            except (TypeError, ValueError):
+                new_total = 0
+            top: list[dict] = []
+            try:
+                from bazcar.bot.store import UserStore as _US
+
+                async with _US(settings.database_url, conn=conn) as _store:
+                    _prefs = await _store.get_prefs(chat_id)
+                    _ms = _prefs.min_score if _prefs and _prefs.min_score is not None else 0
+                top = await repo.fetch_recent_matches(p_key, _ms, 7, 5)
+            except Exception:
+                logger.warning("digest top-matches failed", exc_info=True)
+            pending = await repo.pending_eval_tasks()
+            return {
+                "days": 7,
+                "new_total": new_total,
+                "trend": [{"day": d, "n": n} for d, n in trend],
+                "drops": await repo.drops_leaderboard(limit=5, days=7),
+                "top": [
+                    {
+                        "ad_id": t.get("ad_id"),
+                        "title": t.get("title"),
+                        "url": t.get("url"),
+                        "price_eur": t.get("price_eur"),
+                        "score": t.get("score"),
+                    }
+                    for t in top
+                ],
+                "queue_pending": len(pending),
+            }, HTTPStatus.OK
         return {"error": f"unknown view: {view}"}, HTTPStatus.BAD_REQUEST
     finally:
         await repo.close()
+
+
+async def _queue_eval_task(
+    chat_id: int, store, *, max_listings: int, days: int,
+    ad_ids: list[int] | None = None,
+) -> tuple[bool, str]:
+    """Queue a re-score task for the user's active profile (Mini App side).
+
+    Returns ``(created, note)`` — False when a task for the exact profile is
+    already pending. The cron picks the task up (~15 min); there is no
+    serverless-safe way to run the scrape inline. Never raises: a queue
+    failure must not roll back the prefs change that triggered it.
+    """
+    from bazcar.config.settings import get_settings, load_llm_config
+    from bazcar.core.profiles import profile_key
+    from bazcar.db import ListingRepository
+    from bazcar.llm.provider import normalize_prompt_name
+
+    try:
+        settings = get_settings()
+        if not settings.database_url:
+            return False, "database not configured"
+        prefs = await store.get_prefs(chat_id)
+        if prefs is None:
+            return False, "no profile yet"
+        model = (prefs.model if prefs else None) or load_llm_config().model
+        prompt = normalize_prompt_name(getattr(prefs, "prompt_name", None) if prefs else None)
+        fallbacks = [m for m in (getattr(prefs, "fallback_models", None) or []) if m][:3]
+        criteria = prefs.criteria if prefs else None
+        p_key = profile_key(criteria, model, prompt=prompt)
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            await repo.init_schema()
+            pending = await repo.pending_eval_tasks()
+            if any(t["profile_key"] == p_key for t in pending):
+                return False, "already queued"
+            await repo.create_eval_task(
+                p_key, criteria, model, max_listings, days,
+                prompt_name=prompt, fallback_models=fallbacks, ad_ids=ad_ids,
+            )
+        finally:
+            await repo.close()
+        return True, "queued — the pipeline picks it up within ~15 min"
+    except Exception as exc:
+        logger.warning("webapp queue failed", exc_info=True)
+        return False, f"queue failed: {exc}"
 
 
 async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
@@ -435,6 +585,123 @@ async def _handle_action(chat_id: int, body: dict) -> tuple[dict, HTTPStatus]:
             await store.ensure_prefs(chat_id)
             await store.update_prefs(chat_id, show_photo=enabled)
             return {"ok": True}, HTTPStatus.OK
+        if action == "model":
+            model_id = str(body.get("id") or body.get("model") or "").strip()[:200]
+            if not model_id:
+                return {"error": "id required"}, HTTPStatus.BAD_REQUEST
+            await store.ensure_prefs(chat_id)
+            await store.update_prefs(chat_id, model=model_id)
+            created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
+            return {"ok": True, "queued": created, "note": note}, HTTPStatus.OK
+        if action == "prompt":
+            from bazcar.llm.provider import prompt_names
+
+            name = str(body.get("name") or "").strip().lower()
+            if name not in prompt_names():
+                return {
+                    "error": f"unknown prompt (one of: {', '.join(prompt_names())})"
+                }, HTTPStatus.BAD_REQUEST
+            await store.ensure_prefs(chat_id)
+            await store.update_prefs(chat_id, prompt_name=name)
+            created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
+            return {"ok": True, "queued": created, "note": note}, HTTPStatus.OK
+        if action == "fallbacks":
+            raw = body.get("models")
+            if isinstance(raw, str):
+                raw = raw.replace(";", ",").split(",")
+            models = [str(m).strip()[:200] for m in (raw or []) if str(m).strip()][:3]
+            await store.ensure_prefs(chat_id)
+            await store.update_prefs(chat_id, fallback_models=models)
+            return {"ok": True, "fallback_models": models}, HTTPStatus.OK
+        if action == "filters":
+            patch = body.get("filters")
+            if not isinstance(patch, dict):
+                return {"error": "filters object required"}, HTTPStatus.BAD_REQUEST
+            clean: dict = {}
+            if "query" in patch:
+                clean["query"] = str(patch["query"] or "")[:80]
+            for key in ("min_price", "max_price"):
+                if key in patch:
+                    raw_v = patch[key]
+                    clean[key] = (
+                        _to_int(str(raw_v), lo=0, hi=10**9)
+                        if raw_v not in (None, "") else ""
+                    )
+            if "psc" in patch:
+                clean["psc"] = str(patch["psc"] or "")[:10]
+            dist_raw = patch.get("distance_km", patch.get("dist", "##unset##"))
+            if dist_raw != "##unset##":
+                clean["distance_km"] = (
+                    _to_int(str(dist_raw), lo=1, hi=500)
+                    if dist_raw not in (None, "") else ""
+                )
+            filters = await store.update_filters(chat_id, clean)
+            return {"ok": True, "filters": filters}, HTTPStatus.OK
+        if action == "search_create":
+            name = str(body.get("name") or "").strip()[:60]
+            criteria = str(body.get("criteria") or "").strip()[:500]
+            if not name or not criteria:
+                return {"error": "name + criteria required"}, HTTPStatus.BAD_REQUEST
+            filters = body.get("filters") if isinstance(body.get("filters"), dict) else {}
+            raw_ms = body.get("min_score")
+            min_score = (
+                _to_int(str(raw_ms), lo=0, hi=100) if raw_ms not in (None, "") else None
+            )
+            await store.ensure_prefs(chat_id)
+            await store.save_search(
+                chat_id, name, criteria, filters=filters, min_score=min_score
+            )
+            return {"ok": True}, HTTPStatus.OK
+        if action == "search_delete":
+            name = str(body.get("name") or "").strip()
+            if not name:
+                return {"error": "name required"}, HTTPStatus.BAD_REQUEST
+            removed = await store.delete_search(chat_id, name)
+            return {"ok": True, "removed": removed}, HTTPStatus.OK
+        if action == "template":
+            from bazcar.bot.templates import get_template
+
+            key = str(body.get("key") or "").strip().lower()
+            tpl = get_template(key)
+            if tpl is None:
+                return {"error": "unknown template"}, HTTPStatus.NOT_FOUND
+            await store.ensure_prefs(chat_id)
+            await store.update_prefs(
+                chat_id,
+                criteria=tpl.criteria,
+                filters=dict(tpl.filters),
+                min_score=tpl.min_score,
+            )
+            await store.save_search(
+                chat_id, tpl.name, tpl.criteria,
+                filters=dict(tpl.filters), min_score=tpl.min_score,
+            )
+            created, note = await _queue_eval_task(chat_id, store, max_listings=100, days=3)
+            return {"ok": True, "queued": created, "note": note}, HTTPStatus.OK
+        if action == "eval":
+            limit = _to_int(str(body.get("limit") if body.get("limit") is not None else "100"),
+                            lo=1, hi=500) or 100
+            days = _to_int(str(body.get("days") if body.get("days") is not None else "3"),
+                           lo=1, hi=365) or 3
+            created, note = await _queue_eval_task(
+                chat_id, store, max_listings=limit, days=days
+            )
+            return {"ok": True, "queued": created, "note": note}, HTTPStatus.OK
+        if action == "rescore":
+            raw = body.get("ids") or []
+            parts = raw if isinstance(raw, list) else str(raw).replace(",", " ").split()
+            ids = []
+            for part in parts:
+                text = str(part).strip()
+                if text.isdigit() and int(text) > 0:
+                    ids.append(int(text))
+            ids = ids[:20]
+            if not ids:
+                return {"error": "ids required"}, HTTPStatus.BAD_REQUEST
+            created, note = await _queue_eval_task(
+                chat_id, store, max_listings=len(ids), days=365, ad_ids=ids
+            )
+            return {"ok": True, "queued": created, "ids": ids, "note": note}, HTTPStatus.OK
         return {"error": f"unknown action: {action}"}, HTTPStatus.BAD_REQUEST
     finally:
         await store.close()

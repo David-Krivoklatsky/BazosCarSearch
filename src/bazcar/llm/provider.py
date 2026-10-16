@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
+# How long a cached OpenRouter /models response stays valid (once a day).
+MODELS_CACHE_TTL_S = 86400
+
 SYSTEM_PROMPT = (
     "Si analytik ojazdených áut pre slovenský trh (Bazoš.sk). Na základe ceny, "
     "roku výroby, najazdených km, názvu a popisu ohodnoť, aká dobrá kúpa je "
@@ -35,6 +38,70 @@ SYSTEM_PROMPT = (
     "\"condition\": \"<predpokladaný stav, 2-4 slová>\", "
     "\"target_offer\": <int EUR alebo null>}."
 )
+
+# Named evaluation prompts. Every variant keeps the exact same JSON output
+# contract (keys + Slovak values) so parsing never depends on the preset —
+# only the scoring emphasis changes.
+PROMPTS: dict[str, str] = {
+    "standard": SYSTEM_PROMPT,
+    "bargain": (
+        "Si lovec výhodných kúb ojazdených áut na slovenskom trhu (Bazoš.sk). "
+        "Cenu porovnaj s trhom a ohodnoť inzerát 0–100 podľa toho, ako VÝHODNÁ je kúpa "
+        "(100 = výrazne pod cenou trhu). Vyšší nájazd km alebo kozmetické vady toleruj, "
+        "ak je cena výrazne pod trhom; skryté technické riziká penalizuj. "
+        "V poli risk uveď NAJVÄČŠÍ možný problém (1 veta, po slovensky; ak žiadne "
+        "riziko, krátke 'najazdené' alebo 'neznáme'). V poli condition zhrň "
+        "predpokladaný stav (2-4 slová, po slovensky). V poli target_offer navrhni "
+        "primeranú prvú ponuku v EUR (celé číslo, nižšia než požadovaná cena; "
+        "null ak cena nie je známa). Odpovedaj LEN jedným JSON "
+        "objektom (žiadny text pred ani za ním): "
+        "{\"score\": <int 0-100>, \"why\": \"<1-2 viet po slovensky: dôvod>\", "
+        "\"risk\": \"<najväčší možný problém po slovensky>\", "
+        "\"is_car\": <true ak inzerát predáva celé auto, inak false>, "
+        "\"condition\": \"<predpokladaný stav, 2-4 slová>\", "
+        "\"target_offer\": <int EUR alebo null>}."
+    ),
+    "family": (
+        "Si poradca pre rodinné auto na slovenskom trhu (Bazoš.sk). Ohodnoť inzerát "
+        "0–100 podľa vhodnosti pre rodinu s deťmi: bezpečnosť, spoľahlivosť, priestor "
+        "a nízke prevádzkové náklady vážia najviac; akékoľvek bezpečnostné alebo "
+        "spoľahlivostné riziko výrazne penalizuj. V poli risk uveď NAJVÄČŠÍ možný "
+        "problém (1 veta, po slovensky; ak žiadne riziko, krátke 'najazdené' alebo "
+        "'neznáme'). V poli condition zhrň predpokladaný stav (2-4 slová, po slovensky). "
+        "V poli target_offer navrhni primeranú prvú ponuku v EUR (celé číslo, nižšia "
+        "než požadovaná cena; null ak cena nie je známa). Odpovedaj LEN jedným JSON "
+        "objektom (žiadny text pred ani za ním): "
+        "{\"score\": <int 0-100>, \"why\": \"<1-2 viet po slovensky: dôvod>\", "
+        "\"risk\": \"<najväčší možný problém po slovensky>\", "
+        "\"is_car\": <true ak inzerát predáva celé auto, inak false>, "
+        "\"condition\": \"<predpokladaný stav, 2-4 slová>\", "
+        "\"target_offer\": <int EUR alebo null>}."
+    ),
+}
+
+# English labels for the prompt picker (UI strings stay English; the prompt
+# bodies above must stay Slovak — the listings are Slovak).
+PROMPT_META: dict[str, str] = {
+    "standard": "Standard — balanced deal score",
+    "bargain": "Bargain hunter — rewards underpriced cars",
+    "family": "Family — rewards safety and reliability",
+}
+
+
+def prompt_names() -> list[str]:
+    """Available evaluation prompt presets, in picker order."""
+    return list(PROMPTS)
+
+
+def resolve_prompt(name: str | None) -> str:
+    """Prompt body for ``name`` (unknown names fall back to standard)."""
+    return PROMPTS.get((name or "").strip().lower(), PROMPTS["standard"])
+
+
+def normalize_prompt_name(name: str | None) -> str:
+    """Canonical preset name (unknown/empty -> standard)."""
+    key = (name or "").strip().lower()
+    return key if key in PROMPTS else "standard"
 
 
 def _criteria_instruction(criteria: str | None) -> str:
@@ -67,7 +134,7 @@ def _fmt_price(per_token: str) -> str:
     return f"{cost:g}"
 
 
-async def list_models() -> list[dict]:
+async def list_models(api_key: str | None = None) -> list[dict]:
     """OpenRouter models that can output strict JSON, with key parameters.
 
     Each entry: ``id``, ``name``, ``free``, ``price_in``/``price_out``
@@ -75,10 +142,98 @@ async def list_models() -> list[dict]:
     ``ctx`` (context length). Only models advertising ``response_format`` or
     ``structured_outputs`` are included (our prompt requires JSON).
     """
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        resp = await client.get(f"{DEFAULT_BASE_URL.rstrip('/')}/models")
+        resp = await client.get(
+            f"{DEFAULT_BASE_URL.rstrip('/')}/models", headers=headers
+        )
         resp.raise_for_status()
         data = resp.json().get("data", [])
+    models: list[dict] = []
+    for model in data:
+        supports_json = bool(
+            {"response_format", "structured_outputs"}
+            & set(model.get("supported_parameters") or [])
+        )
+        if not supports_json:
+            continue
+        pricing = model.get("pricing") or {}
+        prompt_cost = pricing.get("prompt", "1")
+        limits = model.get("per_request_limits") or {}
+        models.append(
+            {
+                "id": model.get("id", ""),
+                "name": model.get("name") or model.get("id", ""),
+                "free": prompt_cost == "0",
+                "price_in": _fmt_price(prompt_cost),
+                "price_out": _fmt_price(pricing.get("completion", "1")),
+                "rpm": limits.get("requests_per_minute"),
+                "ctx": model.get("context_length"),
+            }
+        )
+    return models
+
+
+async def list_models_cached(
+    api_key: str | None = None,
+    repo=None,
+    max_age_s: int = MODELS_CACHE_TTL_S,
+) -> tuple[list[dict], object | None]:
+    """JSON-capable models, refreshed from OpenRouter at most once a day.
+
+    Returns ``(models, fetched_at)`` — ``fetched_at`` is None when nothing
+    could be loaded (no cache and no network). Without a ``repo`` this is a
+    plain live request (serverless-safe fallback).
+    """
+    import datetime
+
+    if repo is not None:
+        try:
+            cached = await repo.get_model_cache()
+        except Exception:
+            cached = None
+        if cached and cached.get("models"):
+            fetched_at = cached.get("fetched_at")
+            try:
+                age = (
+                    datetime.datetime.now(datetime.UTC) - fetched_at
+                ).total_seconds() if fetched_at else float("inf")
+            except TypeError:
+                age = float("inf")
+            if age < max_age_s:
+                return _filter_json_models(cached["models"]), fetched_at
+    data = await _fetch_models_raw(api_key)
+    if repo is not None and data:
+        try:
+            await repo.save_model_cache(data)
+        except Exception:
+            logger.warning("model cache write failed", exc_info=True)
+    fetched_at = await _cache_stamp(repo)
+    return _filter_json_models(data), fetched_at
+
+
+async def _fetch_models_raw(api_key: str | None) -> list[dict]:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        resp = await client.get(
+            f"{DEFAULT_BASE_URL.rstrip('/')}/models", headers=headers
+        )
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+
+
+async def _cache_stamp(repo) -> object | None:
+    if repo is None:
+        return None
+    try:
+        cached = await repo.get_model_cache()
+        return cached.get("fetched_at") if cached else None
+    except Exception:
+        return None
+
+
+def _filter_json_models(data: list[dict]) -> list[dict]:
+    """Keep the JSON-capable entries of a raw OpenRouter /models payload."""
     models: list[dict] = []
     for model in data:
         supports_json = bool(
@@ -212,11 +367,18 @@ class LLMProvider:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
-    async def evaluate(self, listing: Listing, *, criteria: str | None = None) -> DealEvaluation | None:
+    async def evaluate(
+        self,
+        listing: Listing,
+        *,
+        criteria: str | None = None,
+        prompt_name: str = "standard",
+    ) -> DealEvaluation | None:
+        system_prompt = resolve_prompt(prompt_name)
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "system", "content": _criteria_instruction(criteria)},
                 {"role": "user", "content": _listing_text(listing)},
             ],

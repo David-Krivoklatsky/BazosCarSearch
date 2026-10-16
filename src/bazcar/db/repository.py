@@ -125,6 +125,13 @@ CREATE TABLE IF NOT EXISTS eval_tasks (
     done_at      timestamptz
 );
 
+-- Cached OpenRouter /models response (refreshed at most once a day).
+CREATE TABLE IF NOT EXISTS model_cache (
+    key         text PRIMARY KEY,
+    payload     jsonb NOT NULL,
+    fetched_at  timestamptz NOT NULL DEFAULT now()
+);
+
 -- Deal alerts dedupe: each (chat, ad, search profile) is pushed at most once.
 CREATE TABLE IF NOT EXISTS notifications (
     chat_id     bigint NOT NULL,
@@ -188,6 +195,16 @@ ALTER TABLE user_searches
     ADD COLUMN IF NOT EXISTS notify_enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE user_prefs
     ADD COLUMN IF NOT EXISTS notify_enabled boolean NOT NULL DEFAULT true;
+ALTER TABLE user_prefs
+    ADD COLUMN IF NOT EXISTS prompt_name text NOT NULL DEFAULT 'standard';
+ALTER TABLE user_prefs
+    ADD COLUMN IF NOT EXISTS fallback_models jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS prompt_name text NOT NULL DEFAULT 'standard';
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS fallback_models jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE eval_tasks
+    ADD COLUMN IF NOT EXISTS ad_ids bigint[];
 """
 
 _UPSERT_LISTING_SQL = """
@@ -255,7 +272,9 @@ JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
 WHERE e.score >= $2
   AND COALESCE(l.published_date, l.first_seen_at::date)
       >= (now() - make_interval(days => $3))::date
-ORDER BY e.score DESC, l.first_seen_at DESC
+ORDER BY e.score DESC,
+         COALESCE(l.published_date, l.first_seen_at::date) DESC,
+         l.first_seen_at DESC
 LIMIT $4
 """
 
@@ -656,18 +675,35 @@ class ListingRepository:
     # ------------------------------------------------- evaluation backfill
 
     async def create_eval_task(
-        self, profile_key: str, criteria: str | None, model: str, max_listings: int, days: int = 3
+        self,
+        profile_key: str,
+        criteria: str | None,
+        model: str,
+        max_listings: int,
+        days: int = 3,
+        prompt_name: str = "standard",
+        fallback_models: list[str] | None = None,
+        ad_ids: list[int] | None = None,
     ) -> None:
-        """Queue a backfill: score recent ads under this search profile."""
+        """Queue a backfill: score recent ads under this search profile.
+
+        ``ad_ids`` targets explicit listings (forced fresh — cached scores for
+        them are dropped when the task runs); otherwise the recent window is
+        scored skip-safe.
+        """
         conn = self._require_conn()
         await conn.execute(
-            "INSERT INTO eval_tasks (profile_key, criteria, model, max_listings, days)"
-            " VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO eval_tasks (profile_key, criteria, model, max_listings, days,"
+            " prompt_name, fallback_models, ad_ids)"
+            " VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::bigint[])",
             profile_key,
             criteria,
             model,
             max_listings,
             days,
+            prompt_name or "standard",
+            json.dumps([m for m in (fallback_models or []) if m][:3]),
+            ([int(a) for a in ad_ids if int(a) > 0][:50] or None),
         )
 
     async def bump_eval_task_attempt(self, task_id: int) -> None:
@@ -700,7 +736,11 @@ class ListingRepository:
     # ------------------------------------------------------- catalog browsing
 
     _CATALOG_SORTS = {
-        "newest": "l.first_seen_at DESC",
+        # "newest" follows the date shown on the card (the ad's publish date,
+        # refreshed when the seller bumps it) — NOT first_seen_at, which is
+        # when we scraped it and would look out of order next to the date.
+        "newest": "COALESCE(l.published_date, l.first_seen_at::date) DESC,"
+        " l.first_seen_at DESC",
         "price_asc": "l.price_eur ASC NULLS LAST, l.first_seen_at DESC",
         "price_desc": "l.price_eur DESC NULLS LAST, l.first_seen_at DESC",
         "score": "e.score DESC NULLS LAST, l.first_seen_at DESC",
@@ -821,6 +861,44 @@ class ListingRepository:
         except asyncpg.PostgresError as exc:
             raise DbError(f"catalog count failed: {exc}") from exc
 
+    async def catalog_bounds(
+        self,
+        profile_key: str,
+        days: int,
+        status: str = "all",
+        q: str | None = None,
+    ) -> dict:
+        """Min/max price and year over the browsable set.
+
+        Honors the text query, status and window — but deliberately ignores
+        the price/year filters themselves, so the dual sliders always span
+        the full reachable range instead of collapsing onto the selection.
+        """
+        cond = self._CATALOG_STATUS.get(status, "TRUE")
+        extra, params = self._catalog_filters(q, None, None, None, None, start=3)
+        sql = f"""
+        SELECT min(l.price_eur) AS min_price, max(l.price_eur) AS max_price,
+               min(l.year) AS min_year, max(l.year) AS max_year,
+               count(*) AS n
+        FROM listings l
+        LEFT JOIN evaluations e ON e.ad_id = l.ad_id AND e.profile_key = $1
+        WHERE COALESCE(l.published_date, l.first_seen_at::date)
+              >= (now() - make_interval(days => $2))::date
+          AND {cond}{extra}
+        """  # noqa: S608 — cond comes from the whitelist above
+        conn = self._require_conn()
+        try:
+            row = await conn.fetchrow(sql, profile_key, days, *params)
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"catalog bounds failed: {exc}") from exc
+        data = dict(row) if row else {}
+        for key in ("min_price", "max_price"):
+            try:
+                data[key] = int(data[key]) if data[key] is not None else None
+            except (TypeError, ValueError):
+                data[key] = None
+        return data
+
     async def fetch_listing_by_id(self, ad_id: int, profile_key: str) -> dict | None:
         """One listing plus the active profile's evaluation, when present."""
         conn = self._require_conn()
@@ -842,6 +920,50 @@ class ListingRepository:
         except asyncpg.PostgresError as exc:
             raise DbError(f"listing fetch failed: {exc}") from exc
         return self._decode_catalog_row(row) if row else None
+
+    async def fetch_listings_by_ids(self, ad_ids: list[int]) -> list[dict]:
+        """Raw listing rows for explicit ad ids (targeted re-score input)."""
+        ids = [int(a) for a in ad_ids if int(a) > 0][:50]
+        if not ids:
+            return []
+        conn = self._require_conn()
+        try:
+            rows = await conn.fetch(
+                "SELECT ad_id, url, title, price_eur, city, image_urls,"
+                " year, mileage_km, description_preview, description"
+                " FROM listings WHERE ad_id = ANY($1::bigint[])",
+                ids,
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"listings-by-ids fetch failed: {exc}") from exc
+        out = []
+        for row in rows:
+            record = dict(row)
+            try:
+                record["image_urls"] = json.loads(record["image_urls"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                record["image_urls"] = []
+            out.append(record)
+        return out
+
+    async def delete_evaluations(self, ad_ids: list[int], profile_key: str) -> int:
+        """Drop cached scores so a targeted re-score evaluates fresh, not skipped."""
+        ids = [int(a) for a in ad_ids if int(a) > 0][:50]
+        if not ids:
+            return 0
+        conn = self._require_conn()
+        try:
+            status = await conn.execute(
+                "DELETE FROM evaluations WHERE profile_key = $1 AND ad_id = ANY($2::bigint[])",
+                profile_key,
+                ids,
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"evaluation delete failed: {exc}") from exc
+        try:
+            return int(str(status).split()[-1])
+        except (ValueError, IndexError):
+            return 0
 
     @staticmethod
     def _decode_catalog_row(row) -> dict:
@@ -1283,10 +1405,21 @@ class ListingRepository:
         conn = self._require_conn()
         rows = await conn.fetch(
             "SELECT id, profile_key, criteria, model, max_listings, days, attempts,"
-            " total, done, started_at, created_at FROM eval_tasks"
+            " total, done, started_at, created_at, prompt_name, fallback_models, ad_ids"
+            " FROM eval_tasks"
             " WHERE done_at IS NULL ORDER BY id"
         )
-        return [dict(row) for row in rows]
+        out = []
+        for row in rows:
+            data = dict(row)
+            try:
+                data["fallback_models"] = (
+                    json.loads(data["fallback_models"]) if data["fallback_models"] else []
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                data["fallback_models"] = []
+            out.append(data)
+        return out
 
     async def recent_finished_eval_tasks(self, limit: int = 3) -> list[dict]:
         conn = self._require_conn()
@@ -1296,6 +1429,38 @@ class ListingRepository:
             limit,
         )
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------- model-list cache
+
+    async def get_model_cache(self) -> dict | None:
+        """Cached OpenRouter /models payload with its fetch time (None = empty)."""
+        conn = self._require_conn()
+        try:
+            row = await conn.fetchrow(
+                "SELECT payload, fetched_at FROM model_cache WHERE key = 'openrouter'"
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"model cache read failed: {exc}") from exc
+        if not row:
+            return None
+        try:
+            payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else dict(row["payload"])
+        except (TypeError, ValueError):
+            return None
+        return {"models": payload.get("data", []), "fetched_at": row["fetched_at"]}
+
+    async def save_model_cache(self, data: list[dict]) -> None:
+        """Store a fresh OpenRouter /models response (refreshed at most daily)."""
+        conn = self._require_conn()
+        try:
+            await conn.execute(
+                "INSERT INTO model_cache (key, payload) VALUES ('openrouter', $1::jsonb)"
+                " ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload,"
+                " fetched_at = now()",
+                json.dumps({"data": data}, ensure_ascii=False),
+            )
+        except asyncpg.PostgresError as exc:
+            raise DbError(f"model cache write failed: {exc}") from exc
 
     def _require_conn(self) -> asyncpg.Connection:
         if self._conn is None:

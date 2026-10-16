@@ -185,6 +185,7 @@ class _FakeListRepo:
 class _DbSettings:
     database_url = "postgres://fake"
     telegram_bot_token = BOT_TOKEN
+    monthly_budget_usd = 1.0
 
 
 @pytest.fixture()
@@ -286,6 +287,17 @@ class _RichStore(_FakeStore):
     async def update_prefs(self, chat_id: int, **fields) -> None:
         self.calls.append(("prefs", fields))
 
+    async def update_filters(self, chat_id: int, patch: dict) -> dict:
+        self.calls.append(("filters", patch))
+        return {"query": "octavia"}
+
+    async def save_search(self, chat_id, name, criteria, filters=None, min_score=None) -> None:
+        self.calls.append(("search_create", name, criteria))
+
+    async def delete_search(self, chat_id: int, name: str) -> bool:
+        self.calls.append(("search_delete", name))
+        return True
+
     async def set_search_notify(self, chat_id: int, name: str, enabled: bool) -> bool:
         self.calls.append(("search_notify", name, enabled))
         return True
@@ -355,6 +367,33 @@ class _RichRepo(_FakeListRepo):
 
     async def eval_cost(self, p_key=None, days=30):
         return {"total": {"n": 4, "cost_usd": 0.01}, "by_model": []}
+
+    async def catalog_bounds(self, p_key, days, status="all", q=None):
+        self.bounds_kwargs = {"status": status, "q": q}
+        return {"min_price": 1000, "max_price": 9000,
+                "min_year": 2010, "max_year": 2020, "n": 5}
+
+    async def fetch_recent_matches(self, p_key, min_score, days, limit):
+        return [{"ad_id": 7, "title": "Skoda", "url": "https://x/7",
+                 "price_eur": 5000, "score": 88}]
+
+    async def get_model_cache(self):
+        import datetime
+
+        return {
+            "models": [                {"id": "x/model", "name": "X Model",
+                 "supported_parameters": ["response_format"],
+                 "pricing": {"prompt": "0", "completion": "0"},
+                 "per_request_limits": {"requests_per_minute": 50},
+                 "context_length": 128000},
+                {"id": "x/chat", "name": "X Chat",
+                 "supported_parameters": ["tools"],
+                 "pricing": {"prompt": "1", "completion": "2"},
+                 "per_request_limits": {},
+                 "context_length": 8000},
+            ],
+            "fetched_at": datetime.datetime.now(datetime.UTC),
+        }
 
 
 @pytest.fixture()
@@ -556,3 +595,121 @@ def test_listing_view_reports_saved_state(_rich_deps) -> None:
 def test_post_requires_auth(_fresh_settings) -> None:
     status, payload = _call_post({"action": "save", "id": 1}, "garbage")
     assert status.startswith("401")
+
+
+def test_profile_alias_resolves_to_profiles(_rich_deps) -> None:
+    """The SPA Profile tab requests view=profile — must not 400."""
+    payload, status = _run_view("profile")
+    assert status == 200
+    assert "active" in payload and "searches" in payload
+    assert payload["active"]["prompt_name"] == "standard"
+    assert "standard" in payload["active"]["prompts"]
+    assert payload["active"]["fallback_models"] == []
+    assert isinstance(payload["active"]["filters"], dict)
+
+
+def test_bounds_view_spans_full_range(_rich_deps) -> None:
+    _, repo = _rich_deps
+    payload, status = _run_view("bounds", {"status": "all", "q": "oct"})
+    assert status == 200
+    assert payload["bounds"]["min_price"] == 1000
+    assert payload["bounds"]["max_price"] == 9000
+    assert payload["bounds"]["min_year"] == 2010
+    assert repo.bounds_kwargs == {"status": "all", "q": "oct"}
+
+
+def test_models_view_uses_cache_without_network(_rich_deps) -> None:
+    """Fresh cache => the cached list is served, no live request."""
+    payload, status = _run_view("models")
+    assert status == 200
+    assert [m["id"] for m in payload["models"]] == ["x/model"]  # x/chat lacks JSON
+    assert payload["current"] == "m/1"
+    assert "T" in str(payload["fetched_at"])  # ISO timestamp of the cache entry
+    assert payload["prompt_name"] == "standard"
+
+
+def test_templates_view_lists_static_profiles(_rich_deps) -> None:
+    payload, status = _run_view("templates")
+    assert status == 200
+    keys = [t["key"] for t in payload["templates"]]
+    assert {"family", "city", "highway", "first", "bargain"} <= set(keys)
+    assert all(t["criteria"] for t in payload["templates"])
+
+
+def test_health_view_reports_pipeline(_rich_deps) -> None:
+    payload, status = _run_view("health")
+    assert status == 200
+    assert payload["queue_pending"] == 0
+    assert payload["spend_30d_usd"] == 0.01
+    assert payload["database"] is True
+    assert payload["budget_usd"] == 1.0
+    assert "budget_usd" in payload
+
+
+def test_digest_view_summarizes_week(_rich_deps) -> None:
+    payload, status = _run_view("digest")
+    assert status == 200
+    assert payload["days"] == 7
+    assert payload["new_total"] == 3
+    assert payload["drops"][0]["pct"] == 16.7
+    assert payload["top"][0]["score"] == 88
+    assert payload["queue_pending"] == 0
+
+
+def test_post_actions_model_prompt_fallbacks(_fresh_settings, _rich_deps) -> None:
+    store, _ = _rich_deps
+    init_data = _make_init_data(user_id=42)
+    _, payload = _call_post({"action": "model", "id": "x/model"}, init_data)
+    assert payload["ok"] is True  # queue fails safe without a real DB
+    assert ("prefs", {"model": "x/model"}) in [c for c in store.calls if c[0] == "prefs"]
+    _, payload = _call_post({"action": "model"}, init_data)
+    assert payload["error"] == "id required"
+    _, payload = _call_post({"action": "prompt", "name": "bargain"}, init_data)
+    assert payload["ok"] is True
+    assert ("prefs", {"prompt_name": "bargain"}) in [c for c in store.calls if c[0] == "prefs"]
+    _, payload = _call_post({"action": "prompt", "name": "nope"}, init_data)
+    assert "unknown prompt" in payload["error"]
+    _, payload = _call_post(
+        {"action": "fallbacks", "models": ["a/one", "b/two"]}, init_data
+    )
+    assert payload == {"ok": True, "fallback_models": ["a/one", "b/two"]}
+    _, payload = _call_post({"action": "fallbacks", "models": "a/one;b/two"}, init_data)
+    assert payload["fallback_models"] == ["a/one", "b/two"]
+
+
+def test_post_actions_filters_searches_template_eval_rescore(
+    _fresh_settings, _rich_deps,
+) -> None:
+    store, _ = _rich_deps
+    init_data = _make_init_data(user_id=42)
+    _, payload = _call_post(
+        {"action": "filters",
+         "filters": {"query": "octavia", "min_price": "1000", "psc": "81101"}},
+        init_data,
+    )
+    assert payload == {"ok": True, "filters": {"query": "octavia"}}
+    assert ("filters", {"query": "octavia", "min_price": 1000, "psc": "81101"}) in store.calls
+    _, payload = _call_post({"action": "filters", "filters": "nope"}, init_data)
+    assert payload["error"] == "filters object required"
+    _, payload = _call_post(
+        {"action": "search_create", "name": "hwy", "criteria": "diesel"}, init_data
+    )
+    assert payload == {"ok": True}
+    assert ("search_create", "hwy", "diesel") in store.calls
+    _, payload = _call_post({"action": "search_create", "name": "x"}, init_data)
+    assert payload["error"] == "name + criteria required"
+    _, payload = _call_post({"action": "search_delete", "name": "hwy"}, init_data)
+    assert payload == {"ok": True, "removed": True}
+    _, payload = _call_post({"action": "template", "key": "city"}, init_data)
+    assert payload["ok"] is True
+    assert ("prefs", {"criteria": "small city car, low fuel consumption, easy maintenance, under 120,000 km",
+                      "filters": {"min_price": 1000, "max_price": 5000},
+                      "min_score": 60}) in [c for c in store.calls if c[0] == "prefs"]
+    _, payload = _call_post({"action": "template", "key": "nope"}, init_data)
+    assert payload["error"] == "unknown template"
+    _, payload = _call_post({"action": "eval", "limit": 30, "days": 7}, init_data)
+    assert payload["ok"] is True and payload["queued"] is False  # no real DB to queue
+    _, payload = _call_post({"action": "rescore", "ids": [7, 8]}, init_data)
+    assert payload["ok"] is True and payload["ids"] == [7, 8]
+    _, payload = _call_post({"action": "rescore", "ids": []}, init_data)
+    assert payload["error"] == "ids required"

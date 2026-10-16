@@ -241,6 +241,8 @@ async def _load_all_prefs() -> list[dict]:
                         "show_photo": p.show_photo,
                         "filters": p.filters,
                         "notify_enabled": p.notify_enabled,
+                        "prompt_name": p.prompt_name,
+                        "fallback_models": p.fallback_models,
                         "searches": searches,
                     }
                 )
@@ -262,11 +264,14 @@ async def _evaluate_profile(
     cfg,
     repo=None,
     delay: float = 0.0,
+    prompt_name: str = "standard",
+    fallback_models: list[str] | None = None,
 ) -> tuple[int, int]:
-    """Score ``listings`` under one search profile (criteria + model).
+    """Score ``listings`` under one search profile (criteria + model + prompt).
 
-    Ads already scored for this exact profile (same criteria, same model) are
-    skipped — everything is cached in the ``evaluations`` table.
+    Ads already scored for this exact profile are skipped — everything is
+    cached in the ``evaluations`` table. When the primary model fails outright,
+    each fallback model is tried in order on the still-unscored remainder.
 
     Returns ``(attached, fresh)`` — how many listings carry an evaluation and
     how many were scored in THIS call (0 fresh + pending work = all LLM calls
@@ -275,7 +280,7 @@ async def _evaluate_profile(
     if not listings:
         return 0, 0
     settings = get_settings()
-    p_key = profile_key(criteria, model)
+    p_key = profile_key(criteria, model, prompt=prompt_name)
 
     cached: dict[int, DealEvaluation] = {}
     if repo is not None:
@@ -295,38 +300,55 @@ async def _evaluate_profile(
     if to_eval:
         from bazcar.llm import LLMProvider
 
-        async with LLMProvider(
-            settings.openrouter_api_key,
-            base_url=cfg.base_url,
-            model=model,
-            temperature=cfg.temperature,
-            max_tokens=cfg.max_tokens,
-            top_p=cfg.top_p,
-            frequency_penalty=cfg.frequency_penalty,
-            presence_penalty=cfg.presence_penalty,
-            response_format=cfg.response_format,
-            stream=cfg.stream,
-        ) as llm:
-            for listing in to_eval:
-                if delay:
-                    await asyncio.sleep(delay)
-                try:
-                    listing.evaluation = await llm.evaluate(listing, criteria=criteria)
-                    if listing.evaluation is not None:
-                        listing.evaluation.model = model
-                except LlmError as exc:
-                    logger.warning("eval failed for ad %s: %s", listing.ad_id, exc)
-                    listing.evaluation = None
-                if listing.evaluation is not None:
-                    fresh_items.append((listing.ad_id, listing.evaluation))
-                # Flush incrementally so long backfills survive process timeouts —
-                # progress is committed every EVAL_FLUSH_BATCH listings.
-                if len(fresh_items) - flushed >= EVAL_FLUSH_BATCH and repo is not None:
+        chain = [model, *[m for m in (fallback_models or []) if m and m != model]]
+        api_key = getattr(settings, "llm_api_key", None) or settings.openrouter_api_key
+        for attempt_model in chain:
+            remaining = [listing for listing in to_eval if listing.evaluation is None]
+            if not remaining:
+                break
+            if attempt_model != model:
+                logger.warning(
+                    "primary model %s failed — falling back to %s for %d ads",
+                    model,
+                    attempt_model,
+                    len(remaining),
+                )
+            async with LLMProvider(
+                api_key,
+                base_url=cfg.base_url,
+                model=attempt_model,
+                temperature=cfg.temperature,
+                max_tokens=cfg.max_tokens,
+                top_p=cfg.top_p,
+                frequency_penalty=cfg.frequency_penalty,
+                presence_penalty=cfg.presence_penalty,
+                response_format=cfg.response_format,
+                stream=cfg.stream,
+            ) as llm:
+                for listing in remaining:
+                    if delay:
+                        await asyncio.sleep(delay)
                     try:
-                        await repo.upsert_evaluations(p_key, fresh_items[flushed:])
-                        flushed = len(fresh_items)
-                    except Exception:
-                        logger.warning("evaluation cache write failed", exc_info=True)
+                        listing.evaluation = await llm.evaluate(
+                            listing, criteria=criteria, prompt_name=prompt_name
+                        )
+                        if listing.evaluation is not None:
+                            listing.evaluation.model = attempt_model
+                    except LlmError as exc:
+                        logger.warning("eval failed for ad %s: %s", listing.ad_id, exc)
+                        listing.evaluation = None
+                    if listing.evaluation is not None:
+                        fresh_items.append((listing.ad_id, listing.evaluation))
+                    # Flush incrementally so long backfills survive process timeouts —
+                    # progress is committed every EVAL_FLUSH_BATCH listings.
+                    if len(fresh_items) - flushed >= EVAL_FLUSH_BATCH and repo is not None:
+                        try:
+                            await repo.upsert_evaluations(p_key, fresh_items[flushed:])
+                            flushed = len(fresh_items)
+                        except Exception:
+                            logger.warning("evaluation cache write failed", exc_info=True)
+            if all(listing.evaluation is not None for listing in to_eval):
+                break
         if repo is not None and len(fresh_items) > flushed:
             try:
                 await repo.upsert_evaluations(p_key, fresh_items[flushed:])
@@ -344,7 +366,7 @@ async def _process_eval_tasks() -> int:
     chat so the user can see what happened (transparency of pipeline steps).
     """
     settings = get_settings()
-    if not settings.database_url or not settings.openrouter_api_key:
+    if not settings.database_url or not getattr(settings, "llm_api_key", None):
         return 0
     from bazcar.db import ListingRepository
 
@@ -355,9 +377,18 @@ async def _process_eval_tasks() -> int:
     try:
         await repo.init_schema()
         for task in await repo.pending_eval_tasks():
-            rows = await repo.fetch_recent_listings(
-                days=task.get("days") or 3, limit=task["max_listings"]
-            )
+            task_ids = [int(a) for a in (task.get("ad_ids") or []) if int(a) > 0][:50]
+            prompt_name = task.get("prompt_name") or "standard"
+            fallbacks = [m for m in (task.get("fallback_models") or []) if m][:3]
+            task_key = profile_key(task.get("criteria"), task["model"], prompt=prompt_name)
+            if task_ids:
+                # Targeted re-score: drop cached scores so these evaluate fresh.
+                rows = await repo.fetch_listings_by_ids(task_ids)
+                await repo.delete_evaluations(task_ids, task_key)
+            else:
+                rows = await repo.fetch_recent_listings(
+                    days=task.get("days") or 3, limit=task["max_listings"]
+                )
             listings = [Listing(**row) for row in rows]
             await repo.start_eval_task(task["id"], total=len(listings))
             attached, fresh = await _evaluate_profile(
@@ -367,6 +398,8 @@ async def _process_eval_tasks() -> int:
                 cfg=cfg,
                 repo=repo,
                 delay=2.0,  # stay under free-tier rate limits during backfill
+                prompt_name=prompt_name,
+                fallback_models=fallbacks,
             )
             await repo.set_eval_task_progress(task["id"], attached)
             if fresh == 0 and len(listings) > attached:
@@ -467,7 +500,7 @@ async def _auto_backfill_missing(users: list[dict] | None) -> None:
     already pending. Tasks converge over a few runs (cached evals skip).
     """
     settings = get_settings()
-    if not settings.database_url or not settings.openrouter_api_key or not users:
+    if not settings.database_url or not getattr(settings, "llm_api_key", None) or not users:
         return
     from bazcar.db import ListingRepository
 
@@ -479,7 +512,8 @@ async def _auto_backfill_missing(users: list[dict] | None) -> None:
         seen_keys: set[str] = set()
         for user in users:
             model = user.get("model") or load_llm_config().model
-            p_key = profile_key(user.get("criteria"), model)
+            prompt = user.get("prompt_name") or "standard"
+            p_key = profile_key(user.get("criteria"), model, prompt=prompt)
             if p_key in seen_keys or p_key in pending_keys:
                 continue
             seen_keys.add(p_key)
@@ -487,7 +521,8 @@ async def _auto_backfill_missing(users: list[dict] | None) -> None:
             if missing <= 0:
                 continue
             await repo.create_eval_task(
-                p_key, user.get("criteria"), model, max_listings=min(total or 500, 500), days=30
+                p_key, user.get("criteria"), model, max_listings=min(total or 500, 500), days=30,
+                prompt_name=prompt, fallback_models=user.get("fallback_models"),
             )
             logger.info(
                 "auto-backfill queued: %d/%d ads missing eval for %s", missing, total, p_key
@@ -581,9 +616,9 @@ async def _evaluate(
     if not listings:
         return 0
     settings = get_settings()
-    if not settings.openrouter_api_key:
+    if not getattr(settings, "llm_api_key", None):
         if enabled is True:
-            raise ConfigError("evaluation requested but OPENROUTER_API_KEY is not set")
+            raise ConfigError("evaluation requested but no LLM key is set")
         return 0
 
     from bazcar.llm import LLMProvider  # noqa: F401 — re-exported for tests
@@ -628,6 +663,8 @@ async def _evaluate(
                 model=model,
                 cfg=cfg,
                 repo=repo,
+                prompt_name=user.get("prompt_name") or "standard",
+                fallback_models=user.get("fallback_models"),
             )
             total_fresh += fresh
         return total_fresh
@@ -683,12 +720,13 @@ def _sweep_profiles(user: dict, settings, default_model: str) -> list[tuple[str,
     always runs first.
     """
     model = user.get("model") or default_model
+    prompt = user.get("prompt_name") or "standard"
     profiles: list[tuple[str, int]] = []
     seen: set[str] = set()
 
     def _add(criteria: str | None, min_score: int | None) -> None:
         score = min_score if min_score is not None else (settings.telegram_min_score or 0)
-        key = profile_key(criteria, model)
+        key = profile_key(criteria, model, prompt=prompt)
         if key not in seen:
             seen.add(key)
             profiles.append((key, score))

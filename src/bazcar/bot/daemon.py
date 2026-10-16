@@ -210,6 +210,10 @@ class Bot:
                 return await self._use(chat_id, arg)
             case "/model":
                 return await self._model(chat_id, arg)
+            case "/prompt":  # hidden alias (prompt picker lives in the Mini App)
+                return await self._prompt(chat_id, arg)
+            case "/fallbacks":  # hidden alias (fallback chain editor lives in the Mini App)
+                return await self._fallbacks(chat_id, arg)
             case "/score":  # hidden alias of /settings (score section)
                 return await self._score(chat_id, arg)
             case "/photos":  # hidden alias of /settings (photos section)
@@ -412,11 +416,39 @@ class Bot:
                 return reply
         return f"Couldn't find “{_em(name)}”. /searches"
 
+    async def _cached_models(self) -> tuple[list[dict], object | None]:
+        """JSON-capable models, refreshed from OpenRouter at most once a day."""
+        from bazcar.llm.provider import list_models_cached
+
+        settings = get_settings()
+        api_key = getattr(settings, "llm_api_key", None)
+        if not settings.database_url:
+            models, stamp = await list_models_cached(api_key)
+            return models, stamp
+        from bazcar.db import ListingRepository
+
+        repo = ListingRepository(settings.database_url)
+        await repo.connect()
+        try:
+            await repo.init_schema()
+            return await list_models_cached(api_key, repo)
+        finally:
+            await repo.close()
+
+    @staticmethod
+    def _models_stamp_line(stamp) -> str:
+        if not stamp:
+            return "<i>Model list: live request just now.</i>"
+        try:
+            text = stamp.strftime("%d.%m. %H:%M")
+        except (AttributeError, ValueError):
+            text = str(stamp)
+        return f"<i>Model list refreshed {text} (cached, updates daily).</i>"
+
     async def _model(self, chat_id: int, model: str) -> str:
         """/model — show current, /model info ID — detail, /model ID — set."""
-        from bazcar.llm.provider import list_models
-
-        models = {m["id"]: m for m in await list_models()}
+        models_list, stamp = await self._cached_models()
+        models = {m["id"]: m for m in models_list}
 
         # /model info <ID> — full detail of a specific model
         arg = model.strip()
@@ -441,10 +473,14 @@ class Bot:
             return (
                 f"✅ Model: <code>{_em(arg)}</code>\n\n"
                 + self._model_detail(models, arg, is_current=True)
+                + f"\n{self._models_stamp_line(stamp)}"
             )
 
         # /model — current model detail
-        return self._model_detail(models, current, is_current=True)
+        return (
+            self._model_detail(models, current, is_current=True)
+            + f"\n{self._models_stamp_line(stamp)}"
+        )
 
     @staticmethod
     def _model_detail(models: dict, model_id: str, *, is_current: bool) -> str:
@@ -483,6 +519,65 @@ class Bot:
 
         asyncio.ensure_future(_go())
 
+    async def _prompt(self, chat_id: int, arg: str) -> str:
+        """/prompt — list presets, /prompt NAME — switch (hidden alias)."""
+        from bazcar.llm.provider import PROMPT_META, normalize_prompt_name, prompt_names
+
+        prefs = await self.store.get_prefs(chat_id)
+        current = normalize_prompt_name(prefs.prompt_name if prefs else None)
+        name = normalize_prompt_name(arg) if arg.strip() else ""
+        if arg.strip() and name == "standard" and arg.strip().lower() not in PROMPT_META:
+            lines = ["Unknown prompt. Available:"] + [
+                f"  • <code>{n}</code> — {PROMPT_META[n]}" for n in prompt_names()
+            ]
+            return "\n".join(lines)
+        if name and name != current:
+            await self.store.update_prefs(chat_id, prompt_name=name)
+            self._schedule_recheck(chat_id)
+            return (
+                f"✅ Prompt: <b>{_em(name)}</b> — {PROMPT_META[name]}\n"
+                f"Re-score queued (scores under different prompts are kept separate)."
+            )
+        lines = [f"Current prompt: <b>{_em(current)}</b> — {PROMPT_META[current]}", ""]
+        lines += [
+            f"  • <code>{n}</code> — {PROMPT_META[n]}"
+            + (" ⬅️" if n == current else "")
+            for n in prompt_names()
+        ]
+        lines.append("")
+        lines.append("Switch: <code>/prompt NAME</code> (starts a re-score).")
+        return "\n".join(lines)
+
+    async def _fallbacks(self, chat_id: int, arg: str) -> str:
+        """/fallbacks — list/set/clear fallback models (hidden alias)."""
+        prefs = await self.store.get_prefs(chat_id)
+        current = [m for m in ((prefs.fallback_models if prefs else []) or []) if m][:3]
+        arg = arg.strip()
+        if not arg:
+            if not current:
+                return (
+                    "No fallback models set.\n"
+                    "When the primary model fails, scoring just stops.\n\n"
+                    "Set: <code>/fallbacks model/one,model/two</code> (max 3, tried in order)."
+                )
+            lines = ["Fallback models (tried in order when the primary fails):"] + [
+                f"  {i + 1}. <code>{_em(m)}</code>" for i, m in enumerate(current)
+            ]
+            lines.append("")
+            lines.append("Clear: <code>/fallbacks clear</code>")
+            return "\n".join(lines)
+        if arg.lower() in {"clear", "off", "none"}:
+            await self.store.update_prefs(chat_id, fallback_models=[])
+            return "✅ Fallback models cleared."
+        models = [m.strip() for m in arg.replace(";", ",").split(",") if m.strip()][:3]
+        if not models:
+            return "Set: <code>/fallbacks model/one,model/two</code> (max 3)."
+        await self.store.update_prefs(chat_id, fallback_models=models)
+        lines = ["✅ Fallback models (tried in order when the primary fails):"] + [
+            f"  {i + 1}. <code>{_em(m)}</code>" for i, m in enumerate(models)
+        ]
+        return "\n".join(lines)
+
     async def _score(self, chat_id: int, arg: str) -> str:
         if not arg:
             prefs = await self.store.get_prefs(chat_id)
@@ -506,12 +601,14 @@ class Bot:
         return "✅ Photos with listings: " + ("on" if on else "off")
 
     async def _queue_rescore(
-        self, chat_id: int, max_listings: int = 100, days: int = 3
+        self, chat_id: int, max_listings: int = 100, days: int = 3,
+        ad_ids: list[int] | None = None,
     ) -> bool:
         """Queue an eval backfill for the active profile and trigger a scrape.
 
-        Skip-safe: scoring runs only for ads whose (criteria, model) evaluation
-        does not exist yet — cached profiles cost nothing.
+        Skip-safe: scoring runs only for ads whose (criteria, model, prompt)
+        evaluation does not exist yet — cached profiles cost nothing.
+        ``ad_ids`` targets explicit listings (forced fresh).
         """
         settings = get_settings()
         if not settings.database_url:
@@ -520,28 +617,66 @@ class Bot:
         if prefs is None:
             return False
         model = prefs.model or load_llm_config().model
-        p_key = profile_key(prefs.criteria, model)
+        prompt = prefs.prompt_name or "standard"
+        fallbacks = [m for m in (prefs.fallback_models or []) if m][:3]
+        p_key = profile_key(prefs.criteria, model, prompt=prompt)
         repo = ListingRepository(settings.database_url)
         await repo.connect()
         try:
             pending = await repo.pending_eval_tasks()
             if any(t["profile_key"] == p_key for t in pending):
                 return False  # already queued for this exact profile
-            await repo.create_eval_task(p_key, prefs.criteria, model, max_listings, days)
+            await repo.create_eval_task(
+                p_key, prefs.criteria, model, max_listings, days,
+                prompt_name=prompt, fallback_models=fallbacks, ad_ids=ad_ids,
+            )
         finally:
             await repo.close()
         await _dispatch_scrape()
         return True
 
+    @staticmethod
+    def _parse_eval_ids(arg: str) -> list[int]:
+        """Explicit ad ids in an /eval argument (Bazoš ids are 9-digit).
+
+        ``/eval 195357798,195357799`` or ``/eval id 195357798`` — small
+        numbers stay limit/days parameters for the classic form.
+        """
+        text = arg.replace(",", " ").lower().replace("id", " ")
+        ids = []
+        for token in text.split():
+            if token.isdigit() and int(token) > 100000:
+                ids.append(int(token))
+        return ids[:50]
+
     async def _eval(self, chat_id: int, arg: str) -> str:
+        ids = self._parse_eval_ids(arg)
+        if ids:
+            created = await self._queue_rescore(
+                chat_id, max_listings=len(ids), days=365, ad_ids=ids
+            )
+            if not created:
+                return "⏳ Already re-scoring this search — send /show in a few minutes."
+            shown = ", ".join(f"<code>{i}</code>" for i in ids[:10])
+            more = f" (+{len(ids) - 10} more)" if len(ids) > 10 else ""
+            return (
+                f"🔁 <b>Re-score queued for {len(ids)} cars</b> — fresh scores, "
+                f"cache bypassed.\n{shown}{more}\n"
+                f"➡️ When done you'll get a ✅ report."
+            )
         limit, days = parse_eval_args(arg)
         # estimate: how many ads in scope still lack an evaluation?
         to_eval, total = 0, 0
         settings = get_settings()
         prefs = await self.store.get_prefs(chat_id)
         if prefs is not None and settings.database_url:
+            from bazcar.llm.provider import normalize_prompt_name
+
             model = prefs.model or load_llm_config().model
-            p_key = profile_key(prefs.criteria, model)
+            p_key = profile_key(
+                prefs.criteria, model,
+                prompt=normalize_prompt_name(prefs.prompt_name),
+            )
             repo = ListingRepository(settings.database_url)
             await repo.connect()
             try:
@@ -962,9 +1097,7 @@ class Bot:
         return "📱 <b>Bazcar dashboard</b> — charts, inventory, queue and stats:", keyboard
 
     async def _models(self, chat_id: int, arg: str = "") -> str:
-        from bazcar.llm.provider import list_models
-
-        models = await list_models()
+        models, stamp = await self._cached_models()
         query = arg.strip().lower()
         if query:
             models = [m for m in models if query in m["id"].lower()]
@@ -1000,6 +1133,7 @@ class Bot:
         lines.append("")
         lines.append("<i>⚡ = speed (requests/min, ∞ = no limit), 🔡 = context, $/M = price per 1M input tokens</i>")
         lines.append("Set: <code>/model ID</code> · filter: <code>/models text</code> · detail: <code>/model info ID</code>")
+        lines.append(self._models_stamp_line(stamp))
         return "\n".join(lines)
 
     async def _save(self, chat_id: int, arg: str) -> str:
