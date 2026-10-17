@@ -87,6 +87,7 @@ test("esc neutralises HTML metacharacters", () => {
   assert.equal(esc(null), "");
   assert.equal(esc(0), "0");
   assert.equal(esc('<a href="x">&'), "&lt;a href=&quot;x&quot;&gt;&amp;");
+  assert.equal(esc("it's a car"), "it&#39;s a car");  // single quote closes no attribute
 });
 
 test("eur renders Ask for unknown prices and euros otherwise", () => {

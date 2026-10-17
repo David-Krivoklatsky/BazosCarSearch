@@ -8,12 +8,18 @@ matched against the title. When the LLM already evaluated a listing, its
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from bazcar.core.models import Listing
 
-# Default part/accessory markers (matched case-insensitively, substring).
-# Extend via config/scraper.yaml -> markers.part_markers.
+# Default part/accessory markers (matched case-insensitively as a word PREFIX,
+# so "svetl" catches "svetlá"/"svetlo" but not "osvetlenie"). Extend via
+# config/scraper.yaml -> markers.part_markers.
+#
+# Generic intensifiers ("komplet") are deliberately omitted: they identify no
+# part on their own (the part noun is always present) and would otherwise drop
+# whole cars whose title says "kompletná servisná história".
 DEFAULT_PART_MARKERS: list[str] = [
     "svetl",  # svetlá
     "zrkadl",  # zrkadlá
@@ -31,14 +37,15 @@ DEFAULT_PART_MARKERS: list[str] = [
     "výfuk", "vyfuk",
     "brzd",  # brzdy
     "predný nárazník", "zadný nárazník",
-    "komplet", "komplety",
 ]
 
 
 def _listed_matches(text: str, markers: Iterable[str]) -> bool:
+    """True if any marker begins a word in ``text`` (case-insensitive)."""
     lowered = text.lower()
     for marker in markers:
-        if marker.lower() in lowered:
+        needle = marker.strip().lower()
+        if needle and re.search(rf"\b{re.escape(needle)}", lowered):
             return True
     return False
 

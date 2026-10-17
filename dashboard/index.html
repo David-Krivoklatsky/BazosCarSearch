@@ -277,8 +277,8 @@ function setBack(fn) {
   } catch (e) {}
 }
 function esc(s) {
-  return String(s == null ? "" : s).replace(/[&<>"]/g,
-    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  return String(s == null ? "" : s).replace(/[&<>"']/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 function eur(v) {
   if (v == null || v === "") return "Ask";

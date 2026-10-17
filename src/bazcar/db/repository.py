@@ -225,6 +225,20 @@ ALTER TABLE listings
 ALTER TABLE listings
     ADD COLUMN IF NOT EXISTS verified_at timestamptz;
 CREATE INDEX IF NOT EXISTS idx_listings_removed ON listings (removed_at);
+
+-- Hot-path indexes (idempotent; the queries below run every pipeline cycle).
+CREATE INDEX IF NOT EXISTS idx_listings_last_seen
+    ON listings (last_seen_at DESC) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_listings_removal_scan
+    ON listings (verified_at NULLS FIRST, last_seen_at) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_evaluations_evaluated_at
+    ON evaluations (evaluated_at);
+CREATE INDEX IF NOT EXISTS idx_price_history_seen_at
+    ON price_history (seen_at);
+CREATE INDEX IF NOT EXISTS idx_saved_listings_ad_id
+    ON saved_listings (ad_id);
+CREATE INDEX IF NOT EXISTS idx_eval_tasks_open
+    ON eval_tasks (done_at) WHERE done_at IS NULL;
 """
 
 _UPSERT_LISTING_SQL = """
@@ -296,7 +310,8 @@ WHERE e.score >= $2 AND l.removed_at IS NULL
       >= (now() - make_interval(days => $3))::date
 ORDER BY e.score DESC,
          COALESCE(l.published_date, l.first_seen_at::date) DESC,
-         l.first_seen_at DESC
+         l.first_seen_at DESC,
+         l.ad_id DESC
 LIMIT $4
 """
 
@@ -305,7 +320,7 @@ SELECT ad_id, url, title, price_eur, city, image_urls,
        year, mileage_km, description_preview, description
 FROM listings
 WHERE last_seen_at >= now() - make_interval(days => $1) AND removed_at IS NULL
-ORDER BY last_seen_at DESC
+ORDER BY last_seen_at DESC, ad_id DESC
 LIMIT $2
 """
 
@@ -1008,10 +1023,10 @@ class ListingRepository:
         # refreshed when the seller bumps it) — NOT first_seen_at, which is
         # when we scraped it and would look out of order next to the date.
         "newest": "COALESCE(l.published_date, l.first_seen_at::date) DESC,"
-        " l.first_seen_at DESC",
-        "price_asc": "l.price_eur ASC NULLS LAST, l.first_seen_at DESC",
-        "price_desc": "l.price_eur DESC NULLS LAST, l.first_seen_at DESC",
-        "score": "e.score DESC NULLS LAST, l.first_seen_at DESC",
+        " l.first_seen_at DESC, l.ad_id DESC",
+        "price_asc": "l.price_eur ASC NULLS LAST, l.first_seen_at DESC, l.ad_id DESC",
+        "price_desc": "l.price_eur DESC NULLS LAST, l.first_seen_at DESC, l.ad_id DESC",
+        "score": "e.score DESC NULLS LAST, l.first_seen_at DESC, l.ad_id DESC",
     }
     _CATALOG_STATUS = {
         "all": "TRUE",
@@ -1403,7 +1418,7 @@ class ListingRepository:
                 " FROM listings"
                 " WHERE removed_at IS NULL"
                 f" AND upper(split_part(title, ' ', 1)) NOT IN ({self._MAKE_STOPLIST})"
-                " GROUP BY 1 ORDER BY n DESC LIMIT $1",
+                " GROUP BY 1 ORDER BY n DESC, 1 LIMIT $1",
                 max(1, min(int(limit or 10), 30)),
             )
             return [dict(r) for r in rows]
@@ -1480,7 +1495,7 @@ class ListingRepository:
                 " WHERE l.removed_at IS NULL AND t.prev IS NOT NULL AND t.price_eur IS NOT NULL"
                 "  AND t.price_eur < t.prev AND t.prev > 0"
                 "  AND t.seen_at >= now() - make_interval(days => $2)"
-                " ORDER BY pct DESC LIMIT $1",
+                " ORDER BY pct DESC, t.ad_id DESC LIMIT $1",
                 max(1, min(int(limit or 10), 30)),
                 max(1, min(int(days or 30), 365)),
             )
@@ -1571,7 +1586,7 @@ class ListingRepository:
                 " coalesce(sum(cost_usd), 0) AS cost_usd"
                 " FROM evaluations"
                 f" WHERE evaluated_at >= now() - make_interval(days => $1) {cond}"
-                " GROUP BY 1 ORDER BY n DESC",
+                " GROUP BY 1 ORDER BY n DESC, 1",
                 days,
                 *params,
             )

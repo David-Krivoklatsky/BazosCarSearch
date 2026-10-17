@@ -89,6 +89,23 @@ def test_filter_cars_keeps_order_and_drops_parts() -> None:
     assert [ad.ad_id for ad in filtered] == [1]
 
 
+def test_is_car_keeps_complete_service_history() -> None:
+    # "kompletná" must not be read as the (now removed) marker "komplet".
+    listing = _listing(1, "Škoda Octavia 1.6 kompletná servisná história")
+    assert is_car_listing(listing) is True
+
+
+def test_is_car_matches_marker_only_at_word_start() -> None:
+    # "osvetlenie" merely contains "svetl" mid-word -> whole car, not a part.
+    listing = _listing(1, "Ford Focus 1.6 osvetlenie interiéru")
+    assert is_car_listing(listing) is True
+
+
+def test_is_car_still_drops_word_start_part() -> None:
+    listing = _listing(1, "Svetlá predné Octavia 2")
+    assert is_car_listing(listing) is False
+
+
 # ----------------------------------------------------------------- bot commands
 
 

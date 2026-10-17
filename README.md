@@ -73,7 +73,7 @@ a user just sends `/start`. Without `BAZCAR_ALLOWED_CHAT_IDS` the bot is open
 (onboarding); with it, it's a whitelist (e.g. only you).
 
 Commands (22 in the `/` menu; `/score`, `/photos`, `/models`, `/note`, `/alert`,
-`/digest`, `/status` still work as hidden aliases):
+`/digest`, `/status`, `/prompt`, `/fallbacks` still work as hidden aliases):
 - Basics: `/start`, `/help`, `/menu`, `/settings`, `/criteria`, `/model`.
 - Searches: `/search name: criteria`, `/searches`, `/use name`,
   `/filter query|price|dist|psc`, `/filter clear`.
@@ -109,7 +109,8 @@ all `/api/*` paths via the `api/index.py` dispatcher (see `[tool.vercel]`
 in `pyproject.toml`).
 
 Optional AI guardrail: `BAZCAR_MONTHLY_BUDGET_USD` pauses fresh scoring once the
-trailing-30-day evaluation spend is reached (cached scores keep serving).
+trailing-30-day evaluation spend is reached (cached scores keep serving). Unset
+or `0` disables the guard, leaving paid scoring uncapped.
 
 ## Configuration
 - `.env` (from `.env.example`) — runtime variables (incl. `BAZCAR_DATABASE_URL`,
