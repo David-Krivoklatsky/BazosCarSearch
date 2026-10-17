@@ -160,9 +160,9 @@ class TelegramNotifier:
 
     async def send_listings(
         self, listings: list[Listing], *, chat_id: int | None = None, silent: bool = False
-    ) -> int:
-        """Send notifications for each listing; returns the number of successes."""
-        sent = 0
+    ) -> list[int]:
+        """Send notifications for each listing; returns the ad_ids delivered."""
+        sent: list[int] = []
         for listing in listings:
             if await self.send_message(
                 format_listing(listing),
@@ -170,18 +170,20 @@ class TelegramNotifier:
                 silent=silent,
                 reply_markup=listing_keyboard(listing),
             ):
-                sent += 1
+                sent.append(listing.ad_id)
         return sent
 
     async def send_listings_with_photos(
         self, listings: list[Listing], *, chat_id: int | None = None, silent: bool = False
-    ) -> int:
+    ) -> list[int]:
         """Send each listing as a photo when one exists, falling back to text.
 
         A listing whose photo Telegram rejects (dead URL, unsupported format)
         is still delivered as a plain text message rather than dropped.
+        Returns the ad_ids actually delivered, so callers only dedupe what
+        really reached the chat.
         """
-        sent = 0
+        sent: list[int] = []
         for listing in listings:
             if listing.image_urls and await self.send_photo(
                 listing.image_urls[0],
@@ -190,12 +192,12 @@ class TelegramNotifier:
                 silent=silent,
                 reply_markup=listing_keyboard(listing),
             ):
-                sent += 1
+                sent.append(listing.ad_id)
             elif await self.send_message(
                 format_listing(listing),
                 chat_id=chat_id,
                 silent=silent,
                 reply_markup=listing_keyboard(listing),
             ):
-                sent += 1
+                sent.append(listing.ad_id)
         return sent

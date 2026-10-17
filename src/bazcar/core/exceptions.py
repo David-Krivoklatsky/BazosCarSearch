@@ -33,3 +33,15 @@ class DbError(BazcarError):
 
 class LlmError(BazcarError):
     """LLM/OpenRouter call failure (Phase 3 evaluation)."""
+
+
+class RateLimitedError(LlmError):
+    """OpenRouter returned HTTP 429.
+
+    ``retry_after`` mirrors the response's ``Retry-After`` header (seconds)
+    when present, so the caller can back off for as long as asked.
+    """
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after

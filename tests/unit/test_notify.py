@@ -127,7 +127,7 @@ async def test_send_listings_counts_successes() -> None:
     listings = [_listing(ad_id=1), _listing(ad_id=2), _listing(ad_id=3)]
     async with TelegramNotifier("TOKEN", "42") as ntf:
         sent = await ntf.send_listings(listings)
-    assert sent == 2
+    assert sent == [1, 3]
 
 
 @respx.mock
@@ -155,7 +155,7 @@ async def test_send_listings_with_photos_uses_send_photo_and_keyboard() -> None:
     listing = _listing(ad_id=5, image_urls=["https://img/x.jpg"])
     async with TelegramNotifier("TOKEN", "42") as ntf:
         sent = await ntf.send_listings_with_photos([listing])
-    assert sent == 1
+    assert sent == [5]
     assert photo_route.called
     body = json.loads(photo_route.calls[0].request.content)
     assert body["photo"] == "https://img/x.jpg"
@@ -176,7 +176,7 @@ async def test_send_listings_with_photos_falls_back_to_text_on_photo_failure() -
     listing = _listing(ad_id=5, image_urls=["https://img/x.jpg"])
     async with TelegramNotifier("TOKEN", "42") as ntf:
         sent = await ntf.send_listings_with_photos([listing])
-    assert sent == 1
+    assert sent == [5]
     assert text_route.called
     body = json.loads(text_route.calls[0].request.content)
     assert "Kia Sportage" in body["text"]

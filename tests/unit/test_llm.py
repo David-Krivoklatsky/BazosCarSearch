@@ -155,6 +155,48 @@ async def test_provider_returns_none_on_http_error() -> None:
     assert route.call_count == 2  # initial attempt + one retry
 
 
+@respx.mock
+@pytest.mark.asyncio
+async def test_provider_honors_retry_after(monkeypatch) -> None:
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=Response(
+            429,
+            headers={"retry-after": "2"},
+            json={"error": {"message": "rate limited"}},
+        )
+    )
+    delays: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr("bazcar.llm.provider.asyncio.sleep", _fake_sleep)
+    async with LLMProvider("test-key") as llm:
+        result = await llm.evaluate(_listing())
+    assert result is None
+    assert route.call_count == 3  # initial + two retries
+    assert delays == [2.0, 2.0]  # Retry-After honoured, no jitter
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_provider_backoff_is_exponential_without_retry_after(monkeypatch) -> None:
+    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=Response(429, json={"error": {"message": "rate limited"}})
+    )
+    delays: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr("bazcar.llm.provider.asyncio.sleep", _fake_sleep)
+    async with LLMProvider("test-key") as llm:
+        await llm.evaluate(_listing())
+    assert len(delays) == 2
+    assert 15.0 <= delays[0] <= 16.0  # RATE_LIMIT_BASE_S + up to 1s jitter
+    assert 30.0 <= delays[1] <= 31.0  # doubled + up to 1s jitter
+
+
 def test_provider_requires_key() -> None:
     with pytest.raises(LlmError, match="OPENROUTER_API_KEY is empty"):
         LLMProvider("")

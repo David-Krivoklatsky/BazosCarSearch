@@ -361,7 +361,7 @@ class _SweepNotifier(_FakeNotifier):
 
     async def send_listings(self, listings, *, chat_id=None):
         self.sent.append((chat_id, ",".join(str(li.ad_id) for li in listings)))
-        return len(listings)
+        return [li.ad_id for li in listings]
 
     async def send_listings_with_photos(self, listings, *, chat_id=None):
         return await self.send_listings(listings, chat_id=chat_id)
@@ -474,6 +474,27 @@ def test_match_sweep_respects_per_run_cap(monkeypatch):
     _chat, pushed = notifier.sent[0]
     assert len(pushed.split(",")) == NOTIFY_CAP_PER_RUN
     assert _SweepRepo.recorded == [(7, p_key, [int(a) for a in pushed.split(",")])]
+
+
+def test_match_sweep_records_only_delivered_ads(monkeypatch):
+    """A failed send must stay unseen so the next run retries it."""
+    from bazcar.pipeline.runner import _notify_unseen_matches
+
+    notifier = _sweep_settings(monkeypatch)
+
+    async def _partial(listings, *, chat_id=None):
+        delivered = [li for li in listings if li.ad_id != 1]
+        notifier.sent.append((chat_id, ",".join(str(li.ad_id) for li in delivered)))
+        return [li.ad_id for li in delivered]
+
+    monkeypatch.setattr(notifier, "send_listings", _partial)
+    user = _user(7, None, criteria="diesel", model="m/1", min_score=70)
+    p_key = profile_key("diesel")
+    _SweepRepo.rows_by_profile[p_key] = [_match_row(1), _match_row(2)]
+
+    sent = _run(_notify_unseen_matches([user], enabled=True))
+    assert sent == 1
+    assert _SweepRepo.recorded == [(7, p_key, [2])]
 
 
 def test_match_sweep_no_users_is_zero(monkeypatch):
@@ -741,6 +762,74 @@ def test_process_eval_tasks_rechecks_budget_between_tasks(monkeypatch):
     monkeypatch.setattr("bazcar.pipeline.runner._evaluate_profile", _fake_evaluate)
     assert _run(_process_eval_tasks()) == 1  # second task held: spend refreshed to $9
     assert len(scored) == 1
+
+
+def test_process_eval_tasks_caps_tasks_per_run(monkeypatch):
+    """One run scores at most EVAL_TASKS_PER_RUN backfills (bounds runtime)."""
+    import bazcar.pipeline.runner as runner_mod
+    from bazcar.core.models import DealEvaluation
+    from bazcar.pipeline.runner import _process_eval_tasks
+
+    monkeypatch.setattr(runner_mod, "EVAL_TASKS_PER_RUN", 2)
+
+    tasks = [
+        {"id": i, "profile_key": "pk", "criteria": "diesel", "model": "m/1",
+         "max_listings": 5, "days": 3, "attempts": 0, "total": 0, "done": 0,
+         "prompt_name": "standard", "fallback_models": [], "ad_ids": [i],
+         "force": False, "confirmed": True}
+        for i in range(1, 4)
+    ]
+
+    class _Repo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def init_schema(self):
+            pass
+
+        async def pending_eval_tasks(self):
+            return list(tasks)
+
+        async def fetch_listings_by_ids(self, ad_ids):
+            return [{"ad_id": ad_ids[0], "url": f"https://x/{ad_ids[0]}", "title": "A",
+                     "description_preview": "d"}]
+
+        async def start_eval_task(self, task_id, total):
+            pass
+
+        async def set_eval_task_progress(self, task_id, done):
+            pass
+
+        async def complete_eval_task(self, task_id):
+            pass
+
+    scored: list = []
+
+    async def _fake_evaluate(listings, **kw):
+        scored.append(kw)
+        for listing in listings:
+            listing.evaluation = DealEvaluation(score=80, why="ok", model=kw.get("model"))
+        return len(listings), len(listings)
+
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(
+            telegram_bot_token="T",
+            database_url="postgres://x",
+            openrouter_api_key="K",
+        ),
+    )
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    monkeypatch.setattr("bazcar.pipeline.runner._evaluate_profile", _fake_evaluate)
+
+    assert _run(_process_eval_tasks()) == 2  # third task deferred to the next run
+    assert len(scored) == 2
 
 
 def test_profile_key_prompt_forks_cache() -> None:

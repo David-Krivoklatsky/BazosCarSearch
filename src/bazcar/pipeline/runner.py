@@ -430,6 +430,7 @@ async def _process_eval_tasks() -> int:
 
     cfg = load_llm_config()
     processed = 0
+    started = 0
     repo = ListingRepository(settings.database_url)
     await repo.connect()
     try:
@@ -450,6 +451,14 @@ async def _process_eval_tasks() -> int:
                     task["id"], spent, budget,
                 )
                 continue
+            if started >= EVAL_TASKS_PER_RUN:
+                logger.warning(
+                    "eval task %d deferred: per-run cap of %d scoring tasks reached",
+                    task["id"],
+                    EVAL_TASKS_PER_RUN,
+                )
+                break
+            started += 1
             task_ids = [int(a) for a in (task.get("ad_ids") or []) if int(a) > 0]
             if task_ids:
                 rows = await repo.fetch_listings_by_ids(task_ids)
@@ -915,6 +924,7 @@ NOTIFY_WINDOW_DAYS = 7      # how far back deal alerts look
 NOTIFY_CAP_PER_RUN = 10     # max deal alerts per run (rest stays for /show)
 MAX_EVAL_TASK_RETRIES = 2   # abandon a backfill after this many empty attempts
 EVAL_FLUSH_BATCH = 5        # commit evaluations incrementally during long backfills
+EVAL_TASKS_PER_RUN = 20     # max backfill tasks scored per run (bounds one run)
 
 
 def _sweep_profiles(user: dict, settings, default_model: str) -> list[tuple[str, int]]:
@@ -992,12 +1002,14 @@ async def _notify_unseen_matches(users: list[dict] | None, *, enabled: bool | No
                     if not targets:
                         continue
                     if user.get("show_photo"):
-                        sent = await ntf.send_listings_with_photos(targets, chat_id=chat_id)
+                        sent_ids = await ntf.send_listings_with_photos(targets, chat_id=chat_id)
                     else:
-                        sent = await ntf.send_listings(targets, chat_id=chat_id)
-                    if sent:
-                        await repo.record_notifications(chat_id, p_key, [t.ad_id for t in targets])
-                    total_sent += sent
+                        sent_ids = await ntf.send_listings(targets, chat_id=chat_id)
+                    if sent_ids:
+                        # Record only what actually reached the chat: a failed
+                        # send must stay "unseen" so the next run retries it.
+                        await repo.record_notifications(chat_id, p_key, sent_ids)
+                    total_sent += len(sent_ids)
         return total_sent
     finally:
         await repo.close()
@@ -1052,8 +1064,8 @@ async def _notify(
     show_photo = bool((prefs or {}).get("show_photo"))
     async with TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id) as ntf:
         if show_photo:
-            return await ntf.send_listings_with_photos(targets)
-        return await ntf.send_listings(targets)
+            return len(await ntf.send_listings_with_photos(targets))
+        return len(await ntf.send_listings(targets))
 
 
 def _notify_targets(

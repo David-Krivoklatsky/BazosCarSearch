@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 from typing import Any
 
 import httpx
 
-from bazcar.core.exceptions import LlmError
+from bazcar.core.exceptions import LlmError, RateLimitedError
 from bazcar.core.models import DealEvaluation, Listing
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,39 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
 # How long a cached OpenRouter /models response stays valid (once a day).
 MODELS_CACHE_TTL_S = 86400
+
+# Retry policy: transient/rate-limit failures back off exponentially, capped.
+RATE_LIMIT_MAX_ATTEMPTS = 3   # 429: initial + two backed-off retries
+TRANSIENT_MAX_ATTEMPTS = 2    # 5xx / network: initial + one quick retry
+RATE_LIMIT_BASE_S = 15.0      # first 429 wait; doubles per attempt
+MAX_BACKOFF_S = 60.0          # ceiling for any single sleep
+
+
+def _retry_after(exc: LlmError) -> float | None:
+    """Seconds from a 429's ``Retry-After`` header, if it carried one."""
+    value = getattr(exc, "retry_after", None)
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+def _backoff_delay(attempt: int, retry_after: float | None) -> float:
+    """Sleep before attempt+1: honour Retry-After, else exponential + jitter."""
+    if retry_after is not None:
+        return min(retry_after, MAX_BACKOFF_S)
+    base = RATE_LIMIT_BASE_S * (2 ** (attempt - 1))
+    return min(base, MAX_BACKOFF_S) + random.uniform(0.0, 1.0)
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Seconds from a response's ``Retry-After`` header (numeric form only)."""
+    try:
+        seconds = float(response.headers.get("retry-after"))
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
 
 SYSTEM_PROMPT = (
     "Si analytik ojazdených áut pre slovenský trh (Bazoš.sk). Na základe ceny, "
@@ -374,32 +408,35 @@ class LLMProvider:
         payload.update({key: value for key, value in optional.items() if value is not None})
         content: str | None = None
         usage: dict[str, Any] | None = None
-        try:
-            content, usage = await self._completion(payload, listing)
-        except LlmError as exc:
-            rate_limited = "rate limited" in str(exc)
-            if rate_limited:
-                # Free tier: 429 persists for ~a minute — wait it out, retry once.
-                logger.warning("LLM rate limited for ad %s — backing off 30s", listing.ad_id)
-                await asyncio.sleep(30)
-            else:
-                logger.warning("LLM call failed (%s), retrying once", exc)
-                await asyncio.sleep(1.5)
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 content, usage = await self._completion(payload, listing)
-            except LlmError as exc2:
-                if rate_limited:
-                    logger.warning("LLM still rate limited for ad %s after backoff", listing.ad_id)
-                    # give the limiter one long breath, then a final attempt
-                    await asyncio.sleep(30)
-                    try:
-                        content, usage = await self._completion(payload, listing)
-                    except LlmError as exc3:
-                        logger.warning("LLM final attempt failed for ad %s: %s", listing.ad_id, exc3)
-                        return None
-                else:
-                    logger.warning("LLM retry also failed: %s", exc2)
+                break
+            except RateLimitedError as exc:
+                if attempt >= RATE_LIMIT_MAX_ATTEMPTS:
+                    logger.warning(
+                        "LLM still rate limited for ad %s after %d attempts",
+                        listing.ad_id,
+                        attempt,
+                    )
                     return None
+                delay = _backoff_delay(attempt, _retry_after(exc))
+                logger.warning(
+                    "LLM rate limited for ad %s — backing off %.1fs (attempt %d/%d)",
+                    listing.ad_id,
+                    delay,
+                    attempt,
+                    RATE_LIMIT_MAX_ATTEMPTS,
+                )
+                await asyncio.sleep(delay)
+            except LlmError as exc:
+                if attempt >= TRANSIENT_MAX_ATTEMPTS:
+                    logger.warning("LLM call failed for ad %s: %s", listing.ad_id, exc)
+                    return None
+                logger.warning("LLM call failed (%s), retrying once", exc)
+                await asyncio.sleep(1.5)
         if content is None:
             return None
         evaluation = parse_evaluation(content)
@@ -445,7 +482,10 @@ class LLMProvider:
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429:
-                raise LlmError(f"rate limited (429) for ad {listing.ad_id}") from exc
+                raise RateLimitedError(
+                    f"rate limited (429) for ad {listing.ad_id}",
+                    retry_after=_parse_retry_after(exc.response),
+                ) from exc
             raise LlmError(f"OpenRouter request failed for ad {listing.ad_id}: {exc}") from exc
         except Exception as exc:
             raise LlmError(f"OpenRouter request failed for ad {listing.ad_id}: {exc}") from exc
