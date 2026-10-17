@@ -435,7 +435,7 @@ async def _process_eval_tasks() -> int:
     try:
         await repo.init_schema()
         prices = await _model_prices(settings, repo)
-        budget = getattr(settings, "monthly_budget_usd", None)
+        budget = _budget_cap(settings)
         spent = await _monthly_spend(repo) if budget is not None else 0.0
         for task in await repo.pending_eval_tasks():
             if not task.get("confirmed", True):
@@ -473,6 +473,10 @@ async def _process_eval_tasks() -> int:
                 force=bool(task.get("force")),
             )
             await repo.set_eval_task_progress(task["id"], attached)
+            if budget is not None:
+                # Re-read spend so later tasks in the same run honour the cap
+                # (one run may drain several paid backfills).
+                spent = await _monthly_spend(repo)
             if fresh == 0 and len(listings) > attached:
                 # every LLM call failed (e.g. model stuck behind 429) — bump the
                 # counter; after MAX we abandon the task so it cannot block the
@@ -828,7 +832,7 @@ async def _evaluate(
                 await repo.close()
                 repo = None
 
-    budget = getattr(settings, "monthly_budget_usd", None)
+    budget = _budget_cap(settings)
     if repo is not None and budget is not None:
         spent = await _monthly_spend(repo)
         if spent >= budget:
@@ -868,6 +872,19 @@ async def _monthly_spend(repo) -> float:
     except Exception:
         logger.warning("monthly spend lookup failed", exc_info=True)
         return 0.0
+
+
+def _budget_cap(settings) -> float | None:
+    """Effective monthly AI cap: a positive value enables the guard, else off.
+
+    ``None`` (unset) and ``0``/negative both mean "no cap" — the config value is
+    a ceiling, never a way to freeze all paid scoring.
+    """
+    try:
+        value = float(getattr(settings, "monthly_budget_usd", None))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 async def _persist(

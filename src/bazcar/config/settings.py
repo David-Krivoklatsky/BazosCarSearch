@@ -148,7 +148,8 @@ class Settings(BaseSettings):
         ),
         description=(
             "LLM spend guardrail: when the trailing-30-day evaluation cost "
-            "reaches this, fresh scoring pauses (cached scores still served)."
+            "reaches this, fresh scoring pauses (cached scores still served). "
+            "Unset or 0 disables the guard."
         ),
     )
 

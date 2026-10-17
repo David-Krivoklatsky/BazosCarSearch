@@ -618,6 +618,131 @@ def test_evaluate_pauses_when_budget_exhausted(monkeypatch):
     users = [_user(7, None, criteria="diesel", model="m/1", min_score=70)]
     assert _run(_evaluate([_listing()], enabled=True, users=users)) == 0
 
+
+def test_budget_cap_none_or_zero_disables_guard() -> None:
+    """BAZCAR_MONTHLY_BUDGET_USD unset or 0 = no cap (never freezes scoring)."""
+    from bazcar.pipeline.runner import _budget_cap
+
+    assert _budget_cap(_Settings(monthly_budget_usd=None)) is None
+    assert _budget_cap(_Settings(monthly_budget_usd=0)) is None
+    assert _budget_cap(_Settings(monthly_budget_usd=-1)) is None
+    assert _budget_cap(_Settings(monthly_budget_usd=5)) == 5.0
+
+
+def test_evaluate_scores_when_budget_is_zero(monkeypatch):
+    """A 0 cap must not pause fresh scoring even with prior spend recorded."""
+    from bazcar.pipeline.runner import _evaluate
+
+    class _Repo:
+        def __init__(self, dsn):
+            pass
+
+        async def connect(self):
+            return None
+
+        async def close(self):
+            return None
+
+        async def init_schema(self):
+            return None
+
+        async def eval_cost(self, profile_key=None, days=30):
+            return {"total": {"n": 10, "cost_usd": 5.0}, "by_model": []}
+
+    seen: list = []
+
+    async def _fake_evaluate_profile(listings, **kw):
+        seen.append(kw.get("model"))
+        return len(listings), len(listings)
+
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(
+            telegram_bot_token="T",
+            database_url="postgres://x",
+            openrouter_api_key="K",
+            monthly_budget_usd=0,
+        ),
+    )
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    monkeypatch.setattr("bazcar.pipeline.runner._evaluate_profile", _fake_evaluate_profile)
+    users = [_user(7, None, criteria="diesel", model="m/1", min_score=70)]
+    assert _run(_evaluate([_listing()], enabled=True, users=users)) == 1
+    assert seen == ["m/1"]
+
+
+def test_process_eval_tasks_rechecks_budget_between_tasks(monkeypatch):
+    """One run must not drain several paid backfills past the monthly cap."""
+    from bazcar.core.models import DealEvaluation
+    from bazcar.pipeline.runner import _process_eval_tasks
+
+    spends = [1.0, 9.0]  # spend before task 1, then after task 1 (over a $5 cap)
+
+    def _task(task_id: int, ad_id: int) -> dict:
+        return {
+            "id": task_id, "profile_key": "pk", "criteria": "diesel", "model": "m/1",
+            "max_listings": 5, "days": 3, "attempts": 0, "total": 0, "done": 0,
+            "prompt_name": "standard", "fallback_models": [], "ad_ids": [ad_id],
+            "force": False, "confirmed": True,
+        }
+
+    class _Repo:
+        def __init__(self, dsn):
+            self._i = 0
+
+        async def connect(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def init_schema(self):
+            pass
+
+        async def pending_eval_tasks(self):
+            return [_task(1, 7), _task(2, 8)]
+
+        async def fetch_listings_by_ids(self, ad_ids):
+            return [{"ad_id": ad_ids[0], "url": f"https://x/{ad_ids[0]}", "title": "A",
+                     "description_preview": "d"}]
+
+        async def start_eval_task(self, task_id, total):
+            pass
+
+        async def set_eval_task_progress(self, task_id, done):
+            pass
+
+        async def complete_eval_task(self, task_id):
+            pass
+
+        async def eval_cost(self, profile_key=None, days=30):
+            value = spends[min(self._i, len(spends) - 1)]
+            self._i += 1
+            return {"total": {"cost_usd": value}, "by_model": []}
+
+    scored: list = []
+
+    async def _fake_evaluate(listings, **kw):
+        scored.append(kw)
+        for listing in listings:
+            listing.evaluation = DealEvaluation(score=80, why="ok", model=kw.get("model"))
+        return len(listings), len(listings)
+
+    monkeypatch.setattr(
+        "bazcar.pipeline.runner.get_settings",
+        lambda: _Settings(
+            telegram_bot_token="T",  # no chat_id -> no report network call
+            database_url="postgres://x",
+            openrouter_api_key="K",
+            monthly_budget_usd=5.0,
+        ),
+    )
+    monkeypatch.setattr("bazcar.db.ListingRepository", _Repo)
+    monkeypatch.setattr("bazcar.pipeline.runner._evaluate_profile", _fake_evaluate)
+    assert _run(_process_eval_tasks()) == 1  # second task held: spend refreshed to $9
+    assert len(scored) == 1
+
+
 def test_profile_key_prompt_forks_cache() -> None:
     # standard reproduces the historical key (existing caches keep hitting)
     assert profile_key("c") == profile_key("c", prompt="standard")
