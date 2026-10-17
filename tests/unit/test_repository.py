@@ -136,6 +136,35 @@ def test_upsert_evaluation_sql_matches_usage_columns():
     for column in ("prompt_tokens", "completion_tokens", "cost_usd"):
         assert column in _UPSERT_EVALUATION_SQL
 
+
+def test_schema_bootstrap_declares_hot_path_indexes():
+    """Phase 3 hot-path indexes must ship with the schema bootstrap."""
+    from bazcar.db.repository import SCHEMA_SQL
+
+    for index in (
+        "idx_listings_last_seen",
+        "idx_listings_removal_scan",
+        "idx_evaluations_evaluated_at",
+        "idx_price_history_seen_at",
+        "idx_saved_listings_ad_id",
+        "idx_eval_tasks_open",
+    ):
+        assert f"CREATE INDEX IF NOT EXISTS {index}" in SCHEMA_SQL, index
+
+
+def test_recent_and_catalog_queries_are_deterministic():
+    """Every paged/ordered query needs an ad_id tie-breaker for stable pages."""
+    from bazcar.db.repository import (
+        _FETCH_RECENT_LISTINGS_SQL,
+        _FETCH_RECENT_MATCHES_SQL,
+        ListingRepository,
+    )
+
+    assert "ad_id DESC" in _FETCH_RECENT_MATCHES_SQL
+    assert "ad_id DESC" in _FETCH_RECENT_LISTINGS_SQL
+    for name, sql in ListingRepository._CATALOG_SORTS.items():
+        assert "l.ad_id DESC" in sql, name
+
 class _RecordingConn:
     """Minimal asyncpg stand-in: records execute/fetch/fetchrow calls."""
 

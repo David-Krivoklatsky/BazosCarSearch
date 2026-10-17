@@ -323,3 +323,159 @@ async def test_list_models_cached_refreshes_stale_cache() -> None:
     assert repo.saved == raw
     assert models[0]["rpm"] == 30
     assert models[0]["free"] is False
+
+
+# ------------------------------------------------------- Phase 4 coverage
+
+
+def test_backoff_helpers_honour_retry_after_and_cap() -> None:
+    from bazcar.llm.provider import (
+        MAX_BACKOFF_S,
+        RATE_LIMIT_BASE_S,
+        _backoff_delay,
+        _retry_after,
+    )
+
+    class _Exc(LlmError):
+        def __init__(self, retry_after):  # noqa: D107
+            super().__init__("429")
+            self.retry_after = retry_after
+
+    # Retry-After wins when present, but never exceeds the ceiling.
+    assert _backoff_delay(1, 2.0) == 2.0
+    assert _backoff_delay(1, MAX_BACKOFF_S + 500) == MAX_BACKOFF_S
+    # No Retry-After => exponential backoff plus (bounded) jitter.
+    d1 = _backoff_delay(1, None)
+    assert RATE_LIMIT_BASE_S <= d1 <= RATE_LIMIT_BASE_S + 1.0
+    # _retry_after reads the attribute, ignoring junk / non-positive values.
+    assert _retry_after(_Exc("3.5")) == 3.5
+    assert _retry_after(_Exc("nope")) is None
+    assert _retry_after(_Exc(0)) is None
+    assert _retry_after(_Exc(None)) is None
+    # A plain LlmError (no attribute) degrades to None.
+    assert _retry_after(LlmError("boom")) is None
+
+
+def test_parse_retry_after_header_forms() -> None:
+    from bazcar.llm.provider import _parse_retry_after
+
+    assert _parse_retry_after(Response(429, headers={"retry-after": "7"})) == 7.0
+    assert _parse_retry_after(Response(429, headers={"retry-after": "0"})) is None
+    assert _parse_retry_after(Response(429, headers={"retry-after": "soon"})) is None
+    assert _parse_retry_after(Response(429)) is None
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_provider_attaches_usage_and_cost() -> None:
+    respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": '{"score": 70}'}}
+                ],
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 8,
+                    "cost": 0.00042,
+                },
+            },
+        )
+    )
+    async with LLMProvider("test-key", model="test/model") as llm:
+        eval_ = await llm.evaluate(_listing())
+    assert eval_ is not None
+    assert eval_.prompt_tokens == 120
+    assert eval_.completion_tokens == 8
+    assert eval_.cost_usd == pytest.approx(0.00042)
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_provider_retries_unparseable_reply_with_higher_temperature() -> None:
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        side_effect=[
+            Response(200, json={"choices": [{"message": {"content": "not json"}}]}),
+            Response(200, json={"choices": [{"message": {"content": '{"score": 55}'}}]}),
+        ]
+    )
+    async with LLMProvider("test-key", temperature=0.2) as llm:
+        eval_ = await llm.evaluate(_listing())
+    assert eval_ is not None and eval_.score == 55
+    assert route.call_count == 2
+    second = json.loads(route.calls[1].request.content)
+    assert second["temperature"] == pytest.approx(0.8)  # 0.2 + 0.6 bump
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_provider_returns_none_when_content_missing() -> None:
+    route = respx.post("https://openrouter.ai/api/v1/chat/completions").mock(
+        return_value=Response(200, json={"choices": [{"message": {"content": None}}]})
+    )
+    async with LLMProvider("test-key") as llm:
+        result = await llm.evaluate(_listing())
+    assert result is None
+    assert route.call_count == 1  # null content is not retried in the loop
+
+
+def test_fmt_price_handles_junk_and_tiny_values() -> None:
+    from bazcar.llm.provider import _fmt_price
+
+    assert _fmt_price("nope") == "?"
+    assert _fmt_price(None) == "?"
+    assert _fmt_price("1e-10") == "<0.001"
+    assert _fmt_price("0.0000005") == "0.5"
+
+
+def test_criteria_instruction_includes_specific_criteria() -> None:
+    from bazcar.llm.provider import _criteria_instruction
+
+    assert "žiadne" in _criteria_instruction(None)
+    assert "diesel do 200 000 km" in _criteria_instruction("diesel do 200 000 km")
+
+
+@pytest.mark.asyncio
+async def test_list_models_without_repo_and_bad_cache_stamp() -> None:
+    from bazcar.llm.provider import _cache_stamp, list_models, list_models_cached
+
+    assert await _cache_stamp(None) is None
+
+    raw = [
+        {
+            "id": "x/model",
+            "name": "X",
+            "supported_parameters": ["response_format"],
+            "pricing": {"prompt": "0", "completion": "0"},
+            "per_request_limits": {},
+            "context_length": 64000,
+        }
+    ]
+    with respx.mock:
+        respx.get("https://openrouter.ai/api/v1/models").mock(
+            return_value=Response(200, json={"data": raw})
+        )
+        models = await list_models("K")
+    assert [m["id"] for m in models] == ["x/model"]
+
+    class _Repo:
+        def __init__(self, stamp):
+            self._stamp = stamp
+            self.saved = None
+
+        async def get_model_cache(self):
+            return {"models": [{"id": "x/model"}], "fetched_at": self._stamp}
+
+        async def save_model_cache(self, data):
+            self.saved = data
+
+    # A non-datetime stamp makes the age math raise -> cache treated as stale.
+    repo = _Repo("not-a-datetime")
+    with respx.mock:
+        route = respx.get("https://openrouter.ai/api/v1/models").mock(
+            return_value=Response(200, json={"data": raw})
+        )
+        await list_models_cached("K", repo)
+    assert route.called
+    assert repo.saved == raw

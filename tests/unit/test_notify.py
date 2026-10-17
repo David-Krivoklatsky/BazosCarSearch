@@ -221,6 +221,62 @@ async def test_answer_callback_acknowledges() -> None:
     assert body["text"] == "💾 Saved ✅"
 
 
+@respx.mock
+@pytest.mark.asyncio
+async def test_edit_message_text_updates_in_place() -> None:
+    route = respx.post("https://api.telegram.org/botTOKEN/editMessageText").mock(
+        return_value=Response(200, json={"ok": True, "result": {}})
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        ok = await ntf.edit_message_text(
+            "page 2", 55, reply_markup={"inline_keyboard": []}
+        )
+    assert ok is True
+    body = json.loads(route.calls[0].request.content)
+    assert body["message_id"] == 55
+    assert body["chat_id"] == "42"
+    assert body["parse_mode"] == "HTML"
+    assert body["disable_web_page_preview"] is True
+    assert body["reply_markup"] == {"inline_keyboard": []}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_edit_message_text_clips_oversized_body() -> None:
+    route = respx.post("https://api.telegram.org/botTOKEN/editMessageText").mock(
+        return_value=Response(200, json={"ok": True, "result": {}})
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        await ntf.edit_message_text("z" * 5000, 1)
+    body = json.loads(route.calls[0].request.content)
+    assert len(body["text"]) <= 4096
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_document_uploads_csv() -> None:
+    route = respx.post("https://api.telegram.org/botTOKEN/sendDocument").mock(
+        return_value=Response(200, json={"ok": True, "result": {}})
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        ok = await ntf.send_document("cars.csv", b"ad_id,price\n1,2\n", caption="export")
+    assert ok is True
+    raw = route.calls[0].request.content
+    assert b'name="document"' in raw
+    assert b"cars.csv" in raw
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_send_document_failure_is_swallowed() -> None:
+    respx.post("https://api.telegram.org/botTOKEN/sendDocument").mock(
+        return_value=Response(500, json={"ok": False})
+    )
+    async with TelegramNotifier("TOKEN", "42") as ntf:
+        ok = await ntf.send_document("cars.csv", b"x", caption="")
+    assert ok is False
+
+
 def test_notify_targets_new_ids_only() -> None:
     listings = [_listing(ad_id=1), _listing(ad_id=2)]
     targets = _notify_targets(listings, inserted_ids=[1], persist_enabled=True, min_score=None)

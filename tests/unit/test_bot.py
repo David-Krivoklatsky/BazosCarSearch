@@ -1070,7 +1070,8 @@ def test_digest_renders_week(fake_repo):
     assert "90/100" in text
 
 
-def test_status_shows_notify_state():
+def test_status_shows_notify_state(monkeypatch):
+    monkeypatch.setattr("bazcar.bot.daemon.get_settings", _NoDbSettings)
     bot = _bot()
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/photos on"}})
     _run(bot.handle, {"message": {"chat": {"id": 42}, "text": "/status"}})

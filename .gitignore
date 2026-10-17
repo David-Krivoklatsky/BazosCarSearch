@@ -10,6 +10,7 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .playwright-mcp/
+.coverage
 
 # Secrets & local env
 .env
